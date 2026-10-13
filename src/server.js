@@ -4,9 +4,12 @@ import crypto from 'node:crypto';
 import fs from 'node:fs/promises';
 import fsSync from 'node:fs';
 import path from 'node:path';
+import os from 'node:os';
 import { fileURLToPath } from 'node:url';
 
-import { transcribe, WHISPER_MODELS } from './transcriber.js';
+import { transcribe, WHISPER_MODELS, ENGINES } from './transcriber.js';
+import { analyzeClip, isolateVoice, cutoutImage } from './analysis.js';
+import { detectTools, onPath, OPTIONAL_TOOLS } from './tools.js';
 import { generateEditPlans, GOALS, LENGTHS } from './editor.js';
 import {
   writeProject, renderProject, makeBlurBackground, aspectMismatch, ensureSeekable,
@@ -14,6 +17,7 @@ import {
 } from './renderer.js';
 import { compressVideo, SIZE_PRESETS, RENDER_QUALITY } from './compress.js';
 import { run, probe, exists, PipelineError } from './util.js';
+import { createAuth } from './auth.js';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const DIRS = {
@@ -23,7 +27,9 @@ const DIRS = {
   public: path.join(ROOT, 'public'),
 };
 const PORT = Number(process.env.PORT || 3000);
-const HOST = process.env.HOST || '127.0.0.1';
+// `--lan` (npm run start:lan) listens on every interface so phones on your Wi-Fi/Tailscale can connect.
+const HOST = process.argv.includes('--lan') ? '0.0.0.0' : process.env.HOST || '127.0.0.1';
+const LOOPBACK = ['127.0.0.1', 'localhost', '::1'].includes(HOST);
 const MAX_UPLOAD_BYTES = Number(process.env.MAX_UPLOAD_MB || 4096) * 1024 * 1024;
 const MAX_VARIANTS = 8;
 const VIDEO_EXT = /\.(mp4|mov|m4v|mkv|webm|avi|mts|m2ts|mpg|mpeg|3gp|wmv|flv)$/i;
@@ -77,6 +83,7 @@ async function getJob(id) {
   const saved = JSON.parse(await fs.readFile(manifest, 'utf8'));
   job.clips = saved.clips.map((c) => ({ ...c, path: path.join(DIRS.uploads, id, c.file) }));
   job.nextClip = saved.nextClip;
+  job.logo = saved.logo || null;
   if (await exists(resultFile(id))) {
     job.result = JSON.parse(await fs.readFile(resultFile(id), 'utf8'));
     job.state = 'done';
@@ -89,7 +96,7 @@ async function getJob(id) {
 const saveManifest = (job) =>
   fs.writeFile(
     path.join(DIRS.uploads, job.id, 'clips.json'),
-    JSON.stringify({ clips: job.clips.map(({ path: _p, ...c }) => c), nextClip: job.nextClip }, null, 2),
+    JSON.stringify({ clips: job.clips.map(({ path: _p, ...c }) => c), nextClip: job.nextClip, logo: job.logo || null }, null, 2),
   );
 
 function snapshot(job) {
@@ -116,6 +123,9 @@ function setStep(job, step, status, message, progress) {
   emit(job);
 }
 
+const publicLogo = (job) =>
+  job.logo ? { url: `/api/logo/${job.id}?v=${job.logo.at}`, cutout: job.logo.cutout, note: job.logo.note || null } : null;
+
 const publicClip = (jobId, c) => ({
   id: c.id,
   name: c.name,
@@ -138,6 +148,20 @@ async function dirSize(dir) {
   return total;
 }
 
+/** Collapse notes that only differ by clip name: "X failed for a.mp4" + "… b.mp4" → one line. */
+function mergeNotes(notes, names) {
+  const escaped = names.map((n) => n.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')).sort((a, b) => b.length - a.length);
+  const re = escaped.length ? new RegExp(escaped.join('|'), 'g') : null;
+  const groups = new Map();
+  for (const n of notes) {
+    const found = re ? n.match(re) || [] : [];
+    const key = re ? n.replace(re, '\u0000') : n;
+    if (!groups.has(key)) groups.set(key, new Set());
+    found.forEach((f) => groups.get(key).add(f));
+  }
+  return [...groups].map(([key, set]) => key.replace('\u0000', [...set].join(', ')).replace(/\u0000/g, ''));
+}
+
 const lengthLabel = (l) => (l === 'full' ? 'Full' : `${l}s`);
 
 // ---------------------------------------------------------------------------
@@ -155,7 +179,9 @@ async function runPipeline(job, { prompt, clipIds, settings, reusePlan }) {
     if (signal.aborted) throw new PipelineError('Cancelled.');
   };
 
-  // 1. Transcribe (0 → 30%) ---------------------------------------------------
+  // 1. Transcribe + analyze (0 → 30%) -----------------------------------------
+  const tools = await detectTools();
+  const notes = [];
   const transcripts = {};
   for (let i = 0; i < clips.length; i++) {
     const c = clips[i];
@@ -163,6 +189,8 @@ async function runPipeline(job, { prompt, clipIds, settings, reusePlan }) {
     setStep(job, 'transcribe', 'active', `${label}…`, (i / clips.length) * 0.3);
     transcripts[c.id] = await transcribe(c.path, {
       model: settings.whisperModel,
+      engine: settings.engine,
+      tools,
       label: c.name,
       anyCached: reusePlan,
       outDir: path.join(ws, 'transcripts', c.id),
@@ -171,14 +199,30 @@ async function runPipeline(job, { prompt, clipIds, settings, reusePlan }) {
         const overall = ((i + p) / clips.length) * 0.3;
         if (Math.abs(overall - job.lastProgressSent) >= 0.01) {
           job.lastProgressSent = overall;
-          setStep(job, 'transcribe', 'active', `${label}… ${Math.round(p * 100)}%`, overall);
+          setStep(job, 'transcribe', 'active', `${label}… ${Math.round(p * 100)}%`, overall * 0.85);
         }
       },
     });
+    if (transcripts[c.id].note && transcripts[c.id].engine) notes.push(transcripts[c.id].note);
     checkAbort();
   }
+
+  // Footage analysis: silent ranges (auto-editor / FFmpeg), shot changes (PySceneDetect),
+  // face positions (OpenCV, only needed for face-tracked framing). Cached per clip.
+  const features = { silence: settings.silence, shots: settings.shots && tools.sceneDetect, faces: settings.framing === 'face' && tools.faces };
+  if (settings.framing === 'face' && !tools.faces) notes.push('Face tracking needs OpenCV (pip install "opencv-python-headless<5") — used centre crop.');
+  const analysis = {};
+  if (features.silence || features.shots || features.faces) {
+    for (const [i, c] of clips.entries()) {
+      setStep(job, 'transcribe', 'active', `Analyzing footage ${i + 1}/${clips.length} (${c.name})…`, 0.26 + (i / clips.length) * 0.04);
+      analysis[c.id] = await analyzeClip(c, { cacheFile: path.join(ws, 'analysis', `${c.id}.json`), features, tools, signal });
+      notes.push(...analysis[c.id].notes);
+      checkAbort();
+    }
+  }
   await fs.writeFile(path.join(ws, 'transcripts.json'), JSON.stringify(transcripts, null, 2));
-  setStep(job, 'transcribe', 'done', `Transcribed ${clips.length} clip${clips.length > 1 ? 's' : ''}.`, 0.3);
+  const engines = [...new Set(Object.values(transcripts).map((t) => t.engine).filter(Boolean))];
+  setStep(job, 'transcribe', 'done', `Transcribed${engines.length ? ` with ${engines.join(' + ')}` : ''} and analyzed ${clips.length} clip${clips.length > 1 ? 's' : ''}.`, 0.3);
 
   // 2. Plan every version in one claude -p call (30 → 38%) -------------------
   // reusePlan: output-only tweaks (format, captions, size…) skip Claude entirely.
@@ -207,7 +251,7 @@ async function runPipeline(job, { prompt, clipIds, settings, reusePlan }) {
       brand: settings.brand,
     };
     planned = await generateEditPlans({
-      clips: clips.map((c) => ({ ...c, transcript: transcripts[c.id] })),
+      clips: clips.map((c) => ({ ...c, transcript: transcripts[c.id], analysis: analysis[c.id] })),
       userPrompt: prompt,
       options,
       cwd: ws,
@@ -238,6 +282,22 @@ async function runPipeline(job, { prompt, clipIds, settings, reusePlan }) {
     checkAbort();
   }
 
+  // Clean voice: isolate speech from music/noise with Demucs (cached per clip).
+  const voicePaths = {};
+  if (settings.cleanVoice) {
+    const withAudio = clips.filter((c) => c.hasAudio);
+    if (!tools.demucs) notes.push('Clean voice needs Demucs (pip install demucs) — kept the original audio.');
+    for (const [k, c] of (tools.demucs ? withAudio : []).entries()) {
+      setStep(job, 'render', 'active', `Isolating voice ${k + 1}/${withAudio.length} with Demucs (slow on CPU)…`, 0.38);
+      try {
+        voicePaths[c.id] = await isolateVoice(c.path, path.join(ws, 'voice', `${c.id}.m4a`), { signal });
+      } catch (err) {
+        if (signal.aborted) throw new PipelineError('Cancelled.');
+        notes.push(`Voice isolation failed for ${c.name} — kept the original audio. (${String(err.message).split('\n').pop()})`);
+      }
+    }
+  }
+
   // Blurred backgrounds only for clips whose aspect doesn't match some output format.
   const blurPaths = {};
   if (settings.framing === 'blur') {
@@ -263,9 +323,23 @@ async function runPipeline(job, { prompt, clipIds, settings, reusePlan }) {
     const { total, captions } = await writeProject({
       projectDir,
       plan: { ...v.plan, title: planned.title },
-      clips: clips.map((c) => ({ ...c, path: renderPaths[c.id], blurPath: blurPaths[c.id] || null })),
+      clips: clips.map((c) => ({
+        ...c,
+        path: renderPaths[c.id],
+        blurPath: blurPaths[c.id] || null,
+        voicePath: voicePaths[c.id] || null,
+        faces: analysis[c.id]?.faces || null,
+      })),
       transcripts,
-      settings: { width: f.width, height: f.height, captions: settings.captions, framing: settings.framing, accent: settings.accent },
+      settings: {
+        width: f.width,
+        height: f.height,
+        captions: settings.captions,
+        framing: settings.framing,
+        accent: settings.accent,
+        logoPath: settings.useLogo && job.logo ? path.join(DIRS.uploads, job.id, job.logo.file) : null,
+        watermark: settings.watermark,
+      },
     });
 
     job.lastProgressSent = -1;
@@ -286,7 +360,7 @@ async function runPipeline(job, { prompt, clipIds, settings, reusePlan }) {
 
     setStep(job, 'render', 'active', `${prefix}Compressing ${label}…`, base + share * 0.92);
     const fileName = `clipforge-${id}.mp4`;
-    const size = await compressVideo(raw, path.join(outDir, fileName), settings.size, { signal });
+    const size = await compressVideo(raw, path.join(outDir, fileName), settings.size, { signal, twoPass: tools.ffmpegNormalize });
     await fs.rm(projectDir, { recursive: true, force: true }); // composition is rebuilt on every run
     await run('ffmpeg', [
       '-v', 'error', '-y', '-ss', String(Math.min(1.2, total / 2)), '-i', path.join(outDir, fileName),
@@ -315,7 +389,7 @@ async function runPipeline(job, { prompt, clipIds, settings, reusePlan }) {
   const result = {
     title: planned.title,
     checklist: planned.checklist,
-    warnings: planned.warnings,
+    warnings: [...mergeNotes(notes, clips.map((c) => c.name)), ...planned.warnings],
     variants,
     totalSize: variants.reduce((s, x) => s + x.size, 0),
     settings,
@@ -359,24 +433,39 @@ async function startPipeline(job, opts) {
 // HTTP
 // ---------------------------------------------------------------------------
 
+const auth = createAuth({ password: process.env.CLIPFORGE_PASSWORD, secretFile: path.join(DIRS.workspace, '.session-secret') });
+if (!LOOPBACK && !auth.enabled && process.env.CLIPFORGE_ALLOW_NO_PASSWORD !== '1') {
+  console.error(
+    '\n  Refusing to listen on the network without a password — anyone who can reach it could use your Claude plan.\n' +
+      '  Set one:  CLIPFORGE_PASSWORD="something-long" npm run start:lan\n',
+  );
+  process.exit(1);
+}
+
 const app = express();
+app.set('trust proxy', 'loopback'); // honour X-Forwarded-Proto from a local HTTPS proxy (Tailscale Serve, Caddy)
 app.use(express.json({ limit: '1mb' }));
 app.use(express.static(DIRS.public));
+app.get('/api/auth', auth.status);
+app.post('/api/login', auth.login);
+app.post('/api/logout', auth.logout);
+app.use('/api', auth.guard);
 
 // Tool availability + option lists, so the UI can warn before a job fails.
 let healthCache = null;
 app.get('/api/health', async (_req, res) => {
   if (healthCache && Date.now() - healthCache.at < 30_000) return res.json(healthCache.data);
-  const onPath = (bin) => {
-    if (path.isAbsolute(bin)) return fsSync.existsSync(bin);
-    return (process.env.PATH || '').split(path.delimiter).some((dir) => fsSync.existsSync(path.join(dir, bin)));
-  };
+
   const data = {
     ffmpeg: onPath('ffmpeg') && onPath('ffprobe'),
-    whisper: onPath(process.env.WHISPER_BIN || 'whisper'),
+    whisper: onPath(process.env.WHISPER_BIN || 'whisper') || (await detectTools()).fasterWhisper,
     claude: onPath(process.env.CLAUDE_BIN || 'claude'),
     hyperframes: fsSync.existsSync(path.join(ROOT, 'node_modules', '.bin', 'hyperframes')) || onPath('hyperframes'),
+    tools: Object.fromEntries(
+      Object.entries(await detectTools({ fresh: true })).map(([k, v]) => [k, { ...OPTIONAL_TOOLS[k], installed: v }]),
+    ),
     options: {
+      engines: ENGINES,
       whisperModels: WHISPER_MODELS,
       formats: FORMATS,
       lengths: LENGTHS,
@@ -469,7 +558,7 @@ app.post(
 app.get('/api/clips/:jobId', async (req, res) => {
   const job = await getJob(req.params.jobId);
   if (!job) return res.status(404).json({ error: 'Unknown project.' });
-  res.json({ jobId: job.id, clips: job.clips.map((c) => publicClip(job.id, c)), state: snapshot(job) });
+  res.json({ jobId: job.id, clips: job.clips.map((c) => publicClip(job.id, c)), logo: publicLogo(job), state: snapshot(job) });
 });
 
 app.delete('/api/clips/:jobId/:clipId', async (req, res) => {
@@ -496,6 +585,68 @@ app.get('/api/thumb/:jobId/:clipId', async (req, res) => {
   res.sendFile(file);
 });
 
+// Logo / product image for CTA end cards and the watermark. With ?cutout=1 the background
+// is removed with rembg when it's installed.
+const logoUpload = multer({
+  storage: multer.memoryStorage(),
+  limits: { fileSize: 20 * 1024 * 1024, files: 1 },
+  fileFilter: (_req, file, cb) => cb(null, /^image\/(png|jpe?g|webp)$/.test(file.mimetype)),
+});
+app.post('/api/logo', async (req, res, next) => {
+  try {
+    const job = req.query.jobId ? await getJob(String(req.query.jobId)) : newJob();
+    if (!job) return res.status(404).json({ error: 'Unknown project.' });
+    if (job.state === 'running') return res.status(409).json({ error: 'A render is running for this project.' });
+    await new Promise((resolve, reject) => logoUpload.single('logo')(req, res, (err) => (err ? reject(err) : resolve())));
+    if (!req.file) return res.status(400).json({ error: 'Upload a PNG, JPG or WebP image.' });
+
+    const dir = path.join(DIRS.uploads, job.id);
+    await fs.mkdir(dir, { recursive: true });
+    for (const f of await fs.readdir(dir)) if (f.startsWith('logo')) await fs.rm(path.join(dir, f), { force: true });
+    // Normalize to PNG (keeps transparency) so every renderer path sees one format.
+    const src = path.join(dir, `logo-src${path.extname(req.file.originalname).toLowerCase() || '.png'}`);
+    await fs.writeFile(src, req.file.buffer);
+    const out = path.join(dir, 'logo.png');
+    let cutout = false;
+    let note = null;
+    if (req.query.cutout === '1') {
+      if ((await detectTools()).rembg) {
+        try {
+          await cutoutImage(src, out);
+          cutout = true;
+        } catch (err) {
+          note = `Background removal failed (${String(err.message).split('\n').pop()}) — using the image as-is.`;
+        }
+      } else {
+        note = 'Background removal needs rembg (pip install "rembg[cpu,cli]") — using the image as-is.';
+      }
+    }
+    if (!cutout) {
+      const r = await run('ffmpeg', ['-v', 'error', '-y', '-i', src, '-frames:v', '1', out]);
+      if (r.code !== 0) return res.status(400).json({ error: 'Could not read that image.' });
+    }
+    job.logo = { file: 'logo.png', cutout, note, at: Date.now() };
+    await saveManifest(job);
+    res.json({ jobId: job.id, logo: publicLogo(job) });
+  } catch (err) {
+    next(err);
+  }
+});
+app.get('/api/logo/:jobId', async (req, res) => {
+  const job = await getJob(req.params.jobId);
+  if (!job?.logo) return res.sendStatus(404);
+  res.sendFile(path.join(DIRS.uploads, job.id, job.logo.file));
+});
+app.delete('/api/logo/:jobId', async (req, res) => {
+  const job = await getJob(req.params.jobId);
+  if (!job) return res.status(404).json({ error: 'Unknown project.' });
+  const dir = path.join(DIRS.uploads, job.id);
+  for (const f of await fs.readdir(dir).catch(() => [])) if (f.startsWith('logo')) await fs.rm(path.join(dir, f), { force: true });
+  job.logo = null;
+  await saveManifest(job);
+  res.json({ ok: true });
+});
+
 const pick = (list, values, fallback) => {
   const v = (Array.isArray(values) ? values : [values]).filter((x) => list.includes(x));
   return v.length ? [...new Set(v)] : fallback;
@@ -517,6 +668,12 @@ app.post('/api/edit', async (req, res) => {
 
   const settings = {
     whisperModel: WHISPER_MODELS.includes(s.whisperModel) ? s.whisperModel : 'medium',
+    engine: ENGINES.includes(s.engine) ? s.engine : 'auto',
+    silence: s.silence !== false,
+    shots: s.shots !== false,
+    cleanVoice: s.cleanVoice === true,
+    useLogo: s.useLogo !== false,
+    watermark: s.watermark === true,
     goal: GOALS.includes(s.goal) ? s.goal : 'social',
     formats: pick(Object.keys(FORMATS), s.formats, ['9x16']),
     lengths: pick(LENGTHS, s.lengths, ['30']),
@@ -624,5 +781,14 @@ app.use((err, _req, res, _next) => {
 });
 
 app.listen(PORT, HOST, () => {
-  console.log(`\n  ClipForge running at http://${HOST === '0.0.0.0' ? 'localhost' : HOST}:${PORT}\n`);
+  console.log(`\n  ClipForge running at http://${LOOPBACK ? 'localhost' : '127.0.0.1'}:${PORT}`);
+  if (!LOOPBACK) {
+    const lan = Object.values(os.networkInterfaces())
+      .flat()
+      .filter((i) => i && i.family === 'IPv4' && !i.internal)
+      .map((i) => `http://${i.address}:${PORT}`);
+    if (lan.length) console.log(`  On your phone (same Wi-Fi or Tailscale): ${lan.join('  ·  ')}`);
+    console.log(`  Password protection: ${auth.enabled ? 'on' : 'OFF'}`);
+  }
+  console.log('');
 });

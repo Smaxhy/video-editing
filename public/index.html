@@ -4,6 +4,13 @@
 <meta charset="UTF-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1" />
 <title>ClipForge</title>
+<link rel="manifest" href="/manifest.webmanifest" />
+<meta name="theme-color" content="#0a0b0f" />
+<meta name="apple-mobile-web-app-capable" content="yes" />
+<meta name="mobile-web-app-capable" content="yes" />
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+<meta name="apple-mobile-web-app-title" content="ClipForge" />
+<link rel="apple-touch-icon" href="/icons/apple-touch-icon.png" />
 <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><rect width='32' height='32' rx='8' fill='%237c5cff'/><path d='M12 9l12 7-12 7z' fill='white'/></svg>" />
 <style>
   :root {
@@ -149,6 +156,23 @@
   .warns { color: var(--warn); font-size: 12px; margin-top: 10px; }
   .storage { display: flex; align-items: center; gap: 10px; color: var(--muted); font-size: 12px; }
   .storage .btn { margin-left: auto; }
+  .toggles { display: grid; gap: 8px; }
+  .tg { display: flex; align-items: flex-start; gap: 10px; cursor: pointer; font-size: 13px; }
+  .tg input { margin-top: 3px; accent-color: var(--accent); }
+  .tg small { display: block; color: var(--muted); font-size: 11.5px; }
+  .tg.off { opacity: .5; cursor: not-allowed; }
+  .tg .miss { color: var(--warn); }
+  .logo-row { display: flex; align-items: center; gap: 10px; margin-top: 8px; flex-wrap: wrap; font-size: 12px; color: var(--muted); }
+  .logo-prev { width: 44px; height: 44px; border-radius: 8px; border: 1px solid var(--line); object-fit: contain;
+    background: repeating-conic-gradient(#20232c 0% 25%, #15171d 0% 50%) 50% / 12px 12px; }
+  .tools { list-style: none; margin: 8px 0 0; padding: 0; display: grid; gap: 6px; font-size: 12.5px; }
+  .tools li { display: grid; grid-template-columns: 16px 1fr; gap: 8px; }
+  .tools a { color: var(--text); font-weight: 600; text-decoration: none; border-bottom: 1px dotted var(--muted); }
+  .tools .d { color: var(--muted); }
+  .login { position: fixed; inset: 0; z-index: 50; background: rgba(5,6,9,.92); display: grid; place-items: center; padding: 20px; }
+  .login form { background: var(--panel); border: 1px solid var(--line); border-radius: 16px; padding: 24px; width: min(360px, 100%); display: grid; gap: 12px; }
+  .login input { background: var(--panel-2); border: 1px solid var(--line); border-radius: 10px; padding: 11px 12px; }
+  .login .le { color: var(--err); font-size: 12px; min-height: 16px; }
   .hidden { display: none !important; }
 </style>
 </head>
@@ -226,6 +250,7 @@
       <div class="opt"><label>Framing</label>
         <div class="seg" data-name="framing" data-single>
           <button data-v="blur" class="on" title="Fit the shot and fill the edges with a blurred copy">Blur fill</button>
+          <button data-v="face" title="Crop to fill, keeping the speaker's face centred (OpenCV)">Face crop</button>
           <button data-v="crop" title="Fill the frame, cropping the edges">Crop to fill</button>
           <button data-v="fit" title="Fit the whole shot with black bars">Fit</button>
         </div>
@@ -246,9 +271,41 @@
           <input type="color" id="accent" value="#7c5cff" title="Accent color" />
         </div>
       </div>
+      <div class="opt"><label>Logo</label>
+        <div>
+          <div class="logo-row">
+            <img id="logoPrev" class="logo-prev hidden" alt="" />
+            <button class="btn sm ghost" id="logoBtn" type="button">Upload logo / product image</button>
+            <label class="tg" style="align-items:center"><input type="checkbox" id="logoCutout" checked /> Remove background <span id="rembgMiss" class="miss hidden">(rembg not installed)</span></label>
+            <button class="btn sm ghost hidden" id="logoRm" type="button">Remove</button>
+            <input type="file" id="logoFile" accept="image/png,image/jpeg,image/webp" hidden />
+          </div>
+          <div class="logo-row"><label class="tg" style="align-items:center"><input type="checkbox" id="watermark" /> Show logo as a corner watermark</label></div>
+          <div class="logo-row" id="logoNote"></div>
+        </div>
+      </div>
+
+      <div class="opt"><label>Smart tools</label>
+        <div class="toggles">
+          <label class="tg" data-tool="autoEditor"><input type="checkbox" id="silence" checked /><span>Precise dead-air removal
+            <small>Measures silences from the audio (auto-editor, or FFmpeg's built-in detector)</small></span></label>
+          <label class="tg" data-tool="sceneDetect"><input type="checkbox" id="shots" checked /><span>Shot detection
+            <small>Tells Claude where the camera cuts are — better B-roll &amp; montage edits (PySceneDetect)</small></span></label>
+          <label class="tg" data-tool="demucs"><input type="checkbox" id="cleanVoice" /><span>Clean voice
+            <small>Strips music &amp; background noise from speech (Demucs — slow without a GPU)</small></span></label>
+        </div>
+      </div>
 
       <details class="adv">
         <summary>Advanced</summary>
+        <div class="opt"><label>Transcription</label>
+          <select id="engine">
+            <option value="auto" selected>Auto — fastest installed</option>
+            <option value="faster-whisper">faster-whisper</option>
+            <option value="whisperx">WhisperX — tightest word timing</option>
+            <option value="whisper">OpenAI Whisper</option>
+          </select>
+        </div>
         <div class="opt"><label>Whisper model</label>
           <select id="whisperModel">
             <option value="tiny">tiny — fastest</option>
@@ -273,7 +330,7 @@
   <!-- ======================= RIGHT: results ======================= -->
   <div class="col right">
     <section class="card" id="idleCard">
-      <div class="empty"><div class="big">▶</div>Your videos show up here.<br />Everything runs on this machine — no credits, no uploads to the cloud.</div>
+      <div class="empty"><div class="big">▶</div>Your videos show up here.<br />Everything runs on your own computer or server — no credits, no API keys.</div>
     </section>
 
     <section class="card hidden" id="progressCard">
@@ -303,6 +360,12 @@
       <details class="adv"><summary>Full edit plan (JSON)</summary><pre id="planJson"></pre></details>
     </section>
 
+    <section class="card" id="toolsCard">
+      <details class="adv" style="margin:0"><summary>Open-source tools ClipForge uses</summary>
+        <ul class="tools" id="tools"></ul>
+      </details>
+    </section>
+
     <section class="card hidden" id="storageCard">
       <div class="storage">
         <span id="storageText"></span>
@@ -311,6 +374,15 @@
     </section>
   </div>
 </main>
+
+<div class="login hidden" id="login">
+  <form id="loginForm">
+    <div style="display:flex;align-items:center;gap:10px"><div class="logo"><svg viewBox="0 0 24 24"><path d="M7 4l13 8-13 8z" fill="white"/></svg></div><strong>ClipForge</strong></div>
+    <input type="password" id="pw" placeholder="Password" autocomplete="current-password" required />
+    <div class="le" id="loginErr"></div>
+    <button class="btn" type="submit">Log in</button>
+  </form>
+</div>
 
 <script>
 const $ = (s) => document.querySelector(s);
@@ -355,6 +427,12 @@ function readSettings() {
     cta: $('#cta').value.trim(),
     accent: $('#accent').value,
     whisperModel: $('#whisperModel').value,
+    engine: $('#engine').value,
+    silence: $('#silence').checked,
+    shots: $('#shots').checked,
+    cleanVoice: $('#cleanVoice').checked,
+    watermark: $('#watermark').checked,
+    useLogo: true,
   };
 }
 
@@ -367,7 +445,8 @@ function onOptionsChange() {
   updateGo();
   remember();
 }
-['#brand', '#cta', '#accent', '#whisperModel'].forEach((sel) => $(sel).addEventListener('input', remember));
+['#brand', '#cta', '#accent', '#whisperModel', '#engine', '#silence', '#shots', '#cleanVoice', '#watermark', '#logoCutout']
+  .forEach((sel) => $(sel).addEventListener('input', remember));
 
 // ---- health ----------------------------------------------------------------
 async function loadHealth() {
@@ -377,6 +456,21 @@ async function loadHealth() {
     $('#health').innerHTML = tools
       .map(([k, label]) => `<span class="pill ${h[k] ? '' : 'bad'}" title="${h[k] ? 'ready' : 'not found — run scripts/setup.sh'}">${label}</span>`)
       .join('');
+    const t = h.tools || {};
+    $('#tools').innerHTML = Object.values(t).map((x) =>
+      `<li><span style="color:${x.installed ? 'var(--ok)' : 'var(--muted)'}">${x.installed ? '●' : '○'}</span>
+       <span><a href="${x.url}" target="_blank" rel="noopener">${esc(x.name)}</a>${x.installed ? '' : ' <span class="d">(not installed)</span>'}<br><span class="d">${esc(x.does)}</span></span></li>`).join('');
+    for (const el of document.querySelectorAll('.tg[data-tool]')) {
+      const tool = t[el.dataset.tool];
+      if (!tool || tool.installed) continue;
+      const small = el.querySelector('small');
+      if (el.dataset.tool === 'autoEditor') { small.textContent += ' — auto-editor not installed, using FFmpeg'; continue; }
+      el.classList.add('off');
+      el.querySelector('input').checked = false;
+      el.querySelector('input').disabled = true;
+      small.innerHTML += ` — <span class="miss">not installed</span>`;
+    }
+    $('#rembgMiss').classList.toggle('hidden', Boolean(t.rembg?.installed));
   } catch { /* server down — upload will surface it */ }
 }
 
@@ -391,7 +485,8 @@ async function restore() {
   if (saved.prompt) $('#prompt').value = saved.prompt;
   const s = saved.settings || {};
   for (const k of ['goal', 'formats', 'lengths', 'captions', 'framing', 'size']) if (s[k]) setSeg(k, s[k]);
-  for (const k of ['brand', 'cta', 'accent', 'whisperModel']) if (s[k]) $('#' + k).value = s[k];
+  for (const k of ['brand', 'cta', 'accent', 'whisperModel', 'engine']) if (s[k]) $('#' + k).value = s[k];
+  for (const k of ['silence', 'shots', 'cleanVoice', 'watermark']) if (typeof s[k] === 'boolean') $('#' + k).checked = s[k];
   if (!saved.jobId) return;
   const r = await fetch(`/api/clips/${saved.jobId}`);
   if (!r.ok) return;
@@ -399,6 +494,7 @@ async function restore() {
   state.jobId = data.jobId;
   state.clips = data.clips;
   renderClips();
+  showLogo(data.logo);
   subscribe();
 }
 
@@ -426,6 +522,7 @@ function upload(files) {
     bar.firstElementChild.style.width = '0';
     let data = {};
     try { data = JSON.parse(xhr.responseText); } catch {}
+    if (xhr.status === 401) { renderClips(); return $('#login').classList.remove('hidden'); }
     if (xhr.status === 404 && state.jobId) { state.jobId = null; return upload(files); } // project was deleted
     if (xhr.status !== 200) { renderClips(); return alert(data.error || `Upload failed (HTTP ${xhr.status}).`); }
     if (data.rejected?.length) alert('Skipped:\n' + data.rejected.map((r) => `• ${r.name}: ${r.error}`).join('\n'));
@@ -551,7 +648,8 @@ async function showResult(r) {
       <div class="vm">
         <div><div class="vl">${v.length === 'full' ? 'Full' : v.length + 's'} · ${FORMAT_LABEL[v.format] || v.format}</div>
           <div class="vs">${fmtTime(v.duration)} · ${fmtSize(v.size)}</div></div>
-        <a class="btn sm" href="${v.downloadUrl}" download>↓</a>
+        ${canShareFiles ? `<button class="btn sm ghost share" data-url="${v.downloadUrl}" data-name="${esc(v.file)}" title="Share to TikTok, Instagram…">Share</button>` : ''}
+        <a class="btn sm" href="${v.downloadUrl}" download title="Download">↓</a>
       </div>
     </div>`).join('');
   $('#warns').innerHTML = (r.warnings || []).map((w) => `⚠ ${esc(w)}`).join('<br>');
@@ -563,6 +661,56 @@ async function showResult(r) {
   try { $('#planJson').textContent = JSON.stringify(await (await fetch(`/api/plan/${state.jobId}`)).json(), null, 2); } catch {}
   loadStorage();
 }
+
+// ---- share (phone): hand the MP4 straight to TikTok / Instagram / Messages ------
+const canShareFiles = (() => {
+  try { return Boolean(navigator.canShare?.({ files: [new File([''], 'x.mp4', { type: 'video/mp4' })] })); } catch { return false; }
+})();
+$('#variants').addEventListener('click', async (e) => {
+  const b = e.target.closest('.share');
+  if (!b) return;
+  const old = b.textContent;
+  b.textContent = '…';
+  try {
+    const blob = await (await fetch(b.dataset.url)).blob();
+    await navigator.share({ files: [new File([blob], b.dataset.name, { type: 'video/mp4' })] });
+  } catch (err) {
+    if (err.name !== 'AbortError') alert('Sharing failed — use the download button instead.');
+  } finally { b.textContent = old; }
+});
+
+// ---- logo ------------------------------------------------------------------
+function showLogo(logo) {
+  $('#logoPrev').classList.toggle('hidden', !logo);
+  $('#logoRm').classList.toggle('hidden', !logo);
+  if (logo) $('#logoPrev').src = logo.url;
+  $('#logoBtn').textContent = logo ? 'Replace' : 'Upload logo / product image';
+  $('#logoNote').textContent = logo?.note || (logo?.cutout ? 'Background removed with rembg.' : '');
+}
+$('#logoBtn').addEventListener('click', () => $('#logoFile').click());
+$('#logoFile').addEventListener('change', async () => {
+  const f = $('#logoFile').files[0];
+  $('#logoFile').value = '';
+  if (!f) return;
+  const fd = new FormData();
+  fd.append('logo', f, f.name);
+  const q = new URLSearchParams({ cutout: $('#logoCutout').checked ? '1' : '0' });
+  if (state.jobId) q.set('jobId', state.jobId);
+  $('#logoBtn').disabled = true;
+  $('#logoBtn').textContent = $('#logoCutout').checked ? 'Removing background…' : 'Uploading…';
+  try {
+    const r = await fetch('/api/logo?' + q, { method: 'POST', body: fd });
+    const data = await r.json();
+    if (!r.ok) throw new Error(data.error);
+    if (state.jobId !== data.jobId) { state.jobId = data.jobId; subscribe(); remember(); }
+    showLogo(data.logo);
+  } catch (err) { alert(err.message || 'Logo upload failed.'); showLogo(null); }
+  finally { $('#logoBtn').disabled = false; }
+});
+$('#logoRm').addEventListener('click', async () => {
+  await fetch(`/api/logo/${state.jobId}`, { method: 'DELETE' });
+  showLogo(null);
+});
 
 // ---- storage ---------------------------------------------------------------
 async function loadStorage() {
@@ -581,13 +729,44 @@ $('#deleteProject').addEventListener('click', async () => {
   state.es?.close();
   Object.assign(state, { jobId: null, clips: [], shown: null });
   renderClips();
+  showLogo(null);
   ['#progressCard', '#resultCard', '#checkCard', '#storageCard'].forEach((c) => $(c).classList.add('hidden'));
   $('#idleCard').classList.remove('hidden');
   remember();
 });
 
-loadHealth();
-restore().then(onOptionsChange);
+// ---- login (only when the server has CLIPFORGE_PASSWORD set) -------------------
+const nativeFetch = window.fetch.bind(window);
+window.fetch = async (...args) => {
+  const r = await nativeFetch(...args);
+  if (r.status === 401) {
+    const body = await r.clone().json().catch(() => ({}));
+    if (body.auth) $('#login').classList.remove('hidden');
+  }
+  return r;
+};
+$('#loginForm').addEventListener('submit', async (e) => {
+  e.preventDefault();
+  const r = await nativeFetch('/api/login', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ password: $('#pw').value }) });
+  const data = await r.json().catch(() => ({}));
+  if (!r.ok) { $('#loginErr').textContent = data.error || 'Login failed.'; return; }
+  $('#login').classList.add('hidden');
+  $('#pw').value = '';
+  init();
+});
+
+if (matchMedia('(pointer: coarse)').matches) {
+  drop.querySelector('span').textContent = 'Tap to pick videos from your camera roll or files';
+}
+if ('serviceWorker' in navigator) navigator.serviceWorker.register('/sw.js').catch(() => {});
+
+async function init() {
+  const a = await nativeFetch('/api/auth').then((r) => r.json()).catch(() => ({}));
+  if (a.enabled && !a.authed) return $('#login').classList.remove('hidden');
+  loadHealth();
+  restore().then(onOptionsChange);
+}
+init();
 </script>
 </body>
 </html>

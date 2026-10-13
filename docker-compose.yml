@@ -1,0 +1,22 @@
+# Run ClipForge on a server (VPS, home server, NAS…) and use it from your phone and PC.
+#   1. On any computer with Claude Code: `claude setup-token` → copy the token
+#   2. Put it and a password in a .env file next to this file:
+#        CLIPFORGE_PASSWORD=pick-something-long
+#        CLAUDE_CODE_OAUTH_TOKEN=sk-ant-oat01-...
+#   3. docker compose up -d   → http://<server>:3000  (put HTTPS in front — see README)
+services:
+  clipforge:
+    build: .
+    restart: unless-stopped
+    ports:
+      - "3000:3000"
+    environment:
+      CLIPFORGE_PASSWORD: ${CLIPFORGE_PASSWORD:?set CLIPFORGE_PASSWORD in .env}
+      CLAUDE_CODE_OAUTH_TOKEN: ${CLAUDE_CODE_OAUTH_TOKEN:?run `claude setup-token` and set CLAUDE_CODE_OAUTH_TOKEN in .env}
+    volumes:
+      - ./uploads:/app/uploads
+      - ./workspace:/app/workspace
+      - ./output:/app/output
+      - model-cache:/root/.cache   # Whisper / Demucs / rembg models survive rebuilds
+volumes:
+  model-cache:

@@ -78,13 +78,21 @@ export function buildPrompt({ clips, userPrompt, options }) {
       const lines = t?.segments?.length
         ? t.segments.map((s) => `    [${fmt(s.start)} - ${fmt(s.end)}] ${s.text}`).join('\n')
         : `    (no speech detected${t?.note ? ` — ${t.note}` : ''})`;
+      const a = c.analysis || {};
+      const list = (arr, fmtItem, max = 40) =>
+        arr.length > max ? `${arr.slice(0, max).map(fmtItem).join(', ')} … (+${arr.length - max} more)` : arr.map(fmtItem).join(', ');
       return [
         `### ${c.id}`,
         `- file: ${c.name}`,
         `- duration: ${round(c.duration)}s · ${c.width}x${c.height} · audio: ${c.hasAudio ? 'yes' : 'no'}${t?.language ? ` · language: ${t.language}` : ''}`,
+        a.silences ? `- silent ranges (no sound, SOURCE seconds): ${a.silences.length ? list(a.silences, ([x, y]) => `${fmt(x)}-${fmt(y)}`) : 'none'}` : null,
+        a.shots ? `- shot changes (SOURCE seconds): ${a.shots.length ? list(a.shots, fmt) : 'none — one continuous shot'}` : null,
+        a.faces ? `- on-camera face: ${faceSummary(a.faces, c.duration)}` : null,
         `- transcript (SOURCE seconds):`,
         lines,
-      ].join('\n');
+      ]
+        .filter(Boolean)
+        .join('\n');
     })
     .join('\n\n');
 
@@ -120,7 +128,8 @@ ${catalog}
 ## Editing rules
 - Scenes play in array order. Each scene is a range [start, end) of ONE clip in SOURCE seconds; ranges must lie within the clip's duration.
 - Cut on sentence/phrase boundaries from the transcript; never mid-word. Pad ~0.1s before speech and ~0.2s after.
-- Remove filler, dead air, false starts and retakes by splitting into several scenes that skip them (unless the user wants them kept).
+- Remove filler, dead air, false starts and retakes by splitting into several scenes that skip them (unless the user wants them kept). When "silent ranges" are listed, they are measured from the audio — use them to place cuts precisely.
+- When "shot changes" are listed, prefer cutting on them for B-roll and montage footage, and avoid starting a scene a few frames before a shot change.
 - Output length = sum of (end - start) / speed, minus overlap of non-cut transitions. Respect each version's length limit.
 - Transitions: "cut" for talking content; others sparingly between distinct moments; transitionDuration 0.2-0.8s.
 - Overlay times are OUTPUT timeline seconds and must fit inside that version's length. Overlays must not overlap each other in time unless they sit in different positions.
@@ -350,6 +359,13 @@ function defaultPosition(type) {
   if (type === 'hook') return 'top';
   if (type === 'title' || type === 'cta') return 'center';
   return 'bottom';
+}
+
+/** "visible in 80% of the clip" style summary from sampled face detections (~2 per second). */
+function faceSummary(faces, duration) {
+  const samples = Math.max(1, Math.round(duration * 2));
+  const pct = Math.min(100, Math.round((faces.length / samples) * 100));
+  return pct === 0 ? 'none detected (B-roll / screen / scenery)' : `visible in about ${pct}% of the clip`;
 }
 
 function fmt(t) {

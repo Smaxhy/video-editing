@@ -2,7 +2,20 @@
 # ClipForge one-command installer.
 # Checks Node 22+, Python 3.9+, FFmpeg and the Claude Code CLI, then installs
 # OpenAI Whisper (pip), HyperFrames (npm) and the project's npm dependencies.
+#
+#   bash scripts/setup.sh              core + smart tools (faster-whisper, auto-editor, PySceneDetect,
+#                                      OpenCV, ffmpeg-normalize, rembg, Demucs)
+#   bash scripts/setup.sh --minimal    core only (Whisper + HyperFrames)
+#   bash scripts/setup.sh --whisperx   also WhisperX (heavy; pins its own torch version)
 set -uo pipefail
+
+MINIMAL=0; WITH_WHISPERX=0
+for arg in "$@"; do
+  case "$arg" in
+    --minimal) MINIMAL=1 ;;
+    --whisperx) WITH_WHISPERX=1 ;;
+  esac
+done
 
 cd "$(dirname "$0")/.."
 
@@ -81,6 +94,25 @@ else
     else
       fail "whisper did not install. Try: $PYTHON -m pip install -U openai-whisper"
     fi
+  fi
+fi
+
+pip_install() {
+  "$PYTHON" -m pip install "$@" || "$PYTHON" -m pip install --user "$@" || "$PYTHON" -m pip install --user --break-system-packages "$@"
+}
+
+if [ "$MINIMAL" -eq 0 ]; then
+  echo
+  bold "Installing smart tools (optional — ClipForge works without them)"
+  # Each tool is installed on its own so one failure doesn't block the rest.
+  for pkg in faster-whisper auto-editor scenedetect "opencv-python-headless>=4.8,<5" ffmpeg-normalize "rembg[cpu,cli]" demucs; do
+    if pip_install -q "$pkg" >/dev/null 2>&1; then ok "$pkg"; else warn "$pkg failed to install (feature will be skipped)"; fi
+  done
+  # opencv-python 5 dropped the bundled face model; make sure the headless 4.x build wins.
+  "$PYTHON" -m pip uninstall -y -q opencv-python >/dev/null 2>&1 || true
+  pip_install -q --force-reinstall --no-deps "opencv-python-headless>=4.8,<5" >/dev/null 2>&1 || true
+  if [ "$WITH_WHISPERX" -eq 1 ]; then
+    if pip_install -q whisperx >/dev/null 2>&1; then ok "whisperx"; else warn "whisperx failed to install"; fi
   fi
 fi
 

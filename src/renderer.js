@@ -15,7 +15,7 @@ export const FORMATS = {
   '16x9': { width: 1920, height: 1080, label: '16:9 Landscape', use: 'YouTube · web · pre-roll' },
 };
 export const CAPTION_STYLES = ['off', 'clean', 'bold'];
-export const FRAMINGS = ['blur', 'crop', 'fit'];
+export const FRAMINGS = ['blur', 'face', 'crop', 'fit'];
 
 // Transitions where the incoming scene overlaps the tail of the previous one.
 const OVERLAP_TRANSITIONS = new Set(['crossfade', 'slide-left', 'slide-up', 'zoom', 'wipe']);
@@ -131,6 +131,33 @@ export function aspectMismatch(clip, W, H) {
   return Math.abs(Math.log(clip.width / clip.height / (W / H))) > 0.08;
 }
 
+/** Median face centre (0-1 of the source frame) inside a source time range, or null. */
+export function faceCenter(faces, start, end) {
+  const inRange = (faces || []).filter((f) => f.t >= start - 0.25 && f.t <= end + 0.25);
+  if (!inRange.length) return null;
+  const med = (arr) => [...arr].sort((a, b) => a - b)[Math.floor(arr.length / 2)];
+  return { x: med(inRange.map((f) => f.x)), y: med(inRange.map((f) => f.y)) };
+}
+
+/**
+ * CSS object-position that keeps a face centred when a clip is cover-cropped into W×H,
+ * plus the face's on-screen position (used as the zoom origin for punch-ins).
+ */
+export function coverPositionFor(face, clip, W, H) {
+  const scale = Math.max(W / clip.width, H / clip.height);
+  const sw = clip.width * scale;
+  const sh = clip.height * scale;
+  const axis = (c, size, box) => {
+    if (size - box < 1) return { pct: 50, screen: c };
+    const off = clamp(c * size - box / 2, 0, size - box);
+    return { pct: (off / (size - box)) * 100, screen: (c * size - off) / box };
+  };
+  const x = axis(face.x, sw, W);
+  const y = axis(face.y, sh, H);
+  const f = (n) => `${round(n, 2)}%`;
+  return { position: `${f(x.pct)} ${f(y.pct)}`, origin: `${f(x.screen * 100)} ${f(y.screen * 100)}` };
+}
+
 /**
  * Build the HyperFrames HTML composition for one plan in one frame format.
  * clips: [{ id, file, hasAudio, width, height, blurFile? }], transcripts: { [clipId]: transcript }
@@ -214,25 +241,34 @@ export function buildComposition({ plan, clips, transcripts, settings, gsapSrc =
       audioIn *= k;
       audioOut *= k;
     }
-    let audioAttrs;
-    if (!clip.hasAudio || v <= 0) {
-      audioAttrs = 'muted';
-    } else if (audioIn > 0 || audioOut > 0) {
+    // Sound comes from the clip itself, or from its Demucs-isolated voice track when available.
+    const audible = clip.hasAudio && v > 0;
+    let volumeAttrs;
+    if (audioIn > 0 || audioOut > 0) {
       const pts = [];
       if (audioIn > 0) pts.push({ t: 0, v: 0 }, { t: round(audioIn, 3), v });
       else pts.push({ t: 0, v });
       if (audioOut > 0) pts.push({ t: round(dur - audioOut, 3), v }, { t: round(dur, 3), v: 0 });
       else pts.push({ t: round(dur, 3), v });
       const automation = JSON.stringify({ version: 1, lanes: [{ target: 'volume', points: pts }] });
-      audioAttrs = `data-has-audio="true" data-volume="1" data-automation='${automation}'`;
+      volumeAttrs = `data-volume="1" data-automation='${automation}'`;
     } else {
-      audioAttrs = `data-has-audio="true" data-volume="${round(v, 3)}"`;
+      volumeAttrs = `data-volume="${round(v, 3)}"`;
     }
+    const useVoice = audible && clip.voiceFile;
+    const videoAudioAttrs = audible && !useVoice ? `data-has-audio="true" ${volumeAttrs}` : 'muted';
 
-    // Framing: fill the frame when the aspect matches; otherwise blur-fill, crop or letterbox.
+    // Framing: fill the frame when the aspect matches; otherwise blur-fill, face-tracked crop,
+    // centre crop or letterbox.
     const mismatch = aspectMismatch(clip, W, H);
     const useBlur = mismatch && settings.framing === 'blur' && clip.blurFile;
-    const fit = !mismatch || settings.framing === 'crop' ? 'cover' : 'contain';
+    const fit = !mismatch || settings.framing === 'crop' || settings.framing === 'face' ? 'cover' : 'contain';
+    let position = '50% 50%';
+    let origin = '50% 50%';
+    if (mismatch && settings.framing === 'face') {
+      const face = faceCenter(clip.faces, s.srcStart, s.srcEnd);
+      if (face) ({ position, origin } = coverPositionFor(face, clip, W, H));
+    }
 
     const timing = `data-start="${s.tlStart}" data-duration="${round(dur, 3)}" data-media-start="${round(s.srcStart, 3)}"${
       s.speed !== 1 ? ` data-playback-rate="${s.speed}"` : ''
@@ -240,10 +276,13 @@ export function buildComposition({ plan, clips, transcripts, settings, gsapSrc =
     const bg = useBlur
       ? `\n      <video id="b${i}" class="bg" src="media/${escapeHtml(clip.blurFile)}" ${timing} data-track-index="${20 + (i % 2)}" muted playsinline></video>`
       : '';
+    const voice = useVoice
+      ? `\n      <audio id="a${i}" src="media/${escapeHtml(clip.voiceFile)}" ${timing} data-track-index="${30 + (i % 2)}" ${volumeAttrs}></audio>`
+      : '';
     return `    <div id="${id}" class="scene">${bg}
-      <div id="${id}i" class="inner">
-        <video id="v${i}" src="media/${escapeHtml(clip.file)}" ${timing} data-track-index="${i % 2}" playsinline ${audioAttrs} style="object-fit: ${fit}"></video>
-      </div>
+      <div id="${id}i" class="inner" style="transform-origin: ${origin}">
+        <video id="v${i}" src="media/${escapeHtml(clip.file)}" ${timing} data-track-index="${i % 2}" playsinline ${videoAudioAttrs} style="object-fit: ${fit}; object-position: ${position}"></video>
+      </div>${voice}
     </div>`;
   });
 
@@ -253,6 +292,7 @@ export function buildComposition({ plan, clips, transcripts, settings, gsapSrc =
     .map((o, i) => ({ ...o, i, end: Math.min(o.end, total) }))
     .filter((o) => o.start < total && o.end - o.start >= 0.2);
 
+  const logo = settings.logoFile ? `<img class="logo" src="media/${escapeHtml(settings.logoFile)}" alt="" />` : '';
   const overlayHtml = overlays.map((o) => {
     const id = `o${o.i}`;
     const dur = round(o.end - o.start, 3);
@@ -283,7 +323,7 @@ export function buildComposition({ plan, clips, transcripts, settings, gsapSrc =
     const sub = o.subtext ? `<div class="sub">${escapeHtml(o.subtext)}</div>` : '';
     const body =
       o.type === 'cta'
-        ? `<div id="${id}s" class="scrim"></div><div id="${id}i" class="ov-inner">${sub}<div id="${id}b" class="btn">${text}</div></div>`
+        ? `<div id="${id}s" class="scrim"></div><div id="${id}i" class="ov-inner">${logo}${sub}<div id="${id}b" class="btn">${text}</div></div>`
         : `<div id="${id}i" class="ov-inner"><div class="main">${text}</div>${sub}</div>`;
     return {
       layer: layer[o.type],
@@ -301,6 +341,11 @@ export function buildComposition({ plan, clips, transcripts, settings, gsapSrc =
     return `    <div id="${id}" class="clip cap cap-${settings.captions}" data-start="${c.start}" data-duration="${round(c.end - c.start, 3)}" data-track-index="9"><span id="${id}i">${escapeHtml(c.text)}</span></div>`;
   });
   const layerHtml = (n) => overlayHtml.filter((o) => o.layer === n).map((o) => o.html);
+  // Brand watermark: the logo in the top-right corner for the whole video.
+  const watermark =
+    settings.watermark && settings.logoFile
+      ? [`    <div id="wm" class="clip wm" data-start="0" data-duration="${total}" data-track-index="40"><img src="media/${escapeHtml(settings.logoFile)}" alt="" /></div>`]
+      : [];
 
   const html = `<!doctype html>
 <html lang="en">
@@ -350,6 +395,12 @@ export function buildComposition({ plan, clips, transcripts, settings, gsapSrc =
     .ov-cta .btn { display: inline-block; background: ${accent}; color: #fff; font-size: ${px(68)}; font-weight: 900; line-height: 1.1;
       padding: ${px(26)} ${px(56)}; border-radius: ${px(999)}; box-shadow: 0 ${px(14)} ${px(50)} ${accent}88; }
 
+    .ov-cta .logo { display: block; max-width: ${Math.round(W * 0.45)}px; max-height: ${Math.round(H * 0.2)}px; object-fit: contain;
+      filter: drop-shadow(0 ${px(8)} ${px(24)} rgba(0,0,0,.5)); }
+    .wm { position: absolute; left: 0; top: 0; width: 100%; height: 100%; pointer-events: none; }
+    .wm img { position: absolute; top: ${safeTop}px; right: ${px(44)}; max-height: ${px(84)}; max-width: ${px(220)}; object-fit: contain; opacity: .9;
+      filter: drop-shadow(0 ${px(3)} ${px(10)} rgba(0,0,0,.45)); }
+
     .cap { display: flex; justify-content: center; align-items: flex-end; padding-bottom: ${safeBottom}px; }
     .cap span { display: block; max-width: 84%; text-align: center; }
     .cap-clean span { font-size: ${px(46)}; font-weight: 600; line-height: 1.25; background: rgba(0,0,0,.62); padding: ${px(8)} ${px(20)}; border-radius: ${px(8)}; }
@@ -359,7 +410,7 @@ export function buildComposition({ plan, clips, transcripts, settings, gsapSrc =
 </head>
 <body>
   <div id="root" data-composition-id="main" data-start="0" data-width="${W}" data-height="${H}" data-duration="${total}" data-fps="${FPS}">
-${[...sceneHtml, ...layerHtml(0), ...captionHtml, ...layerHtml(1), ...layerHtml(2)].join('\n')}
+${[...sceneHtml, ...layerHtml(0), ...captionHtml, ...watermark, ...layerHtml(1), ...layerHtml(2)].join('\n')}
   </div>
   <script>
     const tl = gsap.timeline({ paused: true });
@@ -444,18 +495,27 @@ export async function writeProject({ projectDir, plan, clips, transcripts, setti
   for (const c of clips) {
     if (!used.has(c.id)) continue;
     await linkOrCopy(c.path, path.join(projectDir, 'media', c.file));
-    let blurFile = null;
+    const extra = { blurFile: null, voiceFile: null };
     if (c.blurPath) {
-      blurFile = `${c.id}-blur.mp4`;
-      await linkOrCopy(c.blurPath, path.join(projectDir, 'media', blurFile));
+      extra.blurFile = `${c.id}-blur.mp4`;
+      await linkOrCopy(c.blurPath, path.join(projectDir, 'media', extra.blurFile));
     }
-    projectClips.push({ ...c, blurFile });
+    if (c.voicePath) {
+      extra.voiceFile = `${c.id}-voice${path.extname(c.voicePath)}`;
+      await linkOrCopy(c.voicePath, path.join(projectDir, 'media', extra.voiceFile));
+    }
+    projectClips.push({ ...c, ...extra });
+  }
+  let logoFile = null;
+  if (settings.logoPath) {
+    logoFile = `logo${path.extname(settings.logoPath)}`;
+    await linkOrCopy(settings.logoPath, path.join(projectDir, 'media', logoFile));
   }
   let gsapSrc = 'gsap.min.js';
   if (await exists(GSAP_LOCAL)) await fs.copyFile(GSAP_LOCAL, path.join(projectDir, 'gsap.min.js'));
   else gsapSrc = GSAP_CDN;
 
-  const result = buildComposition({ plan, clips: projectClips, transcripts, settings, gsapSrc });
+  const result = buildComposition({ plan, clips: projectClips, transcripts, settings: { ...settings, logoFile }, gsapSrc });
   await fs.writeFile(path.join(projectDir, 'index.html'), result.html);
   return result;
 }

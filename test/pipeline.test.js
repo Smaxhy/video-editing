@@ -127,3 +127,44 @@ test('aspectMismatch', () => {
   assert.equal(aspectMismatch({ width: 1920, height: 1080 }, 1080, 1920), true);
   assert.equal(aspectMismatch({ width: 1080, height: 1350 }, 1080, 1350), false);
 });
+
+import { faceCenter, coverPositionFor } from '../src/renderer.js';
+
+test('faceCenter takes the median face inside a source range', () => {
+  const faces = [{ t: 0, x: 0.2, y: 0.4 }, { t: 1, x: 0.3, y: 0.5 }, { t: 2, x: 0.9, y: 0.5 }, { t: 9, x: 0.1, y: 0.1 }];
+  assert.deepEqual(faceCenter(faces, 0, 2), { x: 0.3, y: 0.5 });
+  assert.equal(faceCenter(faces, 4, 6), null);
+});
+
+test('coverPositionFor keeps the face centred and clamps at the frame edges', () => {
+  const clip = { width: 1920, height: 1080 };
+  // 16:9 → 9:16: scaled width 3413px, visible 1080px.
+  const mid = coverPositionFor({ x: 0.5, y: 0.5 }, clip, 1080, 1920);
+  assert.equal(mid.position, '50% 50%');
+  const left = coverPositionFor({ x: 0.3, y: 0.5 }, clip, 1080, 1920);
+  const [px] = left.position.split(' ').map(parseFloat);
+  // Face at 30% of 3413px = 1024px; window starts at 1024-540 = 484 of 2333 travel → ~20.7%.
+  assert.ok(Math.abs(px - 20.75) < 0.1, left.position);
+  assert.equal(left.origin, '50% 50%');
+  const edge = coverPositionFor({ x: 0.02, y: 0.5 }, clip, 1080, 1920);
+  assert.ok(edge.position.startsWith('0% '));
+  assert.ok(parseFloat(edge.origin) < 50); // face sits left of centre when clamped
+});
+
+test('buildComposition: face crop, isolated voice track and watermark', () => {
+  const plan = {
+    title: 'T',
+    scenes: [{ clip: 'clip1', start: 0, end: 4, transition: 'cut', transitionDuration: 0, speed: 1, volume: 1, effect: 'punch-in' }],
+    overlays: [],
+    audio: { fadeIn: 0, fadeOut: 0 },
+  };
+  const { html } = buildComposition({
+    plan,
+    clips: [{ ...clips[0], voiceFile: 'clip1-voice.m4a', faces: [{ t: 1, x: 0.3, y: 0.4 }] }],
+    transcripts: {},
+    settings: { width: 1080, height: 1920, captions: 'off', framing: 'face', logoFile: 'logo.png', watermark: true },
+  });
+  assert.match(html, /<video id="v0"[^>]* muted style="object-fit: cover; object-position: 20\.\d+% /);
+  assert.match(html, /<audio id="a0" src="media\/clip1-voice\.m4a" data-start="0" data-duration="4" data-media-start="0"[^>]*data-volume="1"/);
+  assert.match(html, /<div id="wm" class="clip wm" data-start="0" data-duration="4"[^>]*><img src="media\/logo\.png"/);
+});

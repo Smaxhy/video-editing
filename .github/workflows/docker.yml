@@ -59,7 +59,7 @@ jobs:
           curl -fsS -b cookies http://127.0.0.1:3000/api/health | python3 -m json.tool
 
       - name: Pipeline smoke test (inside the container)
-        run: docker exec clipforge clipforge-entrypoint node deploy/smoke-test.mjs
+        run: docker exec clipforge clipforge-entrypoint node deploy/smoke.mjs
 
       - name: Container logs
         if: always()

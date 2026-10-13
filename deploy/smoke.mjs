@@ -1,6 +1,6 @@
 // End-to-end smoke test for the Docker image (run by CI inside the container):
 // tool detection → transcription → footage analysis → HyperFrames render → compression.
-// Usage: clipforge-entrypoint node deploy/smoke-test.mjs
+// Usage: clipforge-entrypoint node deploy/smoke.mjs
 import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';

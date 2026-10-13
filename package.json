@@ -10,7 +10,7 @@
     "start:lan": "node src/server.js --lan",
     "dev": "node --watch src/server.js",
     "setup": "bash scripts/setup.sh",
-    "test": "node --test"
+    "test": "node --test test/*.test.js"
   },
   "engines": {
     "node": ">=22"

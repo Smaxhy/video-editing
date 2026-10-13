@@ -17,6 +17,8 @@ ClipForge server (your PC, a home server or a VPS)
 
 **No credits, no API keys.** Everything runs on a machine you control. Edit planning uses the Claude Code CLI in pipe mode (`claude -p`), which runs on your existing Claude subscription. HyperFrames telemetry is switched off.
 
+**Subscription, never Console credits.** Claude Code would bill your Console API account if an `ANTHROPIC_API_KEY` is set. ClipForge removes `ANTHROPIC_API_KEY` and `ANTHROPIC_AUTH_TOKEN` from the environment before every `claude -p` call, so planning always runs on your Pro/Max subscription: your `claude` login, or `CLAUDE_CODE_OAUTH_TOKEN` from `claude setup-token` on servers. Set `CLIPFORGE_ALLOW_API_KEY=1` only if you actually want API billing.
+
 ## Quick start (PC)
 
 ```bash
@@ -128,7 +130,8 @@ Every run leaves its working files in `workspace/{jobId}/`: `claude-prompt.md`, 
 | --- | --- | --- |
 | `CLIPFORGE_PASSWORD` | — | Required for `npm run start:lan` / Docker |
 | `PORT` / `HOST` | `3000` / `127.0.0.1` | `--lan` sets the host to `0.0.0.0` |
-| `CLAUDE_CODE_OAUTH_TOKEN` | — | For servers: from `claude setup-token` |
+| `CLAUDE_CODE_OAUTH_TOKEN` | — | For servers/Docker: from `claude setup-token` (subscription) |
+| `CLIPFORGE_ALLOW_API_KEY` | off | `1` lets `claude -p` use `ANTHROPIC_API_KEY` (Console billing) |
 | `CLAUDE_BIN` / `CLAUDE_MODEL` / `CLAUDE_TIMEOUT_MS` | `claude` / CLI default / `600000` | |
 | `WHISPER_BIN` / `WHISPER_DEVICE` / `WHISPER_LANGUAGE` | `whisper` / auto / auto-detect | |
 | `PYTHON_BIN` | `python3` | Interpreter used for the Python helpers |

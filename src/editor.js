@@ -179,7 +179,16 @@ async function callClaude(input, { cwd, signal }) {
 
   let res;
   try {
-    res = await run(CLAUDE_BIN, args, { cwd, input, timeoutMs: CLAUDE_TIMEOUT_MS, signal });
+    res = await run(CLAUDE_BIN, args, {
+      cwd,
+      input,
+      timeoutMs: CLAUDE_TIMEOUT_MS,
+      signal,
+      // Claude Code prefers an API key over the subscription login when one is set, which would
+      // bill Console credits. Strip it so planning always runs on the subscription.
+      // CLIPFORGE_ALLOW_API_KEY=1 opts back in.
+      unsetEnv: process.env.CLIPFORGE_ALLOW_API_KEY === '1' ? [] : ['ANTHROPIC_API_KEY', 'ANTHROPIC_AUTH_TOKEN'],
+    });
   } catch (err) {
     if (err.code === 'ENOENT') {
       throw new PipelineError('Claude Code CLI (`claude`) is not installed.', {

@@ -17,11 +17,13 @@ export class PipelineError extends Error {
  * onLine is called with every stdout/stderr line as it arrives (for progress parsing).
  * Rejects with { code: 'ENOENT' } when the binary is missing.
  */
-export function run(cmd, args, { cwd, input, env, onLine, timeoutMs, signal } = {}) {
+export function run(cmd, args, { cwd, input, env, unsetEnv = [], onLine, timeoutMs, signal } = {}) {
   return new Promise((resolve, reject) => {
+    const childEnv = { ...process.env, ...env };
+    for (const key of unsetEnv) delete childEnv[key];
     const child = spawn(cmd, args, {
       cwd,
-      env: { ...process.env, ...env },
+      env: childEnv,
       stdio: ['pipe', 'pipe', 'pipe'],
     });
 

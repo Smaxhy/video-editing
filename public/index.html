@@ -511,33 +511,77 @@ drop.addEventListener('drop', (e) => { e.preventDefault(); drop.classList.remove
 fileInput.addEventListener('change', () => { upload(fileInput.files); fileInput.value = ''; });
 
 // Videos go up in pieces: proxies in front of ClipForge (GitHub Codespaces, Cloudflare, nginx)
-// reject large single requests with HTTP 413, and a dropped piece on mobile data is simply retried.
-// Pieces start at 4 MB; if a proxy still answers 413, the piece size halves (down to 256 KB).
-let chunkSize = 4 * 1024 * 1024;
+// reject large single requests with HTTP 413. Several pieces fly at once (latency overlaps), a
+// dropped piece on mobile data is retried, and if a proxy still answers 413 the piece size halves.
+// The working piece size is remembered, so that discovery happens only once per device.
+const PARALLEL = 4;
 const MIN_CHUNK = 256 * 1024;
+let chunkSize = (() => {
+  try { return Number(localStorage.getItem('clipforge-chunk')) || 8 * 1024 * 1024; } catch { return 8 * 1024 * 1024; }
+})();
+const saveChunkSize = () => { try { localStorage.setItem('clipforge-chunk', String(chunkSize)); } catch {} };
 const newUploadId = () => (Date.now().toString(36) + Math.random().toString(36).slice(2, 10)).toLowerCase();
+const fmtEta = (s) => (s < 60 ? `${Math.max(1, Math.round(s))}s` : `${Math.round(s / 60)} min`);
 
-async function sendChunk(params, blob) {
+async function sendChunk(params, blob, signal) {
   let lastErr;
-  for (let attempt = 1; attempt <= 4; attempt++) {
+  for (let attempt = 1; attempt <= 5; attempt++) {
+    if (signal.aborted) throw Object.assign(new Error('aborted'), { aborted: true });
     try {
       const r = await fetch('/api/upload-chunk?' + params, {
         method: 'POST',
         headers: { 'Content-Type': 'application/octet-stream' },
         body: blob,
+        signal,
       });
       const data = await r.json().catch(() => ({}));
       if (r.ok) return data;
       const err = Object.assign(new Error(data.error || `Upload failed (HTTP ${r.status}).`), { status: r.status, data });
-      if (r.status < 500) throw err; // our answer — retrying won't change it
+      if (r.status < 500) throw err; // a real answer — retrying won't change it
       lastErr = err;
     } catch (err) {
+      if (err.name === 'AbortError' || err.aborted) throw Object.assign(new Error('aborted'), { aborted: true });
       if (err.status && err.status < 500) throw err;
       lastErr = err; // network hiccup or 5xx: wait and retry this piece
     }
-    await new Promise((res) => setTimeout(res, attempt * 1500));
+    await new Promise((res) => setTimeout(res, attempt * 1000));
   }
   throw lastErr;
+}
+
+// Upload one file; resolves with the server's final answer. Throws { status: 413 } to ask for smaller pieces.
+async function uploadFile(f, onBytes) {
+  const uploadId = newUploadId();
+  const size = chunkSize;
+  const pieces = Math.max(1, Math.ceil(f.size / size));
+  const ctl = new AbortController();
+  const params = (i) => {
+    const q = new URLSearchParams({ uploadId, index: String(i), total: String(pieces), chunkSize: String(size), name: f.name, type: f.type || '' });
+    if (state.jobId) q.set('jobId', state.jobId);
+    return q;
+  };
+  const piece = (i) => f.slice(i * size, (i + 1) * size);
+  // Piece 0 goes alone: it creates the upload (and the project, for a first file).
+  let final = await sendChunk(params(0), piece(0), ctl.signal);
+  if (final.jobId && state.jobId !== final.jobId) { state.jobId = final.jobId; subscribe(); remember(); }
+  onBytes(piece(0).size);
+  let next = 1;
+  const worker = async () => {
+    while (next < pieces) {
+      const i = next++;
+      const blob = piece(i);
+      const data = await sendChunk(params(i), blob, ctl.signal);
+      onBytes(blob.size);
+      if (data.done) final = data;
+    }
+  };
+  try {
+    await Promise.all(Array.from({ length: Math.min(PARALLEL, pieces - 1) }, worker));
+  } catch (err) {
+    ctl.abort(); // stop the other pieces of this file
+    throw err;
+  }
+  return final;
 }
 
 async function upload(files) {
@@ -548,27 +592,29 @@ async function upload(files) {
   const label = drop.querySelector('strong');
   const totalBytes = files.reduce((n, f) => n + f.size, 0) || 1;
   let sent = 0;
+  const started = Date.now();
   const skipped = [];
   bar.style.display = 'block';
+  // Keep a phone's screen on while uploading — a locked screen pauses the browser.
+  let wakeLock = null;
+  try { wakeLock = await navigator.wakeLock?.request('screen'); } catch {}
   try {
     for (const [k, f] of files.entries()) {
-      label.textContent = `Uploading ${k + 1}/${files.length}: ${f.name}`;
-      let data = null;
       let fileSent = 0;
+      const show = () => {
+        const secs = (Date.now() - started) / 1000;
+        const rate = sent / Math.max(secs, 0.5);
+        const eta = rate > 0 ? (totalBytes - sent) / rate : 0;
+        label.textContent = `Uploading ${files.length > 1 ? `${k + 1}/${files.length} · ` : ''}${Math.round((sent / totalBytes) * 100)}%` +
+          (secs > 2 ? ` · ${fmtSize(rate)}/s · ~${fmtEta(eta)} left` : '');
+        bar.firstElementChild.style.width = Math.min(100, (sent / totalBytes) * 100) + '%';
+      };
+      show();
+      let data = null;
       for (;;) {
-        const uploadId = newUploadId();
-        const pieces = Math.max(1, Math.ceil(f.size / chunkSize));
         try {
-          for (let i = 0; i < pieces; i++) {
-            const blob = f.slice(i * chunkSize, (i + 1) * chunkSize);
-            const q = new URLSearchParams({ uploadId, index: String(i), total: String(pieces), name: f.name, type: f.type || '' });
-            if (state.jobId) q.set('jobId', state.jobId);
-            data = await sendChunk(q, blob);
-            if (data.jobId && state.jobId !== data.jobId) { state.jobId = data.jobId; subscribe(); remember(); }
-            sent += blob.size;
-            fileSent += blob.size;
-            bar.firstElementChild.style.width = Math.min(100, (sent / totalBytes) * 100) + '%';
-          }
+          data = await uploadFile(f, (n) => { sent += n; fileSent += n; show(); });
+          saveChunkSize();
           break;
         } catch (err) {
           if (err.status === 413 && chunkSize / 2 >= MIN_CHUNK) {
@@ -590,6 +636,7 @@ async function upload(files) {
     }
   } finally {
     state.uploading = false;
+    try { await wakeLock?.release(); } catch {}
     bar.style.display = 'none';
     bar.firstElementChild.style.width = '0';
     renderClips();
@@ -597,6 +644,9 @@ async function upload(files) {
   }
   if (skipped.length) alert('Some files were not added:\n' + skipped.map((x) => `• ${x}`).join('\n'));
 }
+window.addEventListener('beforeunload', (e) => {
+  if (state.uploading) { e.preventDefault(); e.returnValue = ''; }
+});
 
 function renderClips() {
   const total = state.clips.reduce((s, c) => s + c.duration, 0);

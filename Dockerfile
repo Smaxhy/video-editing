@@ -60,6 +60,9 @@ COPY package.json package-lock.json ./
 RUN npm ci --omit=dev && npm cache clean --force
 COPY . .
 RUN install -m 0755 deploy/docker-entrypoint.sh /usr/local/bin/clipforge-entrypoint
+# Optional WhisperX (own venv, pinned older PyTorch): build with --build-arg WITH_WHISPERX=1
+ARG WITH_WHISPERX=0
+RUN if [ "$WITH_WHISPERX" = "1" ]; then bash deploy/install-whisperx.sh; fi
 
 # Model caches (Whisper, Hugging Face, Demucs, rembg) live under /root/.cache — mount it as a volume.
 ENV PORT=3000 \

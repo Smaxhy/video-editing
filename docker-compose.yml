@@ -2,7 +2,10 @@
 # .env holds: CLIPFORGE_PASSWORD, CLAUDE_CODE_OAUTH_TOKEN, and optionally CLIPFORGE_BIND / CLIPFORGE_PORT.
 services:
   clipforge:
-    build: .
+    build:
+      context: .
+      args:
+        WITH_WHISPERX: ${WITH_WHISPERX:-0}   # set WITH_WHISPERX=1 in .env to include WhisperX
     image: clipforge:latest
     container_name: clipforge
     restart: unless-stopped

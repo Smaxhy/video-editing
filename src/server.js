@@ -638,12 +638,14 @@ async function registerClip(job, f) {
   }
 }
 
-// POST /api/upload-chunk?uploadId=&index=&total=&name=[&jobId=] — raw body, one piece of a file.
-// The app uploads every video in small pieces so proxies that cap request size (GitHub Codespaces
-// port forwarding answers 413, as do Cloudflare and nginx defaults) never see one big request.
-// Pieces must arrive in order; the last one assembles the file and registers the clip.
+// POST /api/upload-chunk?uploadId=&index=&total=&chunkSize=&name=[&jobId=] — raw body, one piece of a file.
+// The app uploads every video in pieces so proxies that cap request size (GitHub Codespaces port
+// forwarding answers 413, as do Cloudflare and nginx defaults) never see one big request, and it
+// sends several pieces at once for speed. Piece 0 must come first (it creates the project/upload);
+// the rest may arrive in any order and are written at their offset. The last one to arrive
+// registers the clip.
 const CHUNK_LIMIT = 16 * 1024 * 1024;
-const partials = new Map(); // uploadId → { jobId, name, file, next, total, size, at }
+const partials = new Map(); // uploadId → { jobId, name, file, total, chunkSize, received:Set, size, at, done }
 app.post(
   '/api/upload-chunk',
   express.raw({ type: 'application/octet-stream', limit: CHUNK_LIMIT }),
@@ -652,14 +654,27 @@ app.post(
       const { uploadId } = req.query;
       const index = Number(req.query.index);
       const total = Number(req.query.total);
+      const chunkSize = Number(req.query.chunkSize || CHUNK_LIMIT);
       const name = String(req.query.name || '').slice(0, 200);
-      if (!isId(uploadId) || !name || !Number.isInteger(index) || !Number.isInteger(total) || total < 1 || index < 0 || index >= total) {
+      if (
+        !isId(uploadId) || !name || !Number.isInteger(index) || !Number.isInteger(total) || total < 1 ||
+        index < 0 || index >= total || !Number.isInteger(chunkSize) || chunkSize < 1024 || chunkSize > CHUNK_LIMIT
+      ) {
         return res.status(400).json({ error: 'Bad upload request.' });
       }
+      const chunk = req.body;
+      if (!Buffer.isBuffer(chunk) || chunk.length === 0) return res.status(400).json({ error: 'Empty upload piece.' });
+      if (chunk.length > chunkSize || (index < total - 1 && chunk.length !== chunkSize)) {
+        return res.status(400).json({ error: 'Upload piece has the wrong size.' });
+      }
+
       let p = partials.get(uploadId);
-      if (index === 0) {
+      if (index === 0 && !p) {
         if (!(String(req.query.type || '').startsWith('video/') || VIDEO_EXT.test(name))) {
           return res.status(400).json({ error: `"${name}" is not a video file.`, rejected: { name, error: 'not a video file' } });
+        }
+        if ((total - 1) * chunkSize >= MAX_UPLOAD_BYTES) {
+          return res.status(400).json({ error: `File too large (max ${Math.round(MAX_UPLOAD_BYTES / 1048576)} MB).` });
         }
         const existing = req.query.jobId ? await getJob(String(req.query.jobId)) : null;
         if (req.query.jobId && !existing) return res.status(404).json({ error: 'Unknown project.' });
@@ -667,28 +682,30 @@ app.post(
         const job = existing || newJob();
         const dir = path.join(DIRS.uploads, job.id, '.partial');
         await fs.mkdir(dir, { recursive: true });
-        if (p) await fs.rm(p.file, { force: true });
-        p = { jobId: job.id, name, file: path.join(dir, uploadId), next: 0, total, size: 0, at: Date.now() };
+        p = { jobId: job.id, name, file: path.join(dir, uploadId), total, chunkSize, received: new Set(), size: 0, at: Date.now(), done: false };
         partials.set(uploadId, p);
         await fs.writeFile(p.file, '');
       }
-      if (!p || p.next !== index || p.total !== total) {
-        return res.status(409).json({ error: 'Upload pieces arrived out of order — please upload the file again.' });
+      if (!p || p.total !== total || p.chunkSize !== chunkSize) {
+        return res.status(409).json({ error: 'Upload interrupted — please upload the file again.' });
       }
-      const chunk = req.body;
-      if (!Buffer.isBuffer(chunk) || chunk.length === 0) return res.status(400).json({ error: 'Empty upload piece.' });
-      if (p.size + chunk.length > MAX_UPLOAD_BYTES) {
-        partials.delete(uploadId);
-        await fs.rm(p.file, { force: true });
-        return res.status(400).json({ error: `File too large (max ${Math.round(MAX_UPLOAD_BYTES / 1048576)} MB).` });
-      }
-      await fs.appendFile(p.file, chunk);
-      p.size += chunk.length;
-      p.next += 1;
-      p.at = Date.now();
-      if (p.next < p.total) return res.json({ jobId: p.jobId, received: p.next });
 
-      // Last piece: move the assembled file into place and register it.
+      // Write the piece at its place in the file (a retried piece just overwrites itself).
+      const fh = await fs.open(p.file, 'r+');
+      try {
+        await fh.write(chunk, 0, chunk.length, index * chunkSize);
+      } finally {
+        await fh.close();
+      }
+      if (!p.received.has(index)) {
+        p.received.add(index);
+        p.size += chunk.length;
+      }
+      p.at = Date.now();
+      if (p.received.size < p.total || p.done) return res.json({ jobId: p.jobId, received: p.received.size });
+
+      // All pieces are in: move the assembled file into place and register it (exactly once).
+      p.done = true;
       partials.delete(uploadId);
       const job = await getJob(p.jobId);
       if (!job) return res.status(404).json({ error: 'The project was deleted during the upload.' });

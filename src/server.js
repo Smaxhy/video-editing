@@ -888,7 +888,7 @@ app.post('/api/edit', async (req, res) => {
   }
 
   const settings = {
-    whisperModel: WHISPER_MODELS.includes(s.whisperModel) ? s.whisperModel : 'medium',
+    whisperModel: WHISPER_MODELS.includes(s.whisperModel) ? s.whisperModel : 'small',
     engine: ENGINES.includes(s.engine) ? s.engine : 'auto',
     silence: s.silence !== false,
     shots: s.shots !== false,

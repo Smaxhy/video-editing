@@ -292,6 +292,8 @@
             <small>Measures silences from the audio (auto-editor, or FFmpeg's built-in detector)</small></span></label>
           <label class="tg" data-tool="sceneDetect"><input type="checkbox" id="shots" checked /><span>Shot detection
             <small>Tells Claude where the camera cuts are — better B-roll &amp; montage edits (PySceneDetect)</small></span></label>
+          <label class="tg"><input type="checkbox" id="cleanup" checked /><span>Delete clips after editing
+            <small>Frees the space your uploads use once the videos are made — the finished videos are kept</small></span></label>
           <label class="tg" data-tool="demucs"><input type="checkbox" id="cleanVoice" /><span>Clean voice
             <small>Strips music &amp; background noise from speech (Demucs — slow without a GPU)</small></span></label>
         </div>
@@ -433,6 +435,7 @@ function readSettings() {
     shots: $('#shots').checked,
     cleanVoice: $('#cleanVoice').checked,
     watermark: $('#watermark').checked,
+    cleanup: $('#cleanup').checked,
     useLogo: true,
   };
 }
@@ -446,7 +449,7 @@ function onOptionsChange() {
   updateGo();
   remember();
 }
-['#brand', '#cta', '#accent', '#whisperModel', '#engine', '#silence', '#shots', '#cleanVoice', '#watermark', '#logoCutout']
+['#brand', '#cta', '#accent', '#whisperModel', '#engine', '#silence', '#shots', '#cleanVoice', '#watermark', '#logoCutout', '#cleanup']
   .forEach((sel) => $(sel).addEventListener('input', remember));
 
 // ---- health ----------------------------------------------------------------
@@ -487,7 +490,7 @@ async function restore() {
   const s = saved.settings || {};
   for (const k of ['goal', 'formats', 'lengths', 'captions', 'framing', 'size']) if (s[k]) setSeg(k, s[k]);
   for (const k of ['brand', 'cta', 'accent', 'whisperModel', 'engine']) if (s[k]) $('#' + k).value = s[k];
-  for (const k of ['silence', 'shots', 'cleanVoice', 'watermark']) if (typeof s[k] === 'boolean') $('#' + k).checked = s[k];
+  for (const k of ['silence', 'shots', 'cleanVoice', 'watermark', 'cleanup']) if (typeof s[k] === 'boolean') $('#' + k).checked = s[k];
   if (!saved.jobId) return;
   const r = await fetch(`/api/clips/${saved.jobId}`);
   if (!r.ok) return;
@@ -644,7 +647,7 @@ function updateGo() {
   const ready = state.clips.length > 0 && $('#prompt').value.trim().length > 0 && n <= 8;
   $('#go').disabled = !ready || state.running;
   $('#go').textContent = n > 1 ? `Forge ${n} videos` : 'Forge video';
-  $('#rerender').classList.toggle('hidden', !state.shown || state.running);
+  $('#rerender').classList.toggle('hidden', !state.shown || state.running || !state.clips.length);
   $('#rerender').disabled = n > 8;
   $('#goHint').textContent = state.running ? 'Working — you can keep this tab open or come back later.'
     : n > 8 ? 'Pick at most 8 format × length combinations.'
@@ -722,7 +725,15 @@ async function showResult(r) {
         <a class="btn sm" href="${v.downloadUrl}" download title="Download">↓</a>
       </div>
     </div>`).join('');
-  $('#warns').innerHTML = (r.warnings || []).map((w) => `⚠ ${esc(w)}`).join('<br>');
+  $('#warns').innerHTML = [
+    ...(r.cleaned ? [`🧹 Deleted ${r.cleaned.clips} uploaded clip${r.cleaned.clips === 1 ? '' : 's'} to free ${fmtSize(r.cleaned.freed)} — upload again for a new edit.`] : []),
+    ...(r.warnings || []).map((w) => `⚠ ${esc(w)}`),
+  ].join('<br>');
+  if (r.cleaned && state.clips.length) {
+    // The server removed this project's clips; refresh the list (new uploads made since are kept).
+    const fresh = await fetch(`/api/clips/${state.jobId}`).then((x) => (x.ok ? x.json() : null)).catch(() => null);
+    if (fresh) { state.clips = fresh.clips; renderClips(); }
+  }
 
   $('#checkCard').classList.toggle('hidden', !r.checklist?.length);
   $('#checklist').innerHTML = (r.checklist || []).map((c) =>

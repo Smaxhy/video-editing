@@ -36,6 +36,19 @@ const VIDEO_EXT = /\.(mp4|mov|m4v|mkv|webm|avi|mts|m2ts|mpg|mpeg|3gp|wmv|flv)$/i
 
 for (const d of [DIRS.uploads, DIRS.workspace, DIRS.output]) fsSync.mkdirSync(d, { recursive: true });
 
+// Startup sweep: nothing is running yet, so half-finished uploads, interrupted optimizations,
+// compositions and raw renders left by a crash or restart are garbage.
+const subdirs = (dir) => fsSync.readdirSync(dir, { withFileTypes: true }).filter((e) => e.isDirectory()).map((e) => path.join(dir, e.name));
+const filesIn = (dir) => fsSync.readdirSync(dir, { withFileTypes: true }).filter((e) => e.isFile()).map((e) => path.join(dir, e.name));
+for (const up of subdirs(DIRS.uploads)) {
+  fsSync.rmSync(path.join(up, '.partial'), { recursive: true, force: true });
+  for (const f of filesIn(up)) if (f.endsWith('.optimizing.mp4')) fsSync.rmSync(f, { force: true });
+}
+for (const ws of subdirs(DIRS.workspace)) fsSync.rmSync(path.join(ws, 'project'), { recursive: true, force: true });
+for (const out of subdirs(DIRS.output)) {
+  for (const f of filesIn(out)) if (f.endsWith('.raw.mp4')) fsSync.rmSync(f, { force: true });
+}
+
 // ---------------------------------------------------------------------------
 // Job store. A job = one project (a set of uploaded clips); each POST /api/edit
 // runs the pipeline on it and replaces the previous outputs.
@@ -250,6 +263,11 @@ async function runPipeline(job, { prompt, clipIds, settings, reusePlan }) {
   if (reusePlan) {
     const saved = JSON.parse(await fs.readFile(planFile, 'utf8').catch(() => 'null'));
     const versions = saved?.versions?.filter((v) => settings.lengths.includes(v.id)) || [];
+    if (!clips.length || clips.some((c) => !c)) {
+      throw new PipelineError('The clips for this project were deleted after the last edit.', {
+        hint: 'Upload them again to re-render, or switch off "Delete clips after editing" next time.',
+      });
+    }
     const usable = versions.length === settings.lengths.length &&
       versions.every((v) => v.plan.scenes.every((sc) => clips.some((c) => c.id === sc.clip)));
     if (!usable) {
@@ -413,8 +431,34 @@ async function runPipeline(job, { prompt, clipIds, settings, reusePlan }) {
     totalSize: variants.reduce((s, x) => s + x.size, 0),
     settings,
   };
+  if (settings.cleanup) {
+    setStep(job, 'render', 'done', 'Deleting the uploaded clips to free up space…', 1);
+    result.cleaned = await cleanupProject(job);
+  }
   await fs.writeFile(resultFile(job.id), JSON.stringify(result, null, 2));
   return result;
+}
+
+/**
+ * After a successful edit: delete the uploaded clips and every working copy made from them
+ * (seek-safe copies, blur backgrounds, isolated voices, transcripts, analysis, compositions).
+ * Keeps the finished videos, the edit plan and the logo. Returns { freed, clips }.
+ */
+async function cleanupProject(job) {
+  const ws = path.join(DIRS.workspace, job.id);
+  const up = path.join(DIRS.uploads, job.id);
+  const before = (await dirSize(ws)) + (await dirSize(up));
+  const count = job.clips.length;
+  for (const c of job.clips) await fs.rm(c.path, { force: true });
+  for (const sub of ['thumbs', '.partial']) await fs.rm(path.join(up, sub), { recursive: true, force: true });
+  for (const sub of ['seekable', 'blur', 'voice', 'project', 'transcripts', 'analysis']) {
+    await fs.rm(path.join(ws, sub), { recursive: true, force: true });
+  }
+  await fs.rm(path.join(ws, 'transcripts.json'), { force: true });
+  job.clips = [];
+  await saveManifest(job);
+  const after = (await dirSize(ws)) + (await dirSize(up));
+  return { freed: Math.max(0, before - after), clips: count };
 }
 
 async function startPipeline(job, opts) {
@@ -818,7 +862,12 @@ app.post('/api/edit', async (req, res) => {
   const ids = Array.isArray(clipIds) && clipIds.length ? clipIds : job.clips.map((c) => c.id);
   const missing = ids.filter((id) => !job.clips.some((c) => c.id === id));
   if (missing.length) return res.status(400).json({ error: `Unknown clip(s): ${missing.join(', ')}` });
-  if (!ids.length) return res.status(400).json({ error: 'Upload at least one clip.' });
+  if (!ids.length) {
+    const why = job.result?.cleaned
+      ? 'The clips were deleted after the last edit to save space — upload them again to make a new edit.'
+      : 'Upload at least one clip.';
+    return res.status(400).json({ error: why });
+  }
 
   const settings = {
     whisperModel: WHISPER_MODELS.includes(s.whisperModel) ? s.whisperModel : 'medium',
@@ -828,6 +877,7 @@ app.post('/api/edit', async (req, res) => {
     cleanVoice: s.cleanVoice === true,
     useLogo: s.useLogo !== false,
     watermark: s.watermark === true,
+    cleanup: s.cleanup !== false,
     goal: GOALS.includes(s.goal) ? s.goal : 'social',
     formats: pick(Object.keys(FORMATS), s.formats, ['9x16']),
     lengths: pick(LENGTHS, s.lengths, ['30']),

@@ -1,0 +1,25 @@
+{
+  "name": "clipforge",
+  "version": "1.0.0",
+  "description": "Local AI video editor: Whisper transcribes, Claude Code plans the edit, HyperFrames renders the MP4.",
+  "type": "module",
+  "main": "src/server.js",
+  "private": true,
+  "scripts": {
+    "start": "node src/server.js",
+    "start:lan": "node src/server.js --lan",
+    "dev": "node --watch src/server.js",
+    "setup": "bash scripts/setup.sh",
+    "test": "node --test"
+  },
+  "engines": {
+    "node": ">=22"
+  },
+  "license": "MIT",
+  "dependencies": {
+    "express": "^4.22.3",
+    "gsap": "^3.15.0",
+    "hyperframes": "^0.8.154",
+    "multer": "^2.4.0"
+  }
+}

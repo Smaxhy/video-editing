@@ -1,0 +1,772 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>ClipForge</title>
+<link rel="manifest" href="/manifest.webmanifest" />
+<meta name="theme-color" content="#0a0b0f" />
+<meta name="apple-mobile-web-app-capable" content="yes" />
+<meta name="mobile-web-app-capable" content="yes" />
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+<meta name="apple-mobile-web-app-title" content="ClipForge" />
+<link rel="apple-touch-icon" href="/icons/apple-touch-icon.png" />
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><rect width='32' height='32' rx='8' fill='%237c5cff'/><path d='M12 9l12 7-12 7z' fill='white'/></svg>" />
+<style>
+  :root {
+    --bg: #0a0b0f;
+    --panel: #12141a;
+    --panel-2: #191c24;
+    --line: #23262f;
+    --text: #eceef3;
+    --muted: #8a90a0;
+    --accent: #7c5cff;
+    --ok: #34d399;
+    --warn: #fbbf24;
+    --err: #f87171;
+  }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; background: var(--bg); color: var(--text);
+    font: 14px/1.5 system-ui, -apple-system, "Segoe UI", Roboto, Helvetica, Arial, sans-serif; -webkit-font-smoothing: antialiased; }
+  button, select, textarea, input { font: inherit; color: inherit; }
+  a { color: inherit; }
+
+  header { position: sticky; top: 0; z-index: 10; display: flex; align-items: center; gap: 12px; padding: 14px 24px;
+    background: rgba(10, 11, 15, .85); backdrop-filter: blur(10px); border-bottom: 1px solid var(--line); }
+  .logo { width: 30px; height: 30px; border-radius: 8px; background: linear-gradient(135deg, var(--accent), #4f8bff);
+    display: grid; place-items: center; }
+  .logo svg { width: 13px; height: 13px; }
+  header h1 { font-size: 16px; margin: 0; letter-spacing: -0.01em; }
+  header .tag { color: var(--muted); font-size: 12px; }
+  .health { margin-left: auto; display: flex; gap: 6px; flex-wrap: wrap; justify-content: flex-end; }
+  .pill { font-size: 11px; padding: 2px 9px; border-radius: 999px; border: 1px solid var(--line); color: var(--muted); white-space: nowrap; }
+  .pill::before { content: "●"; margin-right: 5px; color: var(--ok); }
+  .pill.bad { color: var(--err); border-color: rgba(248, 113, 113, .35); }
+  .pill.bad::before { color: var(--err); }
+  @media (max-width: 700px) {
+    header { position: static; padding: 12px 16px; }
+    header .tag { display: none; }
+    .pill { font-size: 0; padding: 0; border: 0; }
+    .pill::before { font-size: 12px; margin: 0; }
+  }
+
+  main { max-width: 1320px; margin: 0 auto; padding: 24px; display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 24px; align-items: start; }
+  @media (max-width: 980px) { main { grid-template-columns: 1fr; padding: 16px; } }
+  .col { display: grid; gap: 16px; min-width: 0; }
+  .right { position: sticky; top: 76px; }
+  @media (max-width: 980px) { .right { position: static; } }
+
+  .card { background: var(--panel); border: 1px solid var(--line); border-radius: 14px; padding: 18px; }
+  .card > h2 { font-size: 12px; text-transform: uppercase; letter-spacing: .08em; color: var(--muted); margin: 0 0 12px; font-weight: 600;
+    display: flex; align-items: center; gap: 8px; }
+  .card > h2 .right-meta { margin-left: auto; text-transform: none; letter-spacing: 0; font-weight: 500; }
+
+  /* Clips */
+  .drop { border: 1.5px dashed var(--line); border-radius: 12px; padding: 26px 14px; text-align: center; cursor: pointer; transition: .15s; }
+  .drop:hover, .drop.over { border-color: var(--accent); background: rgba(124, 92, 255, .06); }
+  .drop.compact { padding: 12px; }
+  .drop strong { display: block; font-size: 14px; }
+  .drop span { color: var(--muted); font-size: 12px; }
+  .upbar { height: 3px; background: var(--panel-2); border-radius: 3px; overflow: hidden; margin-top: 10px; display: none; }
+  .upbar > div { height: 100%; width: 0; background: var(--accent); transition: width .2s; }
+  .clips { display: grid; grid-template-columns: repeat(auto-fill, minmax(140px, 1fr)); gap: 10px; margin-top: 12px; }
+  .clip { background: var(--panel-2); border: 1px solid var(--line); border-radius: 10px; overflow: hidden; position: relative; }
+  .clip .thumb { aspect-ratio: 16 / 9; background: #000 center / cover no-repeat; display: flex; align-items: flex-end; justify-content: flex-end; }
+  .clip .dur { margin: 5px; font-size: 10px; background: rgba(0,0,0,.75); padding: 0 5px; border-radius: 4px; }
+  .clip .meta { padding: 6px 9px 8px; font-size: 11px; color: var(--muted); }
+  .clip .name { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; font-weight: 600; font-size: 12px; color: var(--text); }
+  .clip .id { position: absolute; top: 5px; left: 5px; font-size: 10px; background: var(--accent); padding: 0 6px; border-radius: 4px; font-weight: 700; }
+  .clip .rm { position: absolute; top: 5px; right: 5px; width: 22px; height: 22px; border-radius: 50%; border: 0; cursor: pointer;
+    background: rgba(0,0,0,.7); color: #fff; line-height: 1; opacity: 0; transition: opacity .15s; }
+  .clip:hover .rm { opacity: 1; }
+
+  /* Prompt */
+  textarea { width: 100%; min-height: 130px; resize: vertical; background: var(--panel-2); border: 1px solid var(--line);
+    border-radius: 10px; padding: 12px 14px; outline: none; line-height: 1.55; }
+  textarea:focus, input:focus, select:focus { border-color: var(--accent); outline: none; }
+  .chips { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 10px; }
+  .chip { font-size: 12px; padding: 4px 10px; border-radius: 999px; background: transparent; border: 1px solid var(--line); cursor: pointer; color: var(--muted); }
+  .chip:hover { color: var(--text); border-color: var(--accent); }
+
+  /* Output options */
+  .opt { display: grid; grid-template-columns: 110px 1fr; gap: 10px; align-items: center; padding: 9px 0; border-top: 1px solid var(--line); }
+  .opt:first-of-type { border-top: 0; padding-top: 0; }
+  .opt > label { color: var(--muted); font-size: 12px; }
+  @media (max-width: 520px) { .opt { grid-template-columns: 1fr; gap: 6px; } }
+  .seg { display: flex; flex-wrap: wrap; gap: 6px; }
+  .seg button { border: 1px solid var(--line); background: var(--panel-2); border-radius: 8px; padding: 6px 11px; cursor: pointer;
+    font-size: 12.5px; color: var(--muted); display: inline-flex; align-items: center; gap: 7px; transition: .12s; }
+  .seg button:hover { color: var(--text); }
+  .seg button.on { border-color: var(--accent); color: var(--text); background: rgba(124, 92, 255, .14); }
+  .seg button small { color: var(--muted); font-size: 11px; }
+  .ar { display: inline-block; border: 1.5px solid currentColor; border-radius: 2px; }
+  .fields { display: grid; grid-template-columns: 1fr 1fr 44px; gap: 8px; }
+  .fields input[type=text], select { width: 100%; background: var(--panel-2); border: 1px solid var(--line); border-radius: 8px; padding: 7px 10px; }
+  input[type=color] { width: 44px; height: 34px; padding: 2px; border: 1px solid var(--line); border-radius: 8px; background: var(--panel-2); cursor: pointer; }
+  details.adv summary { cursor: pointer; color: var(--muted); font-size: 12px; margin-top: 10px; }
+  details.adv .opt { border-top: 0; }
+
+  .go { display: flex; gap: 10px; align-items: center; }
+  .btn { border: 0; border-radius: 10px; padding: 12px 22px; font-weight: 700; cursor: pointer; text-decoration: none; display: inline-flex; align-items: center; gap: 8px;
+    background: linear-gradient(135deg, var(--accent), #5b7cff); color: #fff; transition: transform .1s, opacity .15s; }
+  .btn:hover { transform: translateY(-1px); }
+  .btn:disabled { opacity: .4; cursor: not-allowed; transform: none; }
+  .btn.ghost { background: var(--panel-2); border: 1px solid var(--line); font-weight: 600; }
+  .btn.sm { padding: 7px 12px; font-size: 12px; border-radius: 8px; }
+  .btn.danger { background: transparent; border: 1px solid rgba(248, 113, 113, .4); color: var(--err); }
+  .go .hint { color: var(--muted); font-size: 12px; }
+
+  /* Progress */
+  .empty { color: var(--muted); text-align: center; padding: 50px 20px; }
+  .empty .big { font-size: 34px; margin-bottom: 6px; opacity: .5; }
+  .steps { display: grid; gap: 10px; }
+  .step { display: flex; gap: 10px; align-items: flex-start; }
+  .step .dot { width: 22px; height: 22px; border-radius: 50%; border: 2px solid var(--line); flex: none; display: grid; place-items: center; font-size: 11px; }
+  .step.active .dot { border-color: var(--accent); border-top-color: transparent; animation: spin .9s linear infinite; }
+  .step.done .dot { border-color: var(--ok); background: var(--ok); color: #062a1c; }
+  .step.done .dot::after { content: "✓"; font-weight: 800; }
+  .step.error .dot { border-color: var(--err); background: var(--err); color: #2a0606; }
+  .step.error .dot::after { content: "!"; font-weight: 800; }
+  .step .t { font-weight: 600; font-size: 13px; }
+  .step .m { color: var(--muted); font-size: 12px; }
+  .step.pending .t { color: var(--muted); }
+  @keyframes spin { to { transform: rotate(360deg); } }
+  .bar { height: 5px; background: var(--panel-2); border-radius: 5px; overflow: hidden; margin-top: 14px; }
+  .bar > div { height: 100%; width: 0; background: linear-gradient(90deg, var(--accent), #5b7cff); transition: width .3s; }
+  .error { background: rgba(248, 113, 113, .07); border: 1px solid rgba(248, 113, 113, .3); border-radius: 10px; padding: 12px; margin-top: 14px; }
+  .error .em { color: var(--err); font-weight: 700; }
+  .error .eh { margin-top: 4px; }
+  pre { background: #07080b; border: 1px solid var(--line); border-radius: 8px; padding: 10px; margin: 8px 0 0;
+    overflow: auto; max-height: 240px; font-size: 11px; white-space: pre-wrap; }
+
+  /* Results */
+  .variants { display: grid; grid-template-columns: repeat(auto-fill, minmax(180px, 1fr)); gap: 12px; }
+  .variant { background: var(--panel-2); border: 1px solid var(--line); border-radius: 12px; overflow: hidden; display: flex; flex-direction: column; }
+  .variant .frame { background: #000; display: grid; place-items: center; max-height: 420px; }
+  .variant video { width: 100%; display: block; max-height: 420px; background: #000; }
+  .variant .vm { padding: 9px 10px; display: flex; align-items: center; gap: 8px; }
+  .variant .vl { font-weight: 700; font-size: 12.5px; }
+  .variant .vs { color: var(--muted); font-size: 11px; }
+  .variant .vm .btn { margin-left: auto; }
+  .checklist { list-style: none; padding: 0; margin: 0; display: grid; gap: 8px; }
+  .checklist li { display: grid; grid-template-columns: 18px 1fr; gap: 8px; font-size: 13px; }
+  .checklist li::before { content: "✓"; color: var(--ok); font-weight: 800; }
+  .checklist .rq { font-weight: 600; }
+  .checklist .dn { color: var(--muted); font-size: 12px; }
+  .warns { color: var(--warn); font-size: 12px; margin-top: 10px; }
+  .storage { display: flex; align-items: center; gap: 10px; color: var(--muted); font-size: 12px; }
+  .storage .btn { margin-left: auto; }
+  .toggles { display: grid; gap: 8px; }
+  .tg { display: flex; align-items: flex-start; gap: 10px; cursor: pointer; font-size: 13px; }
+  .tg input { margin-top: 3px; accent-color: var(--accent); }
+  .tg small { display: block; color: var(--muted); font-size: 11.5px; }
+  .tg.off { opacity: .5; cursor: not-allowed; }
+  .tg .miss { color: var(--warn); }
+  .logo-row { display: flex; align-items: center; gap: 10px; margin-top: 8px; flex-wrap: wrap; font-size: 12px; color: var(--muted); }
+  .logo-prev { width: 44px; height: 44px; border-radius: 8px; border: 1px solid var(--line); object-fit: contain;
+    background: repeating-conic-gradient(#20232c 0% 25%, #15171d 0% 50%) 50% / 12px 12px; }
+  .tools { list-style: none; margin: 8px 0 0; padding: 0; display: grid; gap: 6px; font-size: 12.5px; }
+  .tools li { display: grid; grid-template-columns: 16px 1fr; gap: 8px; }
+  .tools a { color: var(--text); font-weight: 600; text-decoration: none; border-bottom: 1px dotted var(--muted); }
+  .tools .d { color: var(--muted); }
+  .login { position: fixed; inset: 0; z-index: 50; background: rgba(5,6,9,.92); display: grid; place-items: center; padding: 20px; }
+  .login form { background: var(--panel); border: 1px solid var(--line); border-radius: 16px; padding: 24px; width: min(360px, 100%); display: grid; gap: 12px; }
+  .login input { background: var(--panel-2); border: 1px solid var(--line); border-radius: 10px; padding: 11px 12px; }
+  .login .le { color: var(--err); font-size: 12px; min-height: 16px; }
+  .hidden { display: none !important; }
+</style>
+</head>
+<body>
+<header>
+  <div class="logo"><svg viewBox="0 0 24 24"><path d="M7 4l13 8-13 8z" fill="white"/></svg></div>
+  <h1>ClipForge</h1>
+  <span class="tag">local · Whisper → Claude → HyperFrames</span>
+  <div class="health" id="health"></div>
+</header>
+
+<main>
+  <!-- ======================= LEFT: build ======================= -->
+  <div class="col">
+    <section class="card">
+      <h2>Clips <span class="right-meta" id="clipMeta"></span></h2>
+      <div class="drop" id="drop">
+        <strong>Drop video clips here</strong>
+        <span>or click to browse — MP4, MOV, MKV, WebM…</span>
+        <input type="file" id="file" accept="video/*" multiple hidden />
+      </div>
+      <div class="upbar" id="upbar"><div></div></div>
+      <div class="clips" id="clips"></div>
+    </section>
+
+    <section class="card">
+      <h2>What should Claude do?</h2>
+      <textarea id="prompt" placeholder="Describe the edit exactly how you want it — Claude follows your words literally.&#10;&#10;e.g. Open on the line about saving 3 hours a week. Cut all pauses. Add a lower-third 'Sam Lee — Founder'. End with 'Try it free'."></textarea>
+      <div class="chips" id="chips">
+        <button class="chip">Hook in the first second, cut every pause and filler word</button>
+        <button class="chip">Keep only the strongest moments, fast pacing</button>
+        <button class="chip">Add a lower-third introducing the speaker</button>
+        <button class="chip">Structure it as an ad: hook → problem → solution → call to action</button>
+        <button class="chip">Keep the clips in order and join them with crossfades</button>
+      </div>
+    </section>
+
+    <section class="card">
+      <h2>Output <span class="right-meta" id="outMeta"></span></h2>
+
+      <div class="opt"><label>Made for</label>
+        <div class="seg" data-name="goal" data-single>
+          <button data-v="social" class="on">Social media</button>
+          <button data-v="ad">Advertisement</button>
+          <button data-v="both">Both</button>
+        </div>
+      </div>
+
+      <div class="opt"><label>Formats</label>
+        <div class="seg" data-name="formats">
+          <button data-v="9x16" class="on" title="TikTok · Reels · Shorts · Stories"><i class="ar" style="width:9px;height:16px"></i>9:16</button>
+          <button data-v="4x5" title="Instagram & Facebook feed ads"><i class="ar" style="width:11px;height:14px"></i>4:5</button>
+          <button data-v="1x1" title="Feeds · LinkedIn · X"><i class="ar" style="width:13px;height:13px"></i>1:1</button>
+          <button data-v="16x9" title="YouTube · web · pre-roll"><i class="ar" style="width:18px;height:10px"></i>16:9</button>
+        </div>
+      </div>
+
+      <div class="opt"><label>Lengths</label>
+        <div class="seg" data-name="lengths">
+          <button data-v="15">15s</button>
+          <button data-v="30" class="on">30s</button>
+          <button data-v="60">60s</button>
+          <button data-v="full">Full</button>
+        </div>
+      </div>
+
+      <div class="opt"><label>Captions</label>
+        <div class="seg" data-name="captions" data-single>
+          <button data-v="bold" class="on">Bold</button>
+          <button data-v="clean">Clean</button>
+          <button data-v="off">Off</button>
+        </div>
+      </div>
+
+      <div class="opt"><label>Framing</label>
+        <div class="seg" data-name="framing" data-single>
+          <button data-v="blur" class="on" title="Fit the shot and fill the edges with a blurred copy">Blur fill</button>
+          <button data-v="face" title="Crop to fill, keeping the speaker's face centred (OpenCV)">Face crop</button>
+          <button data-v="crop" title="Fill the frame, cropping the edges">Crop to fill</button>
+          <button data-v="fit" title="Fit the whole shot with black bars">Fit</button>
+        </div>
+      </div>
+
+      <div class="opt"><label>File size</label>
+        <div class="seg" data-name="size" data-single>
+          <button data-v="small">Small <small>~2 MB / 30s</small></button>
+          <button data-v="balanced" class="on">Balanced</button>
+          <button data-v="max">Max quality</button>
+        </div>
+      </div>
+
+      <div class="opt" id="brandRow"><label>Brand</label>
+        <div class="fields">
+          <input type="text" id="brand" placeholder="Brand / product (optional)" maxlength="60" />
+          <input type="text" id="cta" placeholder="Call to action, e.g. Shop now" maxlength="60" />
+          <input type="color" id="accent" value="#7c5cff" title="Accent color" />
+        </div>
+      </div>
+      <div class="opt"><label>Logo</label>
+        <div>
+          <div class="logo-row">
+            <img id="logoPrev" class="logo-prev hidden" alt="" />
+            <button class="btn sm ghost" id="logoBtn" type="button">Upload logo / product image</button>
+            <label class="tg" style="align-items:center"><input type="checkbox" id="logoCutout" checked /> Remove background <span id="rembgMiss" class="miss hidden">(rembg not installed)</span></label>
+            <button class="btn sm ghost hidden" id="logoRm" type="button">Remove</button>
+            <input type="file" id="logoFile" accept="image/png,image/jpeg,image/webp" hidden />
+          </div>
+          <div class="logo-row"><label class="tg" style="align-items:center"><input type="checkbox" id="watermark" /> Show logo as a corner watermark</label></div>
+          <div class="logo-row" id="logoNote"></div>
+        </div>
+      </div>
+
+      <div class="opt"><label>Smart tools</label>
+        <div class="toggles">
+          <label class="tg" data-tool="autoEditor"><input type="checkbox" id="silence" checked /><span>Precise dead-air removal
+            <small>Measures silences from the audio (auto-editor, or FFmpeg's built-in detector)</small></span></label>
+          <label class="tg" data-tool="sceneDetect"><input type="checkbox" id="shots" checked /><span>Shot detection
+            <small>Tells Claude where the camera cuts are — better B-roll &amp; montage edits (PySceneDetect)</small></span></label>
+          <label class="tg" data-tool="demucs"><input type="checkbox" id="cleanVoice" /><span>Clean voice
+            <small>Strips music &amp; background noise from speech (Demucs — slow without a GPU)</small></span></label>
+        </div>
+      </div>
+
+      <details class="adv">
+        <summary>Advanced</summary>
+        <div class="opt"><label>Transcription</label>
+          <select id="engine">
+            <option value="auto" selected>Auto — fastest installed</option>
+            <option value="faster-whisper">faster-whisper</option>
+            <option value="whisperx">WhisperX — tightest word timing</option>
+            <option value="whisper">OpenAI Whisper</option>
+          </select>
+        </div>
+        <div class="opt"><label>Whisper model</label>
+          <select id="whisperModel">
+            <option value="tiny">tiny — fastest</option>
+            <option value="base">base</option>
+            <option value="small">small</option>
+            <option value="medium" selected>medium — balanced</option>
+            <option value="large">large — most accurate</option>
+            <option value="turbo">turbo — fast &amp; accurate</option>
+          </select>
+        </div>
+      </details>
+    </section>
+
+    <div class="go">
+      <button class="btn" id="go" disabled>Forge videos</button>
+      <button class="btn ghost hidden" id="rerender" title="Apply new formats, captions, framing, size or colors using the saved plan — no Claude usage">Re-render only</button>
+      <button class="btn ghost hidden" id="cancel">Cancel</button>
+      <span class="hint" id="goHint">Upload a clip and describe the edit.</span>
+    </div>
+  </div>
+
+  <!-- ======================= RIGHT: results ======================= -->
+  <div class="col right">
+    <section class="card" id="idleCard">
+      <div class="empty"><div class="big">▶</div>Your videos show up here.<br />Everything runs on your own computer or server — no credits, no API keys.</div>
+    </section>
+
+    <section class="card hidden" id="progressCard">
+      <h2>Progress</h2>
+      <div class="steps">
+        <div class="step pending" data-step="transcribe"><div class="dot"></div><div><div class="t">Transcribe (Whisper)</div><div class="m"></div></div></div>
+        <div class="step pending" data-step="plan"><div class="dot"></div><div><div class="t">Plan the edit (Claude)</div><div class="m"></div></div></div>
+        <div class="step pending" data-step="render"><div class="dot"></div><div><div class="t">Render &amp; compress (HyperFrames)</div><div class="m"></div></div></div>
+      </div>
+      <div class="bar"><div id="bar"></div></div>
+      <div class="error hidden" id="error">
+        <div class="em" id="errMsg"></div>
+        <div class="eh" id="errHint"></div>
+        <details id="errDetailWrap"><summary>Technical details</summary><pre id="errDetail"></pre></details>
+      </div>
+    </section>
+
+    <section class="card hidden" id="resultCard">
+      <h2><span id="resultTitle">Videos</span> <span class="right-meta" id="resultMeta"></span></h2>
+      <div class="variants" id="variants"></div>
+      <div class="warns" id="warns"></div>
+    </section>
+
+    <section class="card hidden" id="checkCard">
+      <h2>What Claude did</h2>
+      <ul class="checklist" id="checklist"></ul>
+      <details class="adv"><summary>Full edit plan (JSON)</summary><pre id="planJson"></pre></details>
+    </section>
+
+    <section class="card" id="toolsCard">
+      <details class="adv" style="margin:0"><summary>Open-source tools ClipForge uses</summary>
+        <ul class="tools" id="tools"></ul>
+      </details>
+    </section>
+
+    <section class="card hidden" id="storageCard">
+      <div class="storage">
+        <span id="storageText"></span>
+        <button class="btn sm danger" id="deleteProject">Delete project files</button>
+      </div>
+    </section>
+  </div>
+</main>
+
+<div class="login hidden" id="login">
+  <form id="loginForm">
+    <div style="display:flex;align-items:center;gap:10px"><div class="logo"><svg viewBox="0 0 24 24"><path d="M7 4l13 8-13 8z" fill="white"/></svg></div><strong>ClipForge</strong></div>
+    <input type="password" id="pw" placeholder="Password" autocomplete="current-password" required />
+    <div class="le" id="loginErr"></div>
+    <button class="btn" type="submit">Log in</button>
+  </form>
+</div>
+
+<script>
+const $ = (s) => document.querySelector(s);
+const state = { jobId: null, clips: [], es: null, running: false, shown: null };
+
+const fmtTime = (s) => { s = Math.max(0, Number(s) || 0); return `${Math.floor(s / 60)}:${String(Math.round(s % 60)).padStart(2, '0')}`; };
+const fmtSize = (b) => (b >= 1e9 ? (b / 1e9).toFixed(2) + ' GB' : b >= 1e6 ? (b / 1e6).toFixed(1) + ' MB' : Math.max(1, Math.round(b / 1e3)) + ' KB');
+const esc = (s) => String(s ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+const FORMAT_LABEL = { '9x16': '9:16', '4x5': '4:5', '1x1': '1:1', '16x9': '16:9' };
+
+// ---- segmented toggles -----------------------------------------------------
+document.querySelectorAll('.seg').forEach((seg) => {
+  seg.addEventListener('click', (e) => {
+    const b = e.target.closest('button');
+    if (!b) return;
+    if (seg.hasAttribute('data-single')) {
+      seg.querySelectorAll('button').forEach((x) => x.classList.toggle('on', x === b));
+    } else {
+      b.classList.toggle('on');
+      if (!seg.querySelector('.on')) b.classList.add('on'); // keep at least one
+    }
+    onOptionsChange();
+  });
+});
+const segValue = (name) => [...document.querySelectorAll(`.seg[data-name="${name}"] .on`)].map((b) => b.dataset.v);
+const setSeg = (name, values) => {
+  const vals = [].concat(values);
+  const btns = document.querySelectorAll(`.seg[data-name="${name}"] button`);
+  if (![...btns].some((b) => vals.includes(b.dataset.v))) return;
+  btns.forEach((b) => b.classList.toggle('on', vals.includes(b.dataset.v)));
+};
+
+function readSettings() {
+  return {
+    goal: segValue('goal')[0],
+    formats: segValue('formats'),
+    lengths: segValue('lengths'),
+    captions: segValue('captions')[0],
+    framing: segValue('framing')[0],
+    size: segValue('size')[0],
+    brand: $('#brand').value.trim(),
+    cta: $('#cta').value.trim(),
+    accent: $('#accent').value,
+    whisperModel: $('#whisperModel').value,
+    engine: $('#engine').value,
+    silence: $('#silence').checked,
+    shots: $('#shots').checked,
+    cleanVoice: $('#cleanVoice').checked,
+    watermark: $('#watermark').checked,
+    useLogo: true,
+  };
+}
+
+function onOptionsChange() {
+  const s = readSettings();
+  const n = s.formats.length * s.lengths.length;
+  $('#outMeta').textContent = `${n} video${n > 1 ? 's' : ''}`;
+  $('#outMeta').style.color = n > 8 ? 'var(--err)' : '';
+  $('#cta').placeholder = s.goal === 'social' ? 'Call to action (optional)' : 'Call to action, e.g. Shop now';
+  updateGo();
+  remember();
+}
+['#brand', '#cta', '#accent', '#whisperModel', '#engine', '#silence', '#shots', '#cleanVoice', '#watermark', '#logoCutout']
+  .forEach((sel) => $(sel).addEventListener('input', remember));
+
+// ---- health ----------------------------------------------------------------
+async function loadHealth() {
+  try {
+    const h = await (await fetch('/api/health')).json();
+    const tools = [['ffmpeg', 'FFmpeg'], ['whisper', 'Whisper'], ['claude', 'Claude'], ['hyperframes', 'HyperFrames']];
+    $('#health').innerHTML = tools
+      .map(([k, label]) => `<span class="pill ${h[k] ? '' : 'bad'}" title="${h[k] ? 'ready' : 'not found — run scripts/setup.sh'}">${label}</span>`)
+      .join('');
+    const t = h.tools || {};
+    $('#tools').innerHTML = Object.values(t).map((x) =>
+      `<li><span style="color:${x.installed ? 'var(--ok)' : 'var(--muted)'}">${x.installed ? '●' : '○'}</span>
+       <span><a href="${x.url}" target="_blank" rel="noopener">${esc(x.name)}</a>${x.installed ? '' : ' <span class="d">(not installed)</span>'}<br><span class="d">${esc(x.does)}</span></span></li>`).join('');
+    for (const el of document.querySelectorAll('.tg[data-tool]')) {
+      const tool = t[el.dataset.tool];
+      if (!tool || tool.installed) continue;
+      const small = el.querySelector('small');
+      if (el.dataset.tool === 'autoEditor') { small.textContent += ' — auto-editor not installed, using FFmpeg'; continue; }
+      el.classList.add('off');
+      el.querySelector('input').checked = false;
+      el.querySelector('input').disabled = true;
+      small.innerHTML += ` — <span class="miss">not installed</span>`;
+    }
+    $('#rembgMiss').classList.toggle('hidden', Boolean(t.rembg?.installed));
+  } catch { /* server down — upload will surface it */ }
+}
+
+// ---- persistence (resume a project after reload) ---------------------------
+function remember() {
+  try { localStorage.setItem('clipforge', JSON.stringify({ jobId: state.jobId, prompt: $('#prompt').value, settings: readSettings() })); } catch {}
+}
+async function restore() {
+  let saved;
+  try { saved = JSON.parse(localStorage.getItem('clipforge') || 'null'); } catch {}
+  if (!saved) return;
+  if (saved.prompt) $('#prompt').value = saved.prompt;
+  const s = saved.settings || {};
+  for (const k of ['goal', 'formats', 'lengths', 'captions', 'framing', 'size']) if (s[k]) setSeg(k, s[k]);
+  for (const k of ['brand', 'cta', 'accent', 'whisperModel', 'engine']) if (s[k]) $('#' + k).value = s[k];
+  for (const k of ['silence', 'shots', 'cleanVoice', 'watermark']) if (typeof s[k] === 'boolean') $('#' + k).checked = s[k];
+  if (!saved.jobId) return;
+  const r = await fetch(`/api/clips/${saved.jobId}`);
+  if (!r.ok) return;
+  const data = await r.json();
+  state.jobId = data.jobId;
+  state.clips = data.clips;
+  renderClips();
+  showLogo(data.logo);
+  subscribe();
+}
+
+// ---- upload ----------------------------------------------------------------
+const drop = $('#drop'), fileInput = $('#file');
+drop.addEventListener('click', () => fileInput.click());
+drop.addEventListener('dragover', (e) => { e.preventDefault(); drop.classList.add('over'); });
+drop.addEventListener('dragleave', () => drop.classList.remove('over'));
+drop.addEventListener('drop', (e) => { e.preventDefault(); drop.classList.remove('over'); upload(e.dataTransfer.files); });
+fileInput.addEventListener('change', () => { upload(fileInput.files); fileInput.value = ''; });
+
+function upload(files) {
+  files = [...files];
+  if (!files.length || state.running) return;
+  const fd = new FormData();
+  files.forEach((f) => fd.append('clips', f, f.name));
+  const xhr = new XMLHttpRequest();
+  xhr.open('POST', '/api/upload' + (state.jobId ? `?jobId=${state.jobId}` : ''));
+  const bar = $('#upbar');
+  bar.style.display = 'block';
+  drop.querySelector('strong').textContent = `Uploading ${files.length} file${files.length > 1 ? 's' : ''}…`;
+  xhr.upload.onprogress = (e) => { if (e.lengthComputable) bar.firstElementChild.style.width = (e.loaded / e.total) * 100 + '%'; };
+  xhr.onloadend = () => {
+    bar.style.display = 'none';
+    bar.firstElementChild.style.width = '0';
+    let data = {};
+    try { data = JSON.parse(xhr.responseText); } catch {}
+    if (xhr.status === 401) { renderClips(); return $('#login').classList.remove('hidden'); }
+    if (xhr.status === 404 && state.jobId) { state.jobId = null; return upload(files); } // project was deleted
+    if (xhr.status !== 200) { renderClips(); return alert(data.error || `Upload failed (HTTP ${xhr.status}).`); }
+    if (data.rejected?.length) alert('Skipped:\n' + data.rejected.map((r) => `• ${r.name}: ${r.error}`).join('\n'));
+    if (state.jobId !== data.jobId) { state.jobId = data.jobId; subscribe(); }
+    state.clips = data.clips;
+    renderClips();
+    remember();
+  };
+  xhr.send(fd);
+}
+
+function renderClips() {
+  const total = state.clips.reduce((s, c) => s + c.duration, 0);
+  $('#clipMeta').textContent = state.clips.length ? `${state.clips.length} · ${fmtTime(total)} total` : '';
+  drop.classList.toggle('compact', state.clips.length > 0);
+  drop.querySelector('strong').textContent = state.clips.length ? '+ Add more clips' : 'Drop video clips here';
+  $('#clips').innerHTML = state.clips.map((c) => `
+    <div class="clip">
+      <div class="thumb" style="background-image:url('${c.thumbnail}')"><span class="dur">${fmtTime(c.duration)}</span></div>
+      <span class="id">${esc(c.id)}</span>
+      <button class="rm" data-id="${esc(c.id)}" title="Remove">×</button>
+      <div class="meta"><div class="name" title="${esc(c.name)}">${esc(c.name)}</div>${c.width}×${c.height}${c.hasAudio ? '' : ' · no audio'}</div>
+    </div>`).join('');
+  updateGo();
+}
+
+$('#clips').addEventListener('click', async (e) => {
+  const id = e.target.closest('.rm')?.dataset.id;
+  if (!id || state.running) return;
+  const r = await fetch(`/api/clips/${state.jobId}/${id}`, { method: 'DELETE' });
+  const data = await r.json();
+  if (!r.ok) return alert(data.error);
+  state.clips = data.clips;
+  renderClips();
+});
+
+// ---- prompt ----------------------------------------------------------------
+$('#chips').addEventListener('click', (e) => {
+  if (!e.target.classList.contains('chip')) return;
+  const p = $('#prompt');
+  p.value = p.value.trim() ? `${p.value.trim()}\n${e.target.textContent}` : e.target.textContent;
+  updateGo(); remember();
+});
+$('#prompt').addEventListener('input', () => { updateGo(); remember(); });
+
+function updateGo() {
+  const s = readSettings();
+  const n = s.formats.length * s.lengths.length;
+  const ready = state.clips.length > 0 && $('#prompt').value.trim().length > 0 && n <= 8;
+  $('#go').disabled = !ready || state.running;
+  $('#go').textContent = n > 1 ? `Forge ${n} videos` : 'Forge video';
+  $('#rerender').classList.toggle('hidden', !state.shown || state.running);
+  $('#rerender').disabled = n > 8;
+  $('#goHint').textContent = state.running ? 'Working — you can keep this tab open or come back later.'
+    : n > 8 ? 'Pick at most 8 format × length combinations.'
+    : ready ? '' : 'Upload a clip and describe the edit.';
+}
+
+// ---- run -------------------------------------------------------------------
+async function start(reusePlan) {
+  $('#go').disabled = true;
+  const r = await fetch('/api/edit', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ jobId: state.jobId, prompt: $('#prompt').value, clips: state.clips.map((c) => c.id), settings: readSettings(), reusePlan }),
+  });
+  const data = await r.json().catch(() => ({}));
+  if (!r.ok) { alert(data.error || 'Could not start.'); return updateGo(); }
+  subscribe();
+}
+$('#go').addEventListener('click', () => start(false));
+$('#rerender').addEventListener('click', () => start(true));
+$('#cancel').addEventListener('click', () => fetch(`/api/cancel/${state.jobId}`, { method: 'POST' }));
+
+function subscribe() {
+  state.es?.close();
+  if (!state.jobId) return;
+  state.es = new EventSource(`/api/status/${state.jobId}`);
+  state.es.onmessage = (e) => showStatus(JSON.parse(e.data));
+}
+
+function showStatus(s) {
+  state.running = s.state === 'running';
+  updateGo();
+  $('#cancel').classList.toggle('hidden', !state.running);
+  $('#idleCard').classList.toggle('hidden', s.state !== 'idle');
+  // Progress is shown while working or failed; once done, the results take its place.
+  $('#progressCard').classList.toggle('hidden', s.state !== 'running' && s.state !== 'error');
+  if (s.state === 'idle') return;
+
+  for (const [name, st] of Object.entries(s.steps)) {
+    const el = document.querySelector(`.step[data-step="${name}"]`);
+    el.className = `step ${st.status}`;
+    el.querySelector('.m').textContent = st.message || '';
+  }
+  $('#bar').style.width = Math.round((s.progress || 0) * 100) + '%';
+
+  $('#error').classList.toggle('hidden', s.state !== 'error');
+  if (s.state === 'error' && s.error) {
+    $('#errMsg').textContent = s.error.message;
+    $('#errHint').textContent = s.error.hint || '';
+    $('#errDetailWrap').classList.toggle('hidden', !s.error.detail);
+    $('#errDetail').textContent = s.error.detail || '';
+  }
+  if (state.running) {
+    ['#resultCard', '#checkCard'].forEach((c) => $(c).classList.add('hidden'));
+    state.shown = null;
+  }
+  if (s.state === 'done' && s.result) showResult(s.result);
+}
+
+async function showResult(r) {
+  const key = r.variants.map((v) => v.previewUrl).join('|');
+  if (state.shown === key) return;
+  state.shown = key;
+
+  $('#resultCard').classList.remove('hidden');
+  $('#resultTitle').textContent = r.title || 'Videos';
+  $('#resultMeta').textContent = `${r.variants.length} video${r.variants.length > 1 ? 's' : ''} · ${fmtSize(r.totalSize)}`;
+  $('#variants').innerHTML = r.variants.map((v) => `
+    <div class="variant">
+      <div class="frame"><video src="${v.previewUrl}" poster="${v.posterUrl || ''}" controls playsinline preload="none" style="aspect-ratio:${v.width}/${v.height}"></video></div>
+      <div class="vm">
+        <div><div class="vl">${v.length === 'full' ? 'Full' : v.length + 's'} · ${FORMAT_LABEL[v.format] || v.format}</div>
+          <div class="vs">${fmtTime(v.duration)} · ${fmtSize(v.size)}</div></div>
+        ${canShareFiles ? `<button class="btn sm ghost share" data-url="${v.downloadUrl}" data-name="${esc(v.file)}" title="Share to TikTok, Instagram…">Share</button>` : ''}
+        <a class="btn sm" href="${v.downloadUrl}" download title="Download">↓</a>
+      </div>
+    </div>`).join('');
+  $('#warns').innerHTML = (r.warnings || []).map((w) => `⚠ ${esc(w)}`).join('<br>');
+
+  $('#checkCard').classList.toggle('hidden', !r.checklist?.length);
+  $('#checklist').innerHTML = (r.checklist || []).map((c) =>
+    `<li><div><div class="rq">${esc(c.request)}</div><div class="dn">${esc(c.done)}</div></div></li>`).join('');
+  updateGo();
+  try { $('#planJson').textContent = JSON.stringify(await (await fetch(`/api/plan/${state.jobId}`)).json(), null, 2); } catch {}
+  loadStorage();
+}
+
+// ---- share (phone): hand the MP4 straight to TikTok / Instagram / Messages ------
+const canShareFiles = (() => {
+  try { return Boolean(navigator.canShare?.({ files: [new File([''], 'x.mp4', { type: 'video/mp4' })] })); } catch { return false; }
+})();
+$('#variants').addEventListener('click', async (e) => {
+  const b = e.target.closest('.share');
+  if (!b) return;
+  const old = b.textContent;
+  b.textContent = '…';
+  try {
+    const blob = await (await fetch(b.dataset.url)).blob();
+    await navigator.share({ files: [new File([blob], b.dataset.name, { type: 'video/mp4' })] });
+  } catch (err) {
+    if (err.name !== 'AbortError') alert('Sharing failed — use the download button instead.');
+  } finally { b.textContent = old; }
+});
+
+// ---- logo ------------------------------------------------------------------
+function showLogo(logo) {
+  $('#logoPrev').classList.toggle('hidden', !logo);
+  $('#logoRm').classList.toggle('hidden', !logo);
+  if (logo) $('#logoPrev').src = logo.url;
+  $('#logoBtn').textContent = logo ? 'Replace' : 'Upload logo / product image';
+  $('#logoNote').textContent = logo?.note || (logo?.cutout ? 'Background removed with rembg.' : '');
+}
+$('#logoBtn').addEventListener('click', () => $('#logoFile').click());
+$('#logoFile').addEventListener('change', async () => {
+  const f = $('#logoFile').files[0];
+  $('#logoFile').value = '';
+  if (!f) return;
+  const fd = new FormData();
+  fd.append('logo', f, f.name);
+  const q = new URLSearchParams({ cutout: $('#logoCutout').checked ? '1' : '0' });
+  if (state.jobId) q.set('jobId', state.jobId);
+  $('#logoBtn').disabled = true;
+  $('#logoBtn').textContent = $('#logoCutout').checked ? 'Removing background…' : 'Uploading…';
+  try {
+    const r = await fetch('/api/logo?' + q, { method: 'POST', body: fd });
+    const data = await r.json();
+    if (!r.ok) throw new Error(data.error);
+    if (state.jobId !== data.jobId) { state.jobId = data.jobId; subscribe(); remember(); }
+    showLogo(data.logo);
+  } catch (err) { alert(err.message || 'Logo upload failed.'); showLogo(null); }
+  finally { $('#logoBtn').disabled = false; }
+});
+$('#logoRm').addEventListener('click', async () => {
+  await fetch(`/api/logo/${state.jobId}`, { method: 'DELETE' });
+  showLogo(null);
+});
+
+// ---- storage ---------------------------------------------------------------
+async function loadStorage() {
+  if (!state.jobId) return $('#storageCard').classList.add('hidden');
+  try {
+    const s = await (await fetch(`/api/storage?jobId=${state.jobId}`)).json();
+    $('#storageCard').classList.remove('hidden');
+    $('#storageText').textContent = `This project uses ${fmtSize(s.project || 0)} · ClipForge total ${fmtSize(s.total)}`;
+  } catch {}
+}
+$('#deleteProject').addEventListener('click', async () => {
+  if (!confirm('Delete this project\'s uploaded clips, transcripts and rendered videos? Download anything you want to keep first.')) return;
+  const r = await fetch(`/api/jobs/${state.jobId}`, { method: 'DELETE' });
+  const data = await r.json().catch(() => ({}));
+  if (!r.ok) return alert(data.error || 'Could not delete.');
+  state.es?.close();
+  Object.assign(state, { jobId: null, clips: [], shown: null });
+  renderClips();
+  showLogo(null);
+  ['#progressCard', '#resultCard', '#checkCard', '#storageCard'].forEach((c) => $(c).classList.add('hidden'));
+  $('#idleCard').classList.remove('hidden');
+  remember();
+});
+
+// ---- login (only when the server has CLIPFORGE_PASSWORD set) -------------------
+const nativeFetch = window.fetch.bind(window);
+window.fetch = async (...args) => {
+  const r = await nativeFetch(...args);
+  if (r.status === 401) {
+    const body = await r.clone().json().catch(() => ({}));
+    if (body.auth) $('#login').classList.remove('hidden');
+  }
+  return r;
+};
+$('#loginForm').addEventListener('submit', async (e) => {
+  e.preventDefault();
+  const r = await nativeFetch('/api/login', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ password: $('#pw').value }) });
+  const data = await r.json().catch(() => ({}));
+  if (!r.ok) { $('#loginErr').textContent = data.error || 'Login failed.'; return; }
+  $('#login').classList.add('hidden');
+  $('#pw').value = '';
+  init();
+});
+
+if (matchMedia('(pointer: coarse)').matches) {
+  drop.querySelector('span').textContent = 'Tap to pick videos from your camera roll or files';
+}
+if ('serviceWorker' in navigator) navigator.serviceWorker.register('/sw.js').catch(() => {});
+
+async function init() {
+  const a = await nativeFetch('/api/auth').then((r) => r.json()).catch(() => ({}));
+  if (a.enabled && !a.authed) return $('#login').classList.remove('hidden');
+  loadHealth();
+  restore().then(onOptionsChange);
+}
+init();
+</script>
+</body>
+</html>

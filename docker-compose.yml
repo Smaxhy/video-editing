@@ -3,7 +3,7 @@
 #   2. Put it and a password in a .env file next to this file:
 #        CLIPFORGE_PASSWORD=pick-something-long
 #        CLAUDE_CODE_OAUTH_TOKEN=sk-ant-oat01-...
-#   3. docker compose up -d   → http://<server>:3000  (put HTTPS in front — see README)
+#   3. docker compose up -d   → http://<server>:3000  (for HTTPS: tailscale serve --bg 3000)
 services:
   clipforge:
     build: .

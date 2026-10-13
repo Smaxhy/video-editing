@@ -1,15 +1,15 @@
-# Run ClipForge on a server (VPS, home server, NAS…) and use it from your phone and PC.
-#   1. On any computer with Claude Code: `claude setup-token` → copy the token
-#   2. Put it and a password in a .env file next to this file:
-#        CLIPFORGE_PASSWORD=pick-something-long
-#        CLAUDE_CODE_OAUTH_TOKEN=sk-ant-oat01-...
-#   3. docker compose up -d   → http://<server>:3000  (for HTTPS: tailscale serve --bg 3000)
+# ClipForge. The installers (deploy/install-server.sh, deploy/install-windows.ps1) write .env and run this.
+# .env holds: CLIPFORGE_PASSWORD, CLAUDE_CODE_OAUTH_TOKEN, and optionally CLIPFORGE_BIND / CLIPFORGE_PORT.
 services:
   clipforge:
     build: .
+    image: clipforge:latest
+    container_name: clipforge
     restart: unless-stopped
     ports:
-      - "3000:3000"
+      # 127.0.0.1 by default: reached through `tailscale serve`, never exposed to the internet.
+      # Set CLIPFORGE_BIND=0.0.0.0 in .env to also open it to phones on your home Wi-Fi.
+      - "${CLIPFORGE_BIND:-127.0.0.1}:${CLIPFORGE_PORT:-3000}:3000"
     environment:
       CLIPFORGE_PASSWORD: ${CLIPFORGE_PASSWORD:?set CLIPFORGE_PASSWORD in .env}
       CLAUDE_CODE_OAUTH_TOKEN: ${CLAUDE_CODE_OAUTH_TOKEN:?run `claude setup-token` and set CLAUDE_CODE_OAUTH_TOKEN in .env}
@@ -17,6 +17,6 @@ services:
       - ./uploads:/app/uploads
       - ./workspace:/app/workspace
       - ./output:/app/output
-      - model-cache:/root/.cache   # Whisper / Demucs / rembg models survive rebuilds
+      - model-cache:/root/.cache   # speech / voice / cutout models survive rebuilds
 volumes:
   model-cache:

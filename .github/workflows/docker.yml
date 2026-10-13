@@ -1,0 +1,66 @@
+# Builds the ClipForge Docker image on Intel/AMD and ARM, then runs it and smoke-tests the
+# whole pipeline (tools, Whisper, analysis, HyperFrames render, compression) inside it.
+name: Docker image
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: docker-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build-and-test:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: amd64
+            runner: ubuntu-24.04
+          - arch: arm64
+            runner: ubuntu-24.04-arm
+    name: ${{ matrix.arch }}
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 75
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Unit tests
+        run: npm ci && npm test
+
+      - name: Build image
+        run: docker build -t clipforge:test .
+
+      - name: Start container
+        run: |
+          docker run -d --name clipforge -p 127.0.0.1:3000:3000 \
+            -e CLIPFORGE_PASSWORD=ci-password-123 \
+            -e CLAUDE_CODE_OAUTH_TOKEN=sk-ant-oat01-ci-placeholder \
+            clipforge:test
+          for i in $(seq 1 60); do
+            curl -fsS http://127.0.0.1:3000/api/auth && break
+            sleep 2
+          done
+          echo
+          curl -fsS http://127.0.0.1:3000/api/auth | grep -q '"enabled":true'
+
+      - name: API smoke test (auth + health)
+        run: |
+          code=$(curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:3000/api/health)
+          test "$code" = 401
+          curl -fsS -c cookies -H 'Content-Type: application/json' -d '{"password":"ci-password-123"}' http://127.0.0.1:3000/api/login
+          echo
+          curl -fsS -b cookies http://127.0.0.1:3000/api/health | python3 -m json.tool
+
+      - name: Pipeline smoke test (inside the container)
+        run: docker exec clipforge clipforge-entrypoint node deploy/smoke-test.mjs
+
+      - name: Container logs
+        if: always()
+        run: docker logs clipforge 2>&1 | tail -100 || true

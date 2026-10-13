@@ -145,6 +145,8 @@ ${PLAN_SCHEMA}
  * Ask Claude Code (pipe mode, your subscription — no API key) for every version's edit plan
  * in a single call, then validate. Retries once with the validation error.
  */
+export const PLANNER_MODELS = ['sonnet', 'haiku', 'opus'];
+
 export async function generateEditPlans({ clips, userPrompt, options, cwd, onStatus, signal }) {
   const prompt = buildPrompt({ clips, userPrompt, options });
   let lastError;
@@ -157,7 +159,7 @@ export async function generateEditPlans({ clips, userPrompt, options, cwd, onSta
         : `${prompt}\n\n## Your previous answer was rejected\nReason: ${lastError.message}\nPrevious answer (truncated):\n${raw.slice(0, 4000)}\n\nReturn the corrected JSON object only.`;
 
     onStatus?.(attempt === 1 ? 'Claude is planning the edit…' : 'Plan was invalid — asking Claude to fix it…');
-    raw = await callClaude(input, { cwd, signal });
+    raw = await callClaude(input, { cwd, signal, model: options.model });
 
     try {
       const result = normalizeResponse(extractJson(raw), clips, options);
@@ -172,10 +174,11 @@ export async function generateEditPlans({ clips, userPrompt, options, cwd, onSta
   });
 }
 
-async function callClaude(input, { cwd, signal }) {
+async function callClaude(input, { cwd, signal, model }) {
   // --tools "": pure text planning, no file/shell access. --no-session-persistence: don't clutter history.
   const args = ['-p', '--output-format', 'text', '--tools', '', '--no-session-persistence'];
-  if (process.env.CLAUDE_MODEL) args.push('--model', process.env.CLAUDE_MODEL);
+  // Sonnet by default: plans edits well while using far less of your plan than Opus.
+  args.push('--model', process.env.CLAUDE_MODEL || model || 'sonnet');
 
   let res;
   try {

@@ -10,7 +10,7 @@ import { fileURLToPath } from 'node:url';
 import { transcribe, WHISPER_MODELS, ENGINES } from './transcriber.js';
 import { analyzeClip, isolateVoice, cutoutImage } from './analysis.js';
 import { detectTools, onPath, OPTIONAL_TOOLS } from './tools.js';
-import { generateEditPlans, GOALS, LENGTHS } from './editor.js';
+import { generateEditPlans, GOALS, LENGTHS, PLANNER_MODELS } from './editor.js';
 import {
   writeProject, renderProject, makeBlurBackground, aspectMismatch, ensureSeekable,
   FORMATS, CAPTION_STYLES, FRAMINGS,
@@ -286,6 +286,7 @@ async function runPipeline(job, { prompt, clipIds, settings, reusePlan }) {
       captions: settings.captions,
       cta: settings.cta,
       brand: settings.brand,
+      model: settings.plannerModel,
     };
     planned = await generateEditPlans({
       clips: clips.map((c) => ({ ...c, transcript: transcripts[c.id], analysis: analysis[c.id] })),
@@ -895,6 +896,7 @@ app.post('/api/edit', async (req, res) => {
     useLogo: s.useLogo !== false,
     watermark: s.watermark === true,
     cleanup: s.cleanup !== false,
+    plannerModel: PLANNER_MODELS.includes(s.plannerModel) ? s.plannerModel : 'sonnet',
     goal: GOALS.includes(s.goal) ? s.goal : 'social',
     formats: pick(Object.keys(FORMATS), s.formats, ['9x16']),
     lengths: pick(LENGTHS, s.lengths, ['30']),

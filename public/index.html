@@ -301,6 +301,13 @@
 
       <details class="adv">
         <summary>Advanced</summary>
+        <div class="opt"><label>Planner model</label>
+          <select id="plannerModel">
+            <option value="sonnet" selected>Sonnet — recommended, light on usage</option>
+            <option value="haiku">Haiku — lightest usage, simpler edits</option>
+            <option value="opus">Opus — best, uses the most</option>
+          </select>
+        </div>
         <div class="opt"><label>Transcription</label>
           <select id="engine">
             <option value="auto" selected>Auto — fastest installed</option>
@@ -431,6 +438,7 @@ function readSettings() {
     accent: $('#accent').value,
     whisperModel: $('#whisperModel').value,
     engine: $('#engine').value,
+    plannerModel: $('#plannerModel').value,
     silence: $('#silence').checked,
     shots: $('#shots').checked,
     cleanVoice: $('#cleanVoice').checked,
@@ -449,7 +457,7 @@ function onOptionsChange() {
   updateGo();
   remember();
 }
-['#brand', '#cta', '#accent', '#whisperModel', '#engine', '#silence', '#shots', '#cleanVoice', '#watermark', '#logoCutout', '#cleanup']
+['#brand', '#cta', '#accent', '#whisperModel', '#engine', '#plannerModel', '#silence', '#shots', '#cleanVoice', '#watermark', '#logoCutout', '#cleanup']
   .forEach((sel) => $(sel).addEventListener('input', remember));
 
 // ---- health ----------------------------------------------------------------
@@ -489,7 +497,7 @@ async function restore() {
   if (saved.prompt) $('#prompt').value = saved.prompt;
   const s = saved.settings || {};
   for (const k of ['goal', 'formats', 'lengths', 'captions', 'framing', 'size']) if (s[k]) setSeg(k, s[k]);
-  for (const k of ['brand', 'cta', 'accent', 'whisperModel', 'engine']) if (s[k]) $('#' + k).value = s[k];
+  for (const k of ['brand', 'cta', 'accent', 'whisperModel', 'engine', 'plannerModel']) if (s[k]) $('#' + k).value = s[k];
   for (const k of ['silence', 'shots', 'cleanVoice', 'watermark', 'cleanup']) if (typeof s[k] === 'boolean') $('#' + k).checked = s[k];
   if (!saved.jobId) return;
   const r = await fetch(`/api/clips/${saved.jobId}`);

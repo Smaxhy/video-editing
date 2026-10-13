@@ -2,6 +2,8 @@
 # Starts ClipForge in the background every time the codespace starts (see .devcontainer/devcontainer.json).
 cd "$(dirname "$0")/.." || exit 1
 mkdir -p workspace
+# Pick up the latest ClipForge on every start (fast-forward only; never overwrites local edits).
+git pull --ff-only --quiet 2>/dev/null && echo "ClipForge is up to date ($(git rev-parse --short HEAD))." || echo "Could not update automatically — continuing with the current version."
 if [ -z "${CLIPFORGE_PASSWORD:-}" ] || [ -z "${CLAUDE_CODE_OAUTH_TOKEN:-}" ]; then
   echo "ClipForge needs the CLIPFORGE_PASSWORD and CLAUDE_CODE_OAUTH_TOKEN Codespaces secrets."
   echo "Add them at https://github.com/settings/codespaces, then restart the codespace."

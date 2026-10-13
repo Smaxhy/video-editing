@@ -26,7 +26,10 @@ ENV PATH=/opt/venv/bin:$PATH \
     PYTHON_BIN=/opt/venv/bin/python \
     PIP_NO_CACHE_DIR=1 \
     PIP_DISABLE_PIP_VERSION_CHECK=1
-RUN pip install torch torchaudio --index-url ${TORCH_INDEX} \
+# Upgrade pip first: Debian's pip 23.0 rejects PyTorch's index metadata ("inconsistent Name:
+# expected 'typing-extensions'"), falls back to building from source and fails.
+RUN pip install --upgrade pip setuptools wheel \
+ && pip install torch torchaudio --index-url ${TORCH_INDEX} \
  && pip install openai-whisper
 RUN for pkg in faster-whisper scenedetect "opencv-python-headless>=4.8,<5" ffmpeg-normalize \
                "rembg[cpu,cli]" demucs auto-editor; do \

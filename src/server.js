@@ -30,7 +30,7 @@ const PORT = Number(process.env.PORT || 3000);
 // `--lan` (npm run start:lan) listens on every interface so phones on your Wi-Fi/Tailscale can connect.
 const HOST = process.argv.includes('--lan') ? '0.0.0.0' : process.env.HOST || '127.0.0.1';
 const LOOPBACK = ['127.0.0.1', 'localhost', '::1'].includes(HOST);
-const MAX_UPLOAD_BYTES = Number(process.env.MAX_UPLOAD_MB || 4096) * 1024 * 1024;
+const MAX_UPLOAD_BYTES = Number(process.env.MAX_UPLOAD_MB || 10240) * 1024 * 1024;
 const MAX_VARIANTS = 8;
 const VIDEO_EXT = /\.(mp4|mov|m4v|mkv|webm|avi|mts|m2ts|mpg|mpeg|3gp|wmv|flv)$/i;
 
@@ -96,7 +96,15 @@ async function getJob(id) {
 const saveManifest = (job) =>
   fs.writeFile(
     path.join(DIRS.uploads, job.id, 'clips.json'),
-    JSON.stringify({ clips: job.clips.map(({ path: _p, ...c }) => c), nextClip: job.nextClip, logo: job.logo || null }, null, 2),
+    JSON.stringify(
+      {
+        clips: job.clips.map(({ path: _p, optimizing: _o, optimizeProgress: _op, ...c }) => c),
+        nextClip: job.nextClip,
+        logo: job.logo || null,
+      },
+      null,
+      2,
+    ),
   );
 
 function snapshot(job) {
@@ -134,6 +142,9 @@ const publicClip = (jobId, c) => ({
   width: c.width,
   height: c.height,
   hasAudio: c.hasAudio,
+  optimizing: Boolean(c.optimizing),
+  optimizeProgress: c.optimizeProgress || 0,
+  optimized: Boolean(c.optimized),
   thumbnail: `/api/thumb/${jobId}/${c.id}`,
 });
 
@@ -178,6 +189,14 @@ async function runPipeline(job, { prompt, clipIds, settings, reusePlan }) {
   const checkAbort = () => {
     if (signal.aborted) throw new PipelineError('Cancelled.');
   };
+
+  // 0. Wait for any clip still being shrunk after upload.
+  while (clips.some((c) => c.optimizing)) {
+    const c = clips.find((x) => x.optimizing);
+    setStep(job, 'transcribe', 'active', `Optimizing ${c.name} for editing… ${Math.round((c.optimizeProgress || 0) * 100)}%`, 0);
+    await new Promise((r) => setTimeout(r, 2000));
+    checkAbort();
+  }
 
   // 1. Transcribe + analyze (0 → 30%) -----------------------------------------
   const tools = await detectTools();
@@ -501,6 +520,155 @@ const upload = multer({
   },
 });
 
+// Long phone recordings are often 4K / 50+ Mbit/s. ClipForge never outputs more than 1080p, so such
+// uploads are shrunk once, right after upload: far less disk, much faster transcription and rendering,
+// and keyframes every second (smooth seeking) as a bonus. Visually identical in the final videos.
+const OPTIMIZE_MAX_EDGE = 1920;
+const OPTIMIZE_MAX_MBPS = 16;
+function needsOptimizing(c) {
+  const mbps = c.duration ? (c.size * 8) / c.duration / 1e6 : 0;
+  return Math.max(c.width, c.height) > OPTIMIZE_MAX_EDGE * 1.05 || mbps > OPTIMIZE_MAX_MBPS;
+}
+
+async function optimizeClip(job, clip) {
+  const src = clip.path;
+  const outName = `${clip.id}.mp4`;
+  const tmp = path.join(DIRS.uploads, job.id, `.${clip.id}.optimizing.mp4`);
+  const longEdge = `${OPTIMIZE_MAX_EDGE}`;
+  try {
+    const res = await run('ffmpeg', [
+      '-v', 'error', '-y', '-i', src,
+      '-vf', `scale=w='if(gte(iw,ih),min(${longEdge},iw),-2)':h='if(gte(iw,ih),-2,min(${longEdge},ih))'`,
+      '-c:v', 'libx264', '-preset', 'veryfast', '-crf', '20', '-g', '30', '-pix_fmt', 'yuv420p',
+      '-c:a', 'aac', '-b:a', '160k', '-movflags', '+faststart', '-progress', 'pipe:1', tmp,
+    ], {
+      onLine: (line) => {
+        const m = line.match(/^out_time_us=(\d+)/);
+        if (m && clip.duration) clip.optimizeProgress = Math.min(0.99, Number(m[1]) / 1e6 / clip.duration);
+      },
+    });
+    if (res.code !== 0) throw new Error(res.stderr.split('\n').filter(Boolean).pop() || 'ffmpeg failed');
+    if (!job.clips.includes(clip)) return; // deleted while optimizing
+    const meta = await probe(tmp);
+    const stat = await fs.stat(tmp);
+    const dest = path.join(DIRS.uploads, job.id, outName);
+    await fs.rename(tmp, dest);
+    if (dest !== src) await fs.rm(src, { force: true });
+    Object.assign(clip, { file: outName, path: dest, size: stat.size, width: meta.width, height: meta.height, optimized: true });
+    await saveManifest(job);
+    console.log(`[job ${job.id}] optimized ${clip.name} → ${meta.width}x${meta.height}, ${(stat.size / 1048576).toFixed(0)} MB`);
+  } catch (err) {
+    console.error(`[job ${job.id}] could not optimize ${clip.name}: ${err.message} — keeping the original`);
+  } finally {
+    await fs.rm(tmp, { force: true }).catch(() => {});
+    clip.optimizing = false;
+    clip.optimizeProgress = 0;
+  }
+}
+
+/**
+ * Turn a file already saved in uploads/{jobId}/ into a clip: probe it, make a thumbnail and add it
+ * to the project. Non-video files are deleted and reported as rejected.
+ */
+async function registerClip(job, f) {
+  try {
+    const meta = await probe(f.path);
+    if (!meta.hasVideo || !meta.duration) throw new PipelineError('no video stream found');
+    const id = path.basename(f.filename, path.extname(f.filename));
+    const thumb = path.join(DIRS.uploads, job.id, 'thumbs', `${id}.jpg`);
+    await fs.mkdir(path.dirname(thumb), { recursive: true });
+    await run('ffmpeg', [
+      '-v', 'error', '-y', '-ss', String(Math.min(1, meta.duration / 3)), '-i', f.path,
+      '-frames:v', '1', '-vf', 'scale=480:-2', '-q:v', '4', thumb,
+    ]).catch(() => null);
+    const clip = { id, name: f.name, file: f.filename, path: f.path, size: f.size, ...meta };
+    job.clips.push(clip);
+    if (needsOptimizing(clip)) {
+      clip.optimizing = true;
+      optimizeClip(job, clip); // runs in the background; the pipeline waits for it
+    }
+    return { added: publicClip(job.id, clip) };
+  } catch (err) {
+    await fs.rm(f.path, { force: true });
+    return { rejected: { name: f.name, error: err.message } };
+  }
+}
+
+// POST /api/upload-chunk?uploadId=&index=&total=&name=[&jobId=] — raw body, one piece of a file.
+// The app uploads every video in small pieces so proxies that cap request size (GitHub Codespaces
+// port forwarding answers 413, as do Cloudflare and nginx defaults) never see one big request.
+// Pieces must arrive in order; the last one assembles the file and registers the clip.
+const CHUNK_LIMIT = 16 * 1024 * 1024;
+const partials = new Map(); // uploadId → { jobId, name, file, next, total, size, at }
+app.post(
+  '/api/upload-chunk',
+  express.raw({ type: 'application/octet-stream', limit: CHUNK_LIMIT }),
+  async (req, res, next) => {
+    try {
+      const { uploadId } = req.query;
+      const index = Number(req.query.index);
+      const total = Number(req.query.total);
+      const name = String(req.query.name || '').slice(0, 200);
+      if (!isId(uploadId) || !name || !Number.isInteger(index) || !Number.isInteger(total) || total < 1 || index < 0 || index >= total) {
+        return res.status(400).json({ error: 'Bad upload request.' });
+      }
+      let p = partials.get(uploadId);
+      if (index === 0) {
+        if (!(String(req.query.type || '').startsWith('video/') || VIDEO_EXT.test(name))) {
+          return res.status(400).json({ error: `"${name}" is not a video file.`, rejected: { name, error: 'not a video file' } });
+        }
+        const existing = req.query.jobId ? await getJob(String(req.query.jobId)) : null;
+        if (req.query.jobId && !existing) return res.status(404).json({ error: 'Unknown project.' });
+        if (existing?.state === 'running') return res.status(409).json({ error: 'A render is running for this project.' });
+        const job = existing || newJob();
+        const dir = path.join(DIRS.uploads, job.id, '.partial');
+        await fs.mkdir(dir, { recursive: true });
+        if (p) await fs.rm(p.file, { force: true });
+        p = { jobId: job.id, name, file: path.join(dir, uploadId), next: 0, total, size: 0, at: Date.now() };
+        partials.set(uploadId, p);
+        await fs.writeFile(p.file, '');
+      }
+      if (!p || p.next !== index || p.total !== total) {
+        return res.status(409).json({ error: 'Upload pieces arrived out of order — please upload the file again.' });
+      }
+      const chunk = req.body;
+      if (!Buffer.isBuffer(chunk) || chunk.length === 0) return res.status(400).json({ error: 'Empty upload piece.' });
+      if (p.size + chunk.length > MAX_UPLOAD_BYTES) {
+        partials.delete(uploadId);
+        await fs.rm(p.file, { force: true });
+        return res.status(400).json({ error: `File too large (max ${Math.round(MAX_UPLOAD_BYTES / 1048576)} MB).` });
+      }
+      await fs.appendFile(p.file, chunk);
+      p.size += chunk.length;
+      p.next += 1;
+      p.at = Date.now();
+      if (p.next < p.total) return res.json({ jobId: p.jobId, received: p.next });
+
+      // Last piece: move the assembled file into place and register it.
+      partials.delete(uploadId);
+      const job = await getJob(p.jobId);
+      if (!job) return res.status(404).json({ error: 'The project was deleted during the upload.' });
+      const filename = `clip${job.nextClip++}${(path.extname(p.name) || '.mp4').toLowerCase()}`;
+      const dest = path.join(DIRS.uploads, job.id, filename);
+      await fs.rename(p.file, dest);
+      const r = await registerClip(job, { path: dest, filename, size: p.size, name: p.name });
+      await saveManifest(job);
+      res.json({ jobId: job.id, done: true, ...r, clips: job.clips.map((c) => publicClip(job.id, c)) });
+    } catch (err) {
+      next(err);
+    }
+  },
+);
+// Forget half-finished uploads after an hour (e.g. the phone lost signal).
+setInterval(() => {
+  for (const [id, p] of partials) {
+    if (Date.now() - p.at > 60 * 60_000) {
+      partials.delete(id);
+      fs.rm(p.file, { force: true }).catch(() => {});
+    }
+  }
+}, 10 * 60_000).unref();
+
 // POST /api/upload[?jobId=…] — multipart field "clips" (multiple). Appends to jobId if given.
 app.post(
   '/api/upload',
@@ -529,23 +697,9 @@ app.post(
       const added = [];
       for (const f of files) {
         const name = Buffer.from(f.originalname, 'latin1').toString('utf8');
-        try {
-          const meta = await probe(f.path);
-          if (!meta.hasVideo || !meta.duration) throw new PipelineError('no video stream found');
-          const id = path.basename(f.filename, path.extname(f.filename));
-          const thumb = path.join(DIRS.uploads, job.id, 'thumbs', `${id}.jpg`);
-          await fs.mkdir(path.dirname(thumb), { recursive: true });
-          await run('ffmpeg', [
-            '-v', 'error', '-y', '-ss', String(Math.min(1, meta.duration / 3)), '-i', f.path,
-            '-frames:v', '1', '-vf', 'scale=480:-2', '-q:v', '4', thumb,
-          ]).catch(() => null);
-          const clip = { id, name, file: f.filename, path: f.path, size: f.size, ...meta };
-          job.clips.push(clip);
-          added.push(publicClip(job.id, clip));
-        } catch (err) {
-          await fs.rm(f.path, { force: true });
-          rejected.push({ name, error: err.message });
-        }
+        const r = await registerClip(job, { path: f.path, filename: f.filename, size: f.size, name });
+        if (r.added) added.push(r.added);
+        else rejected.push(r.rejected);
       }
       await saveManifest(job);
       res.json({ jobId: job.id, added, rejected, clips: job.clips.map((c) => publicClip(job.id, c)) });
@@ -774,7 +928,11 @@ app.delete('/api/jobs/:jobId', async (req, res) => {
 // Errors (multer limits, bad JSON, …) → JSON
 app.use((err, _req, res, _next) => {
   const status =
-    err instanceof multer.MulterError || err instanceof PipelineError || err.type === 'entity.parse.failed' ? 400 : 500;
+    err.status >= 400 && err.status < 500
+      ? err.status
+      : err instanceof multer.MulterError || err instanceof PipelineError || err.type === 'entity.parse.failed'
+        ? 400
+        : 500;
   const message = err.code === 'LIMIT_FILE_SIZE' ? `File too large (max ${Math.round(MAX_UPLOAD_BYTES / 1048576)} MB).` : err.message;
   if (status === 500) console.error(err);
   res.status(status).json({ error: message, hint: err.hint });

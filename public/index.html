@@ -72,6 +72,7 @@
   .clips { display: grid; grid-template-columns: repeat(auto-fill, minmax(140px, 1fr)); gap: 10px; margin-top: 12px; }
   .clip { background: var(--panel-2); border: 1px solid var(--line); border-radius: 10px; overflow: hidden; position: relative; }
   .clip .thumb { aspect-ratio: 16 / 9; background: #000 center / cover no-repeat; display: flex; align-items: flex-end; justify-content: flex-end; }
+  .clip .opt { margin: 5px auto 5px 5px; font-size: 10px; background: rgba(124, 92, 255, .85); padding: 0 6px; border-radius: 4px; font-weight: 700; }
   .clip .dur { margin: 5px; font-size: 10px; background: rgba(0,0,0,.75); padding: 0 5px; border-radius: 4px; }
   .clip .meta { padding: 6px 9px 8px; font-size: 11px; color: var(--muted); }
   .clip .name { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; font-weight: 600; font-size: 12px; color: var(--text); }
@@ -506,32 +507,92 @@ drop.addEventListener('dragleave', () => drop.classList.remove('over'));
 drop.addEventListener('drop', (e) => { e.preventDefault(); drop.classList.remove('over'); upload(e.dataTransfer.files); });
 fileInput.addEventListener('change', () => { upload(fileInput.files); fileInput.value = ''; });
 
-function upload(files) {
+// Videos go up in pieces: proxies in front of ClipForge (GitHub Codespaces, Cloudflare, nginx)
+// reject large single requests with HTTP 413, and a dropped piece on mobile data is simply retried.
+// Pieces start at 4 MB; if a proxy still answers 413, the piece size halves (down to 256 KB).
+let chunkSize = 4 * 1024 * 1024;
+const MIN_CHUNK = 256 * 1024;
+const newUploadId = () => (Date.now().toString(36) + Math.random().toString(36).slice(2, 10)).toLowerCase();
+
+async function sendChunk(params, blob) {
+  let lastErr;
+  for (let attempt = 1; attempt <= 4; attempt++) {
+    try {
+      const r = await fetch('/api/upload-chunk?' + params, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/octet-stream' },
+        body: blob,
+      });
+      const data = await r.json().catch(() => ({}));
+      if (r.ok) return data;
+      const err = Object.assign(new Error(data.error || `Upload failed (HTTP ${r.status}).`), { status: r.status, data });
+      if (r.status < 500) throw err; // our answer — retrying won't change it
+      lastErr = err;
+    } catch (err) {
+      if (err.status && err.status < 500) throw err;
+      lastErr = err; // network hiccup or 5xx: wait and retry this piece
+    }
+    await new Promise((res) => setTimeout(res, attempt * 1500));
+  }
+  throw lastErr;
+}
+
+async function upload(files) {
   files = [...files];
-  if (!files.length || state.running) return;
-  const fd = new FormData();
-  files.forEach((f) => fd.append('clips', f, f.name));
-  const xhr = new XMLHttpRequest();
-  xhr.open('POST', '/api/upload' + (state.jobId ? `?jobId=${state.jobId}` : ''));
+  if (!files.length || state.running || state.uploading) return;
+  state.uploading = true;
   const bar = $('#upbar');
+  const label = drop.querySelector('strong');
+  const totalBytes = files.reduce((n, f) => n + f.size, 0) || 1;
+  let sent = 0;
+  const skipped = [];
   bar.style.display = 'block';
-  drop.querySelector('strong').textContent = `Uploading ${files.length} file${files.length > 1 ? 's' : ''}…`;
-  xhr.upload.onprogress = (e) => { if (e.lengthComputable) bar.firstElementChild.style.width = (e.loaded / e.total) * 100 + '%'; };
-  xhr.onloadend = () => {
+  try {
+    for (const [k, f] of files.entries()) {
+      label.textContent = `Uploading ${k + 1}/${files.length}: ${f.name}`;
+      let data = null;
+      let fileSent = 0;
+      for (;;) {
+        const uploadId = newUploadId();
+        const pieces = Math.max(1, Math.ceil(f.size / chunkSize));
+        try {
+          for (let i = 0; i < pieces; i++) {
+            const blob = f.slice(i * chunkSize, (i + 1) * chunkSize);
+            const q = new URLSearchParams({ uploadId, index: String(i), total: String(pieces), name: f.name, type: f.type || '' });
+            if (state.jobId) q.set('jobId', state.jobId);
+            data = await sendChunk(q, blob);
+            if (data.jobId && state.jobId !== data.jobId) { state.jobId = data.jobId; subscribe(); remember(); }
+            sent += blob.size;
+            fileSent += blob.size;
+            bar.firstElementChild.style.width = Math.min(100, (sent / totalBytes) * 100) + '%';
+          }
+          break;
+        } catch (err) {
+          if (err.status === 413 && chunkSize / 2 >= MIN_CHUNK) {
+            chunkSize /= 2; // a proxy caps request size below our piece size: restart this file smaller
+            sent -= fileSent;
+            fileSent = 0;
+            continue;
+          }
+          if (err.status === 401) { $('#login').classList.remove('hidden'); return; }
+          if (err.status === 404 && state.jobId) { state.jobId = null; remember(); } // project was deleted
+          skipped.push(`${f.name}: ${err.message}`);
+          sent += f.size - fileSent; // count the rest of this file as done for the progress bar
+          data = null;
+          break;
+        }
+      }
+      if (data?.rejected) skipped.push(`${data.rejected.name}: ${data.rejected.error}`);
+      if (data?.clips) { state.clips = data.clips; renderClips(); }
+    }
+  } finally {
+    state.uploading = false;
     bar.style.display = 'none';
     bar.firstElementChild.style.width = '0';
-    let data = {};
-    try { data = JSON.parse(xhr.responseText); } catch {}
-    if (xhr.status === 401) { renderClips(); return $('#login').classList.remove('hidden'); }
-    if (xhr.status === 404 && state.jobId) { state.jobId = null; return upload(files); } // project was deleted
-    if (xhr.status !== 200) { renderClips(); return alert(data.error || `Upload failed (HTTP ${xhr.status}).`); }
-    if (data.rejected?.length) alert('Skipped:\n' + data.rejected.map((r) => `• ${r.name}: ${r.error}`).join('\n'));
-    if (state.jobId !== data.jobId) { state.jobId = data.jobId; subscribe(); }
-    state.clips = data.clips;
     renderClips();
     remember();
-  };
-  xhr.send(fd);
+  }
+  if (skipped.length) alert('Some files were not added:\n' + skipped.map((x) => `• ${x}`).join('\n'));
 }
 
 function renderClips() {
@@ -541,12 +602,21 @@ function renderClips() {
   drop.querySelector('strong').textContent = state.clips.length ? '+ Add more clips' : 'Drop video clips here';
   $('#clips').innerHTML = state.clips.map((c) => `
     <div class="clip">
-      <div class="thumb" style="background-image:url('${c.thumbnail}')"><span class="dur">${fmtTime(c.duration)}</span></div>
+      <div class="thumb" style="background-image:url('${c.thumbnail}')">${c.optimizing
+        ? `<span class="opt">Optimizing ${Math.round((c.optimizeProgress || 0) * 100)}%</span>` : ''}<span class="dur">${fmtTime(c.duration)}</span></div>
       <span class="id">${esc(c.id)}</span>
       <button class="rm" data-id="${esc(c.id)}" title="Remove">×</button>
-      <div class="meta"><div class="name" title="${esc(c.name)}">${esc(c.name)}</div>${c.width}×${c.height}${c.hasAudio ? '' : ' · no audio'}</div>
+      <div class="meta"><div class="name" title="${esc(c.name)}">${esc(c.name)}</div>${c.width}×${c.height} · ${fmtSize(c.size)}${c.optimized ? ' · optimized' : ''}${c.hasAudio ? '' : ' · no audio'}</div>
     </div>`).join('');
   updateGo();
+  // Big uploads are shrunk to 1080p in the background — refresh until they're done.
+  clearTimeout(state.optTimer);
+  if (state.jobId && state.clips.some((c) => c.optimizing)) {
+    state.optTimer = setTimeout(async () => {
+      const r = await fetch(`/api/clips/${state.jobId}`).catch(() => null);
+      if (r?.ok) { state.clips = (await r.json()).clips; renderClips(); }
+    }, 2500);
+  }
 }
 
 $('#clips').addEventListener('click', async (e) => {

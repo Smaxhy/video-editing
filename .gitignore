@@ -7,3 +7,4 @@ library/
 *.log
 .env
 __pycache__/
+rclone/

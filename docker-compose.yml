@@ -19,5 +19,6 @@ services:
       - ./workspace:/app/workspace
       - ./output:/app/output
       - model-cache:/root/.cache   # Whisper / Demucs / rembg models survive rebuilds
+      - ./rclone:/root/.config/rclone   # your Google Drive connection (read-only token) survives rebuilds
 volumes:
   model-cache:

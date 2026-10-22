@@ -28,6 +28,7 @@ export const OPTIONAL_TOOLS = {
   demucs: { name: 'Demucs', url: 'https://github.com/adefossez/demucs', does: 'Isolates the voice from music and background noise' },
   ffmpegNormalize: { name: 'ffmpeg-normalize', url: 'https://github.com/slhck/ffmpeg-normalize', does: 'Two-pass EBU R128 loudness to -14 LUFS' },
   rembg: { name: 'rembg', url: 'https://github.com/danielgatis/rembg', does: 'Cuts the background out of your logo / product image' },
+  rclone: { name: 'rclone', url: 'https://github.com/rclone/rclone', does: 'Imports whole folders from Google Drive (and Dropbox, OneDrive, S3…)' },
 };
 
 let cache = null;
@@ -64,6 +65,7 @@ print(json.dumps({"fasterWhisper": has("faster_whisper"), "sceneDetect": has("sc
     demucs: Boolean(py.demucs) || onPath('demucs'),
     ffmpegNormalize: onPath('ffmpeg-normalize'),
     rembg: onPath('rembg'),
+    rclone: onPath(process.env.RCLONE_BIN || 'rclone'),
   };
   cache = { at: Date.now(), tools };
   return tools;

@@ -131,6 +131,15 @@ bold "Installing HyperFrames' headless Chrome"
 if node_modules/.bin/hyperframes browser ensure; then ok "Chrome ready"
 else warn "Could not fetch Chrome now — HyperFrames will retry on first render (npx hyperframes browser ensure)"; fi
 
+# --- rclone (Google Drive / Dropbox / OneDrive import) ------------------------
+if command -v rclone >/dev/null 2>&1; then
+  ok "rclone $(rclone version | head -1 | awk '{print $2}')"
+elif command -v brew >/dev/null 2>&1 && brew install rclone >/dev/null 2>&1; then
+  ok "rclone installed (Homebrew)"
+else
+  warn "rclone not found — needed only for importing from Google Drive. Install: https://rclone.org/install/ (Linux/macOS: sudo -v ; curl https://rclone.org/install.sh | sudo bash)"
+fi
+
 # --- Directories --------------------------------------------------------------
 mkdir -p library uploads workspace output
 ok "Created library/, uploads/, workspace/, output/"

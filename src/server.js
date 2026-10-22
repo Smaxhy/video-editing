@@ -12,13 +12,15 @@ import { analyzeClip, isolateVoice, cutoutImage } from './analysis.js';
 import { detectTools, onPath, OPTIONAL_TOOLS } from './tools.js';
 import { generateEditPlans, GOALS, LENGTHS } from './editor.js';
 import {
-  writeProject, renderProject, makeBlurBackground, aspectMismatch, ensureSeekable,
+  writeProject, renderProject, makeBlurBackground, aspectMismatch, ensureSeekable, layoutTimeline, prepareMusic,
   FORMATS, CAPTION_STYLES, FRAMINGS,
 } from './renderer.js';
 import { compressVideo, SIZE_PRESETS, RENDER_QUALITY } from './compress.js';
 import { run, exists, PipelineError } from './util.js';
 import { createAuth } from './auth.js';
-import { createLibrary, VIDEO_EXT } from './library.js';
+import { createLibrary, VIDEO_EXT, AUDIO_EXT } from './library.js';
+import { createScanner } from './scanner.js';
+import { createCloud } from './cloud.js';
 import { Server as TusServer } from '@tus/server';
 import { FileStore } from '@tus/file-store';
 
@@ -50,16 +52,19 @@ async function diskFree(dir) {
   }
 }
 
-// Library SSE listeners get every asset change (upload finished, storyboard ready, proxy progress…).
+// Library SSE listeners get every asset change (upload finished, storyboard ready, proxy progress,
+// AI scan results) plus scanner status and cloud-import progress.
 const libraryListeners = new Set();
-const library = createLibrary({
-  dir: DIRS.library,
-  onChange: (evt) => {
-    const data = `data: ${JSON.stringify(evt)}\n\n`;
-    for (const res of libraryListeners) res.write(data);
-  },
-});
+const broadcast = (evt) => {
+  const data = `data: ${JSON.stringify(evt)}\n\n`;
+  for (const res of libraryListeners) res.write(data);
+};
+let scanner = null;
+const library = createLibrary({ dir: DIRS.library, onChange: broadcast, onReady: (a) => scanner?.onReady(a) });
 await library.load();
+scanner = createScanner({ library, dir: DIRS.library, onChange: broadcast });
+scanner.load();
+const cloud = createCloud({ library, onChange: broadcast });
 
 // ---------------------------------------------------------------------------
 // Job store. A job = one project (a set of uploaded clips); each POST /api/edit
@@ -92,8 +97,9 @@ function newJob(id = crypto.randomUUID().slice(0, 12), name = '') {
   return job;
 }
 
-function freshSteps() {
+function freshSteps(autoFind = false) {
   return {
+    find: { status: autoFind ? 'pending' : 'skipped', message: '' },
     transcribe: { status: 'pending', message: '' },
     plan: { status: 'pending', message: '' },
     render: { status: 'pending', message: '' },
@@ -119,7 +125,7 @@ async function getJob(id) {
     job.result = JSON.parse(await fs.readFile(resultFile(id), 'utf8'));
     job.state = 'done';
     job.progress = 1;
-    for (const s of Object.values(job.steps)) s.status = 'done';
+    for (const s of Object.values(job.steps)) if (s.status !== 'skipped') s.status = 'done';
   }
   return job;
 }
@@ -149,6 +155,15 @@ async function allProjects() {
     .map((e) => e.name);
   const list = (await Promise.all(ids.map((id) => getJob(id).catch(() => null)))).filter(Boolean);
   return list.sort((a, b) => b.createdAt - a.createdAt);
+}
+
+/** Append library videos to a project as clips. `auto` marks clips Claude picked (replaced on the next auto run). */
+function addAssetClips(job, assets, { auto = false } = {}) {
+  for (const a of assets) {
+    const id = `clip${job.nextClip++}`;
+    const { id: _a, name, file, size, createdAt: _c, updatedAt: _u, status: _s, preview: _p, ai: _ai, source: _src, kind: _k, ...meta } = a;
+    job.clips.push({ ...meta, id, assetId: a.id, name, size, file: `${id}${path.extname(file)}`, path: library.sourcePath(a.id), ...(auto ? { auto: true } : {}) });
+  }
 }
 
 const projectName = (job) => job.name || job.result?.title || job.clips[0]?.name?.replace(/\.[^.]+$/, '') || 'Untitled project';
@@ -184,7 +199,7 @@ function emit(job) {
 function setStep(job, step, status, message, progress) {
   job.steps[step] = { status, message: message ?? job.steps[step].message };
   if (message) job.message = message;
-  if (progress != null) job.progress = progress;
+  if (progress != null) job.progress = Math.max(job.progress, progress); // never jumps backwards between steps
   emit(job);
 }
 
@@ -203,6 +218,8 @@ function publicClip(jobId, c) {
     width: c.width,
     height: c.height,
     hasAudio: c.hasAudio,
+    auto: Boolean(c.auto),
+    why: c.why || null,
     thumbnail: pub?.thumbnail || `/api/thumb/${jobId}/${c.id}`,
     sprite: pub?.sprite || null,
     // Clips uploaded before the library existed stream straight from the project folder.
@@ -242,10 +259,67 @@ const lengthLabel = (l) => (l === 'full' ? 'Full' : `${l}s`);
 // length × format with HyperFrames → compress.
 // ---------------------------------------------------------------------------
 
+const MUSIC_LEVEL = { low: 0.5, medium: 0.8, high: 1.1 };
+
+/**
+ * Step 0 (optional): Claude looks through the whole library — scanning anything it hasn't seen
+ * yet — and picks the clips that fit the request. Picks replace the previous run's picks;
+ * clips the user added by hand stay.
+ */
+async function findFootage(job, prompt, settings, { signal, ws, notes }) {
+  const videos = library.list().filter((a) => a.kind === 'video' && a.status === 'ready');
+  const unscanned = videos.filter((a) => a.ai.status !== 'done');
+  if (unscanned.length) {
+    setStep(job, 'find', 'active', `Claude is looking through ${unscanned.length} unscanned video${unscanned.length > 1 ? 's' : ''}…`, 0.01);
+    await scanner.scanNow(unscanned.map((a) => a.id), {
+      signal,
+      onProgress: (done, total) => setStep(job, 'find', 'active', `Claude is watching your library: ${done}/${total} clips…`, 0.01 + (0.05 * done) / Math.max(1, total)),
+    });
+  }
+  setStep(job, 'find', 'active', 'Claude is picking the clips that fit…', 0.06);
+  const longest = settings.lengths.includes('full') ? null : Math.max(...settings.lengths.map(Number));
+  const { picks, note } = await scanner.findFootage({
+    brief: prompt,
+    maxClips: longest ? Math.min(12, Math.max(4, Math.ceil(longest / 4))) : 12,
+    targetSeconds: longest,
+    signal,
+    cwd: ws,
+  });
+  if (!picks.length) {
+    throw new PipelineError("Claude couldn't find footage in your library that fits.", { hint: note || 'Upload or import more videos, or describe what to look for differently.' });
+  }
+  job.clips = job.clips.filter((c) => !c.auto);
+  const manual = new Set(job.clips.map((c) => c.assetId).filter(Boolean));
+  addAssetClips(job, picks.filter((p) => !manual.has(p.id)).map((p) => library.get(p.id)), { auto: true });
+  for (const c of job.clips) if (c.auto) c.why = picks.find((p) => p.id === c.assetId)?.why || '';
+  await saveManifest(job);
+  if (note) notes.push(`Footage search: ${note}`);
+  setStep(job, 'find', 'done', `Picked ${picks.length} clip${picks.length > 1 ? 's' : ''} from your library.`, 0.08);
+  return job.clips.map((c) => c.id);
+}
+
+/** Music catalog for the planner (m1, m2… → library assets) and the chosen mode. */
+function musicOptions(setting) {
+  if (setting === 'off') return { options: { mode: 'off', tracks: [] }, byKey: new Map() };
+  const tracks = library.list().filter((a) => a.kind === 'audio' && a.status === 'ready').slice(0, 80);
+  const byKey = new Map(tracks.map((a, i) => [`m${i + 1}`, a]));
+  const list = [...byKey].map(([id, a]) => ({
+    id,
+    name: a.name,
+    duration: a.duration,
+    tags: [a.tags.title, a.tags.artist, a.tags.genre].filter(Boolean).join(' · '),
+  }));
+  const fixed = [...byKey].find(([, a]) => a.id === setting)?.[0];
+  return { options: { mode: fixed ? 'fixed' : 'auto', fixed, tracks: list }, byKey };
+}
+
 async function runPipeline(job, { prompt, clipIds, settings, reusePlan }) {
   const ws = path.join(DIRS.workspace, job.id);
   const outDir = path.join(DIRS.output, job.id);
   const signal = job.abort.signal;
+  await fs.mkdir(ws, { recursive: true });
+  const notes = [];
+  if (settings.autoFind && !reusePlan) clipIds = await findFootage(job, prompt, settings, { signal, ws, notes });
   const clips = clipIds
     .map((id) => job.clips.find((c) => c.id === id))
     .map((c) => (c.assetId && library.get(c.assetId) ? { ...c, name: library.get(c.assetId).name } : c)); // follow renames
@@ -260,7 +334,6 @@ async function runPipeline(job, { prompt, clipIds, settings, reusePlan }) {
 
   // 1. Transcribe + analyze (0 → 30%) -----------------------------------------
   const tools = await detectTools();
-  const notes = [];
   const transcripts = {};
   for (let i = 0; i < clips.length; i++) {
     const c = clips[i];
@@ -317,10 +390,18 @@ async function runPipeline(job, { prompt, clipIds, settings, reusePlan }) {
         hint: 'Run a normal edit first (or pick lengths you already planned).',
       });
     }
-    planned = { ...saved, versions, warnings: [] };
+    // Music: keep the saved pick, switch to a newly chosen track, or drop it.
+    let music = null;
+    if (settings.music === 'auto') music = saved.music || null;
+    else if (settings.music !== 'off' && library.get(settings.music)) {
+      music = { assetId: settings.music, start: saved.music?.assetId === settings.music ? saved.music.start : 0 };
+    }
+    planned = { ...saved, versions, warnings: [], music };
     setStep(job, 'plan', 'done', 'Reused the saved plan — no Claude call.', 0.38);
   } else {
     setStep(job, 'plan', 'active', 'Claude is planning the edit…', 0.32);
+    const mus = musicOptions(settings.music);
+    if (settings.music === 'auto' && !mus.byKey.size) notes.push('No music in your library — drop MP3/WAV files into the Library to get background music.');
     const options = {
       goal: settings.goal,
       versions: settings.lengths,
@@ -328,9 +409,25 @@ async function runPipeline(job, { prompt, clipIds, settings, reusePlan }) {
       captions: settings.captions,
       cta: settings.cta,
       brand: settings.brand,
+      music: mus.byKey.size ? mus.options : null,
     };
+    // Library clips come with Claude's earlier look at them, plus their frame grid to look at again.
+    const sheets = {};
+    for (const c of clips.slice(0, 20)) {
+      if (!c.assetId || !(await library.ensureSheet(c.assetId))) continue;
+      const file = path.join('sheets', `${c.id}.jpg`);
+      await fs.mkdir(path.join(ws, 'sheets'), { recursive: true });
+      await fs.copyFile(library.sheetPath(c.assetId), path.join(ws, file));
+      sheets[c.id] = { file, times: library.get(c.assetId).preview.sheet.times };
+    }
     planned = await generateEditPlans({
-      clips: clips.map((c) => ({ ...c, transcript: transcripts[c.id], analysis: analysis[c.id] })),
+      clips: clips.map((c) => ({
+        ...c,
+        transcript: transcripts[c.id],
+        analysis: analysis[c.id],
+        visual: c.assetId && library.get(c.assetId)?.ai?.status === 'done' ? library.get(c.assetId).ai : null,
+        sheet: sheets[c.id] || null,
+      })),
       userPrompt: prompt,
       options,
       cwd: ws,
@@ -339,11 +436,14 @@ async function runPipeline(job, { prompt, clipIds, settings, reusePlan }) {
     });
     await fs.writeFile(path.join(ws, 'claude-prompt.md'), planned.prompt);
     await fs.writeFile(path.join(ws, 'claude-response.txt'), planned.raw);
+    const pick = planned.music && mus.byKey.get(planned.music.track);
+    planned.music = pick ? { assetId: pick.id, start: planned.music.start } : null;
     await fs.writeFile(
       planFile,
-      JSON.stringify({ title: planned.title, checklist: planned.checklist, versions: planned.versions }, null, 2),
+      JSON.stringify({ title: planned.title, checklist: planned.checklist, versions: planned.versions, music: planned.music }, null, 2),
     );
   }
+  const musicAsset = planned.music && library.get(planned.music.assetId);
   const n = planned.versions.length * formats.length;
   const planMsg = `${planned.versions.length} version${planned.versions.length > 1 ? 's' : ''} → ${n} video${n > 1 ? 's' : ''}`;
   setStep(job, 'plan', 'done', reusePlan ? `Reused saved plan (no Claude call): ${planMsg}.` : `Planned ${planMsg}.`, 0.38);
@@ -389,6 +489,7 @@ async function runPipeline(job, { prompt, clipIds, settings, reusePlan }) {
   }
 
   const variants = [];
+  const musicPaths = {};
   const jobsList = planned.versions.flatMap((v) => formats.map((f) => ({ v, f })));
   for (const [k, { v, f }] of jobsList.entries()) {
     const id = `${v.id}-${f.key}`;
@@ -399,6 +500,15 @@ async function runPipeline(job, { prompt, clipIds, settings, reusePlan }) {
     setStep(job, 'render', 'active', `${prefix}Composing ${label}…`, base);
 
     const projectDir = path.join(ws, 'project', id);
+    // One music cut per length (shared by every format of that length).
+    if (musicAsset && !musicPaths[v.id]) {
+      setStep(job, 'render', 'active', `${prefix}Mixing music for ${lengthLabel(v.id)}…`, base);
+      musicPaths[v.id] = await prepareMusic(library.sourcePath(musicAsset.id), path.join(ws, 'music', `${v.id}.m4a`), {
+        start: planned.music.start,
+        duration: layoutTimeline(v.plan).total,
+        signal,
+      });
+    }
     const { total, captions } = await writeProject({
       projectDir,
       plan: { ...v.plan, title: planned.title },
@@ -418,6 +528,8 @@ async function runPipeline(job, { prompt, clipIds, settings, reusePlan }) {
         accent: settings.accent,
         logoPath: settings.useLogo && job.logo ? path.join(DIRS.uploads, job.id, job.logo.file) : null,
         watermark: settings.watermark,
+        musicPath: musicPaths[v.id] || null,
+        musicVolume: MUSIC_LEVEL[settings.musicLevel],
       },
     });
 
@@ -471,6 +583,7 @@ async function runPipeline(job, { prompt, clipIds, settings, reusePlan }) {
     warnings: [...mergeNotes(notes, clips.map((c) => c.name)), ...planned.warnings],
     variants,
     totalSize: variants.reduce((s, x) => s + x.size, 0),
+    music: musicAsset ? { name: musicAsset.name, start: planned.music.start } : null,
     settings,
   };
   await fs.writeFile(resultFile(job.id), JSON.stringify(result, null, 2));
@@ -479,7 +592,7 @@ async function runPipeline(job, { prompt, clipIds, settings, reusePlan }) {
 
 async function startPipeline(job, opts) {
   job.state = 'running';
-  job.steps = freshSteps();
+  job.steps = freshSteps(opts.settings.autoFind);
   job.error = null;
   job.result = null;
   job.progress = 0;
@@ -575,8 +688,8 @@ const tus = new TusServer({
   async onUploadCreate(_req, upload) {
     const name = upload.metadata?.filename || '';
     const type = upload.metadata?.filetype || '';
-    if (!type.startsWith('video/') && !VIDEO_EXT.test(name)) {
-      throw { status_code: 415, body: `${name || 'That file'} is not a video file.\n` };
+    if (!type.startsWith('video/') && !type.startsWith('audio/') && !VIDEO_EXT.test(name) && !AUDIO_EXT.test(name)) {
+      throw { status_code: 415, body: `${name || 'That file'} is not a video or music file.\n` };
     }
     const { free } = await diskFree(DIRS.library);
     if (free != null && upload.size && upload.size > free - DISK_HEADROOM) {
@@ -667,6 +780,74 @@ app.delete('/api/library/:assetId', withAsset(async (_req, res, a) => {
   res.json({ ok: true, removedFrom: using.map((j) => j.id) });
 }));
 
+// ---- AI scan -------------------------------------------------------------------
+
+app.get('/api/scanner', (_req, res) => res.json(scanner.status()));
+app.patch('/api/scanner', async (req, res) => {
+  res.json(await scanner.setSettings({ autoScan: req.body?.autoScan !== false }));
+});
+// POST /api/library/scan — { ids?: [...] } (re)scan these videos, or every unscanned one.
+app.post('/api/library/scan', (req, res) => {
+  const ids = Array.isArray(req.body?.ids)
+    ? req.body.ids.filter((id) => library.get(id))
+    : library.list().filter((a) => a.kind === 'video' && ['none', 'error'].includes(a.ai.status)).map((a) => a.id);
+  scanner.rescan(ids);
+  res.json({ queued: ids.length, scanner: scanner.status() });
+});
+
+// ---- cloud import (rclone: Google Drive & co.) -------------------------------------
+
+app.get('/api/cloud', async (_req, res) => {
+  res.json({ available: cloud.available(), remotes: await cloud.remotes(), connect: cloud.connectState(), jobs: cloud.jobs() });
+});
+// POST /api/cloud/connect — { local: true } shows a Google sign-in link (browser on this machine);
+// { local: false } returns an `rclone authorize` command to run on any computer, then POST the result to /token.
+app.post('/api/cloud/connect', async (req, res, next) => {
+  try {
+    res.json(await cloud.startConnect({ name: String(req.body?.name || 'gdrive'), local: req.body?.local !== false }));
+  } catch (err) {
+    next(err);
+  }
+});
+app.post('/api/cloud/connect/token', async (req, res, next) => {
+  try {
+    res.json(await cloud.submitToken(req.body?.token));
+  } catch (err) {
+    next(err);
+  }
+});
+app.delete('/api/cloud/connect', async (_req, res) => {
+  await cloud.cancelConnect();
+  res.json({ ok: true });
+});
+// POST /api/cloud/preview — { remote, link?, sharedWithMe? } → what an import would bring in.
+app.post('/api/cloud/preview', async (req, res, next) => {
+  try {
+    res.json(await cloud.preview({ remote: String(req.body?.remote || ''), link: req.body?.link, sharedWithMe: req.body?.sharedWithMe === true }));
+  } catch (err) {
+    next(err);
+  }
+});
+app.post('/api/cloud/import', async (req, res, next) => {
+  try {
+    const job = await cloud.startImport({
+      remote: String(req.body?.remote || ''),
+      link: req.body?.link,
+      sharedWithMe: req.body?.sharedWithMe === true,
+      check: async (bytes) => {
+        const { free } = await diskFree(DIRS.library);
+        if (free == null || bytes <= free - DISK_HEADROOM) return;
+        const gb = (n) => (n / 1024 ** 3).toFixed(1);
+        throw new PipelineError(`Not enough disk space: the import is ${gb(bytes)} GB, ${gb(Math.max(0, free - DISK_HEADROOM))} GB free.`);
+      },
+    });
+    res.status(202).json({ job });
+  } catch (err) {
+    next(err);
+  }
+});
+app.delete('/api/cloud/import/:id', (req, res) => res.json({ ok: cloud.cancelImport(req.params.id) }));
+
 // ---- projects ------------------------------------------------------------------
 
 app.get('/api/projects', async (_req, res) => {
@@ -695,12 +876,9 @@ app.post('/api/projects/:jobId/clips', async (req, res) => {
   const ids = Array.isArray(req.body?.assetIds) ? req.body.assetIds : [];
   const assets = ids.map((id) => library.get(id));
   if (!ids.length || assets.some((a) => !a)) return res.status(400).json({ error: 'Pick videos from the library.' });
+  if (assets.some((a) => a.kind === 'audio')) return res.status(400).json({ error: 'Music tracks go in the Music option under Output, not in the clip list.' });
   if (job.clips.length + assets.length > 50) return res.status(400).json({ error: 'A project can hold at most 50 clips.' });
-  for (const a of assets) {
-    const id = `clip${job.nextClip++}`;
-    const { id: _a, name, file, size, createdAt: _c, updatedAt: _u, status: _s, preview: _p, ...meta } = a;
-    job.clips.push({ ...meta, id, assetId: a.id, name, size, file: `${id}${path.extname(file)}`, path: library.sourcePath(a.id) });
-  }
+  addAssetClips(job, assets);
   await saveManifest(job);
   res.json({ clips: job.clips.map((c) => publicClip(job.id, c)), project: publicProject(job) });
 });
@@ -843,10 +1021,11 @@ app.post('/api/edit', async (req, res) => {
   if (job.state === 'running') return res.status(409).json({ error: 'This project is already rendering.' });
   if (!reusePlan && (!prompt || !String(prompt).trim())) return res.status(400).json({ error: 'Describe how you want the video edited.' });
 
+  const autoFind = s.autoFind === true && !reusePlan;
   const ids = Array.isArray(clipIds) && clipIds.length ? clipIds : job.clips.map((c) => c.id);
   const missing = ids.filter((id) => !job.clips.some((c) => c.id === id));
   if (missing.length) return res.status(400).json({ error: `Unknown clip(s): ${missing.join(', ')}` });
-  if (!ids.length) return res.status(400).json({ error: 'Upload at least one clip.' });
+  if (!ids.length && !autoFind) return res.status(400).json({ error: 'Add at least one clip, or turn on "Let Claude find the clips".' });
 
   const settings = {
     whisperModel: WHISPER_MODELS.includes(s.whisperModel) ? s.whisperModel : 'medium',
@@ -865,6 +1044,9 @@ app.post('/api/edit', async (req, res) => {
     accent: /^#[0-9a-f]{6}$/i.test(s.accent || '') ? s.accent : '#7c5cff',
     brand: cleanText(s.brand, 60),
     cta: cleanText(s.cta, 60),
+    autoFind,
+    music: s.music === 'auto' || (library.get(s.music)?.kind === 'audio') ? s.music : 'off',
+    musicLevel: MUSIC_LEVEL[s.musicLevel] ? s.musicLevel : 'medium',
   };
   const count = settings.formats.length * settings.lengths.length;
   if (count > MAX_VARIANTS) {

@@ -350,7 +350,7 @@ function renderImport() {
       <li>Restart ClipForge and open this again.</li></ol>`;
     return;
   }
-  const drives = c.remotes.filter((r) => r.type === 'drive' && !(conn.remote === r.name && conn.status !== 'done' && conn.status !== 'idle'));
+  const drives = c.remotes.filter((r) => r.type === 'drive' && r.connected !== false && !(conn.remote === r.name && conn.status !== 'done' && conn.status !== 'idle'));
   if (['waiting-browser', 'starting', 'resolving'].includes(conn.status)) {
     if (!conn.url) {
       body.innerHTML = '<p role="status">Getting the Google sign-in ready…</p>';
@@ -384,6 +384,7 @@ function renderImport() {
       <p class="im-actions"><button class="btn" type="button" data-im="token">Connect</button> <button class="btn sm ghost" type="button" data-im="cancel-connect">Cancel</button></p>`;
     return;
   }
+  const others = c.remotes.filter((r) => r.type !== 'drive');
   if (!drives.length && !imp.useOther) {
     body.innerHTML = `<p>Connect your Google account once. ClipForge gets <strong>read-only</strong> access — it copies videos and music into your library and never changes anything in your Drive.</p>
       ${conn.status === 'error' ? errorHtml(conn) : ''}
@@ -391,10 +392,10 @@ function renderImport() {
         <button class="btn" type="button" data-im="connect-local">Connect Google Drive</button>
       </div>
       <p class="hint-line">Works from a phone too. <button class="btn xs ghost" type="button" data-im="connect-remote">Other way: use a computer with rclone</button></p>
-      ${c.remotes.length ? `<p class="hint-line">Other storage set up in rclone: ${c.remotes.map((r) => esc(`${r.name} (${r.type})`)).join(', ')} — <button class="btn xs ghost" type="button" data-im="use-other">import from those</button></p>` : ''}`;
+      ${others.length ? `<p class="hint-line">Other storage set up in rclone: ${others.map((r) => esc(`${r.name} (${r.type})`)).join(', ')} — <button class="btn xs ghost" type="button" data-im="use-other">import from those</button></p>` : ''}`;
     return;
   }
-  const remotes = c.remotes;
+  const remotes = c.remotes.filter((r) => r.connected !== false);
   if (!remotes.some((r) => r.name === imp.remote)) imp.remote = drives[0]?.name || remotes[0].name;
   const isDrive = remotes.find((r) => r.name === imp.remote)?.type === 'drive';
   const p = imp.preview;
@@ -405,7 +406,7 @@ function renderImport() {
         <input class="field" id="imLink" value="${esc(imp.link)}" placeholder="${isDrive ? 'https://drive.google.com/drive/folders/…' : 'Videos/2024'}" autocomplete="off" /></label>
       ${isDrive ? `<label class="tg"><input type="checkbox" id="imShared" ${imp.sharedWithMe ? 'checked' : ''} /> <span>Import “Shared with me” instead of My Drive</span></label>` : ''}
       <div class="im-actions"><button class="btn ghost" type="button" data-im="preview" ${imp.busy ? 'disabled' : ''}>${imp.busy ? 'Looking…' : 'Check what\'s there'}</button></div>
-      ${imp.error ? `<p class="uperr" role="alert">${esc(imp.error)}</p>` : ''}
+      ${imp.error ? `<p class="uperr" role="alert">${esc(imp.error)}</p>${/connect Google Drive again/i.test(imp.error) ? '<p class="im-actions"><button class="btn sm" type="button" data-im="connect-local">Reconnect Google Drive</button></p>' : ''}` : ''}
       ${p ? `<div class="im-sum" role="status">Found <strong>${plural(p.videos, 'video')}</strong> and <strong>${plural(p.music, 'music file')}</strong>${p.alreadyImported ? ` (${p.alreadyImported} already in your library)` : ''}.
           ${p.newFiles ? `<br /><strong>${plural(p.newFiles, 'new file')}, ${fmtSize(p.newBytes)}</strong> will be copied${state.storage?.free != null ? ` — ${fmtSize(state.storage.free)} free on the server` : ''}.
           <ul>${p.sample.map((x) => `<li>${esc(x)}</li>`).join('')}${p.newFiles > p.sample.length ? `<li>…and ${p.newFiles - p.sample.length} more</li>` : ''}</ul>` : '<br />Nothing new to import.'}</div>
@@ -449,7 +450,7 @@ $('#imBody').addEventListener('click', async (e) => {
       state.cloud.connect = await api('/api/cloud/connect/token', { method: 'POST', body: { token: $('#tokenIn').value } });
       await loadCloud();
     } else if (act === 'use-other') {
-      imp.remote = state.cloud.remotes[0].name;
+      imp.remote = state.cloud.remotes.find((r) => r.type !== 'drive').name;
       imp.useOther = true;
     } else if (act === 'preview') {
       imp.busy = true; imp.error = ''; renderImport();

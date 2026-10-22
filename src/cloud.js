@@ -117,7 +117,9 @@ export function createCloud({ library, onChange = () => {} }) {
       return connect;
     }
 
-    // Same machine: rclone opens a sign-in page and waits for Google to redirect back to it.
+    // rclone listens on 127.0.0.1:53682 (on the ClipForge machine) for Google's redirect. On that
+    // machine the redirect completes by itself; from a phone or another computer the redirect lands
+    // on a page that can't load — the person pastes its address back and finishFromRedirect relays it.
     connect = { status: 'starting', remote: name };
     const proc = spawn(RCLONE, ['config', 'update', name, '--continue', '--state', first.State, '--result', 'true', '--non-interactive'], {
       stdio: ['ignore', 'pipe', 'pipe'],
@@ -128,25 +130,77 @@ export function createCloud({ library, onChange = () => {} }) {
     proc.stdout.on('data', (d) => (out += d));
     proc.stderr.on('data', (d) => {
       err += d;
-      const url = err.match(/https?:\/\/127\.0\.0\.1:\d+\/auth\?state=[\w-]+/)?.[0];
-      if (url && connect.status === 'starting') {
-        connect = { status: 'waiting-browser', remote: name, url };
-        emitConnect();
+      const local = err.match(/https?:\/\/127\.0\.0\.1:\d+\/auth\?state=[\w-]+/)?.[0];
+      if (local && connect.status === 'starting') {
+        connect = { status: 'resolving', remote: name };
+        googleUrl(local).then((url) => {
+          if (connect.status !== 'resolving') return;
+          connect = { status: 'waiting-browser', remote: name, url, state: new URL(local).searchParams.get('state') };
+          emitConnect();
+        });
       }
     });
     proc.on('close', async (code) => {
       if (connectProc !== proc) return; // cancelled
       connectProc = null;
       try {
-        if (code !== 0) throw new PipelineError('Google sign-in failed.', { detail: tail(err) });
+        if (code !== 0) {
+          const expired = /invalid_grant/.test(err);
+          throw new PipelineError(
+            expired ? 'Google didn’t accept that sign-in — it expired or was already used. Tap “Connect Google Drive” and try again.' : 'Google sign-in failed.',
+            { detail: tail(err) },
+          );
+        }
         await finishConfig(name, parseState(out));
       } catch (e) {
+        // Don't leave a half-made remote behind — it would look connected but fail.
+        await run(RCLONE, ['config', 'delete', name]).catch(() => {});
         connect = { status: 'error', remote: name, error: e.message, detail: e.detail || null };
         emitConnect();
       }
     });
     // Give rclone a moment to print the sign-in link so the first response already has it.
-    for (let i = 0; i < 30 && connect.status === 'starting'; i++) await new Promise((r) => setTimeout(r, 100));
+    for (let i = 0; i < 50 && ['starting', 'resolving'].includes(connect.status); i++) await new Promise((r) => setTimeout(r, 100));
+    return connect;
+  }
+
+  /** rclone's local /auth page just redirects to Google — hand out Google's address so any device can open it. */
+  async function googleUrl(local) {
+    try {
+      const r = await fetch(local, { redirect: 'manual' });
+      const loc = r.headers.get('location');
+      if (loc && /^https:\/\/accounts\.google\.com\//.test(loc)) return loc;
+    } catch {
+      /* fall back to the local address (works on the ClipForge machine itself) */
+    }
+    return local;
+  }
+
+  /**
+   * After "Allow", Google redirects the browser to http://127.0.0.1:53682/?state=…&code=… — which only
+   * exists on the ClipForge machine. The person pastes that address; we pass its query to rclone here.
+   */
+  async function finishFromRedirect(pasted) {
+    if (connect.status !== 'waiting-browser') throw new PipelineError('Start connecting Google Drive first.');
+    let u;
+    try {
+      u = new URL(String(pasted || '').trim());
+    } catch {
+      throw new PipelineError('Paste the whole address of the page Google opened — it starts with http://127.0.0.1:53682/');
+    }
+    if (!['127.0.0.1', 'localhost'].includes(u.hostname) || u.port !== '53682') {
+      throw new PipelineError('That isn\'t the right address — it should start with http://127.0.0.1:53682/');
+    }
+    if (u.searchParams.get('error')) throw new PipelineError('Google said access was not allowed — try again and tap Allow.');
+    if (u.searchParams.get('state') !== connect.state || !u.searchParams.get('code')) {
+      throw new PipelineError('That address is from an older sign-in — tap “Sign in with Google” again and use the new one.');
+    }
+    const q = new URLSearchParams({ state: u.searchParams.get('state'), code: u.searchParams.get('code'), scope: u.searchParams.get('scope') || '' });
+    const r = await fetch(`http://127.0.0.1:53682/?${q}`).catch(() => null);
+    if (!r || !r.ok) throw new PipelineError('The sign-in expired — tap “Sign in with Google” again.');
+    // rclone now trades the code for a token and finishes; wait for it.
+    for (let i = 0; i < 150 && connect.status === 'waiting-browser'; i++) await new Promise((res) => setTimeout(res, 100));
+    if (connect.status === 'error') throw new PipelineError(connect.error, { detail: connect.detail });
     return connect;
   }
 
@@ -309,6 +363,7 @@ export function createCloud({ library, onChange = () => {} }) {
     connectState: () => connect,
     startConnect,
     submitToken,
+    finishFromRedirect,
     cancelConnect,
     preview,
     startImport,

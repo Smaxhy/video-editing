@@ -850,6 +850,14 @@ app.post('/api/cloud/connect/token', async (req, res, next) => {
     next(err);
   }
 });
+// POST /api/cloud/connect/finish — { url } the address Google redirected to after "Allow" (phones).
+app.post('/api/cloud/connect/finish', async (req, res, next) => {
+  try {
+    res.json(await cloud.finishFromRedirect(req.body?.url));
+  } catch (err) {
+    next(err);
+  }
+});
 app.delete('/api/cloud/connect', async (_req, res) => {
   await cloud.cancelConnect();
   res.json({ ok: true });

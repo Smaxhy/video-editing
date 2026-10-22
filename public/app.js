@@ -347,10 +347,23 @@ function renderImport() {
     return;
   }
   const drives = c.remotes.filter((r) => r.type === 'drive' && !(conn.remote === r.name && conn.status !== 'done' && conn.status !== 'idle'));
-  if (conn.status === 'waiting-browser' || conn.status === 'starting') {
-    body.innerHTML = `<p><strong>Sign in to Google</strong> in the tab that opens and allow read-only access. ClipForge can copy your files but can never change or delete anything in your Drive.</p>
-      ${conn.url ? `<p class="im-actions"><a class="btn" href="${esc(conn.url)}" target="_blank" rel="noopener">Open Google sign-in</a> <span class="hint-line">This link only works on the computer running ClipForge.</span></p>` : '<p role="status">Starting…</p>'}
-      <p class="im-actions"><button class="btn sm ghost" type="button" data-im="cancel-connect">Cancel</button> <button class="btn sm ghost" type="button" data-im="remote-mode">I'm on a phone or a different computer</button></p>`;
+  if (['waiting-browser', 'starting', 'resolving'].includes(conn.status)) {
+    if (!conn.url) {
+      body.innerHTML = '<p role="status">Getting the Google sign-in ready…</p>';
+      return;
+    }
+    body.innerHTML = `<p>ClipForge gets <strong>read-only</strong> access — it can copy your videos and music but never change or delete anything in your Drive.</p>
+      <ol class="im-steps">
+        <li><a class="btn" href="${esc(conn.url)}" target="_blank" rel="noopener">Sign in with Google</a><br />Pick your account and tap <strong>Allow</strong> (Google may say the app is “rclone” — that's the open-source tool ClipForge uses).</li>
+        <li>Google then opens a page that <strong>doesn't load</strong> — “can't connect to the server”, with an address starting <code>127.0.0.1:53682</code>. That's expected.</li>
+        <li>Tap that page's address bar, <strong>copy the whole address</strong>, come back to this tab and paste it here:</li>
+      </ol>
+      <label class="sr-only" for="redirIn">Address of the page Google opened</label>
+      <textarea class="token" id="redirIn" placeholder="http://127.0.0.1:53682/?state=…&code=…" style="min-height:70px"></textarea>
+      ${conn.error ? `<p class="uperr" role="alert">${esc(conn.error)}</p>` : ''}
+      <p class="im-actions"><button class="btn" type="button" data-im="finish">Finish connecting</button>
+        <button class="btn sm ghost" type="button" data-im="cancel-connect">Cancel</button></p>
+      <p class="hint-line">Only if ClipForge runs on this very computer (not in a codespace) does it connect by itself after Allow.</p>`;
     return;
   }
   if (conn.status === 'need-token') {
@@ -372,8 +385,8 @@ function renderImport() {
       ${conn.status === 'error' ? `<p class="uperr" role="alert">${esc(conn.error)}</p>` : ''}
       <div class="im-actions">
         <button class="btn" type="button" data-im="connect-local">Connect Google Drive</button>
-        <button class="btn ghost" type="button" data-im="connect-remote">I'm on a phone / ClipForge runs on a server</button>
       </div>
+      <p class="hint-line">Works from a phone too. <button class="btn xs ghost" type="button" data-im="connect-remote">Other way: use a computer with rclone</button></p>
       ${c.remotes.length ? `<p class="hint-line">Other storage set up in rclone: ${c.remotes.map((r) => esc(`${r.name} (${r.type})`)).join(', ')} — <button class="btn xs ghost" type="button" data-im="use-other">import from those</button></p>` : ''}`;
     return;
   }
@@ -414,11 +427,13 @@ $('#imBody').addEventListener('click', async (e) => {
   if (!act) return;
   const opts = () => ({ remote: imp.remote, link: imp.link.trim(), sharedWithMe: imp.sharedWithMe });
   try {
-    if (act === 'connect-local' || act === 'connect-remote' || act === 'remote-mode') {
+    if (act === 'connect-local' || act === 'connect-remote') {
       state.cloud.connect = { status: 'starting' };
       renderImport();
       state.cloud.connect = await api('/api/cloud/connect', { method: 'POST', body: { local: act === 'connect-local' } });
-      if (state.cloud.connect.url) window.open(state.cloud.connect.url, '_blank', 'noopener');
+    } else if (act === 'finish') {
+      state.cloud.connect = await api('/api/cloud/connect/finish', { method: 'POST', body: { url: $('#redirIn').value } });
+      if (state.cloud.connect.status === 'done') { await loadCloud(); toast('Google Drive connected.', 'ok'); }
     } else if (act === 'cancel-connect') {
       await api('/api/cloud/connect', { method: 'DELETE' });
       state.cloud.connect = { status: 'idle' };

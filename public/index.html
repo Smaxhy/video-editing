@@ -28,6 +28,9 @@
   <symbol id="i-upload" viewBox="0 0 24 24"><path d="M12 16V4m0 0l-5 5m5-5l5 5M4 16v3a1 1 0 001 1h14a1 1 0 001-1v-3" stroke="currentColor" stroke-width="2" fill="none" stroke-linecap="round" stroke-linejoin="round"/></symbol>
   <symbol id="i-lib" viewBox="0 0 24 24"><path d="M4 5h16v14H4zM4 9h16M9 5v4m6-4v4M10 12.5v4l3.5-2z" stroke="currentColor" stroke-width="1.8" fill="none" stroke-linejoin="round"/></symbol>
   <symbol id="i-menu" viewBox="0 0 24 24"><path d="M4 7h16M4 12h16M4 17h16" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"/></symbol>
+  <symbol id="i-cloud" viewBox="0 0 24 24"><path d="M7 18h10a4 4 0 00.6-7.95A6 6 0 006.2 9.5 4.25 4.25 0 007 18zm5-7v5m0-5l-2.2 2.2M12 11l2.2 2.2" stroke="currentColor" stroke-width="1.8" fill="none" stroke-linecap="round" stroke-linejoin="round"/></symbol>
+  <symbol id="i-spark" viewBox="0 0 24 24"><path d="M12 3l1.8 5.2L19 10l-5.2 1.8L12 17l-1.8-5.2L5 10l5.2-1.8zM18.5 15.5l.8 2.2 2.2.8-2.2.8-.8 2.2-.8-2.2-2.2-.8 2.2-.8z" fill="currentColor"/></symbol>
+  <symbol id="i-music" viewBox="0 0 24 24"><path d="M9 18V5l11-2v13M9 18a3 3 0 11-6 0 3 3 0 016 0zm11-2a3 3 0 11-6 0 3 3 0 016 0z" stroke="currentColor" stroke-width="1.8" fill="none" stroke-linejoin="round"/></symbol>
   <symbol id="i-plus" viewBox="0 0 24 24"><path d="M12 5v14M5 12h14" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"/></symbol>
 </svg>
 
@@ -58,11 +61,18 @@
       <div class="view-head">
         <div>
           <h1 id="libTitle">Library</h1>
-          <p>Everything you upload stays here — any size, and you can use each video in as many projects as you like.</p>
+          <p>Everything you upload or import stays here. Claude watches each video so you can search by what's in it — and let it pick clips for you.</p>
         </div>
         <div class="toolbar">
-          <label class="sr-only" for="libSearch">Search videos</label>
-          <input class="field" type="search" id="libSearch" placeholder="Search videos" autocomplete="off" />
+          <label class="sr-only" for="libSearch">Search by name or by what's in the video</label>
+          <input class="field" type="search" id="libSearch" placeholder="Search: “chainsaw”, “sunset”, “pov”…" autocomplete="off" />
+          <label class="sr-only" for="libFilter">Show</label>
+          <select class="field" id="libFilter">
+            <option value="all">Everything</option>
+            <option value="video">Videos</option>
+            <option value="audio">Music</option>
+            <option value="unscanned">Not scanned yet</option>
+          </select>
           <label class="sr-only" for="libSort">Sort videos</label>
           <select class="field" id="libSort">
             <option value="new">Newest first</option>
@@ -71,15 +81,27 @@
             <option value="size">Largest first</option>
             <option value="long">Longest first</option>
           </select>
-          <button class="btn" type="button" data-pick-files><svg width="18" height="18" aria-hidden="true"><use href="#i-upload"/></svg>Upload videos</button>
+          <button class="btn ghost" type="button" id="openImport"><svg width="18" height="18" aria-hidden="true"><use href="#i-cloud"/></svg>Import from Google Drive</button>
+          <button class="btn" type="button" data-pick-files><svg width="18" height="18" aria-hidden="true"><use href="#i-upload"/></svg>Upload</button>
         </div>
       </div>
 
       <button class="drop" type="button" id="libDrop" data-pick-files>
         <svg aria-hidden="true"><use href="#i-upload"/></svg>
-        <strong>Drop videos anywhere on this page</strong>
-        <span>or click to browse — any size, any format (MP4, MOV, MKV, ProRes, HEVC…). Uploads resume if the connection drops.</span>
+        <strong>Drop videos or music anywhere on this page</strong>
+        <span>or click to browse — any size, any format (MP4, MOV, MKV, ProRes, HEVC, MP3, WAV…). Uploads resume if the connection drops.</span>
       </button>
+
+      <section class="scanbar" id="scanBar" aria-labelledby="scanH">
+        <svg class="ico" aria-hidden="true"><use href="#i-spark"/></svg>
+        <div class="grow">
+          <strong id="scanH">AI scan</strong>
+          <span id="scanStatus">Claude looks at every new video and notes what's in it.</span>
+        </div>
+        <button class="btn sm ghost hidden" type="button" id="scanAll"></button>
+        <label class="switch"><input type="checkbox" id="autoScan" role="switch" checked /><span>Scan new videos automatically</span></label>
+      </section>
+      <ul class="jobs" id="importJobs" aria-label="Imports"></ul>
 
       <div class="card hidden" id="resumeNote" role="note" style="margin-top:16px"></div>
       <ul class="grid" id="uploadGrid" aria-label="Uploads in progress"></ul>
@@ -112,6 +134,11 @@
         <div class="col">
           <section class="card" aria-labelledby="clipsH">
             <h2 id="clipsH">Clips <span class="meta" id="clipMeta"></span></h2>
+            <label class="autofind">
+              <input type="checkbox" id="autoFind" role="switch" />
+              <span><strong><svg width="16" height="16" aria-hidden="true"><use href="#i-spark"/></svg> Let Claude find the clips</strong>
+                <small>Claude searches your whole library (including everything imported from Drive) for footage that fits your description and adds it here. Clips you add yourself are always used too.</small></span>
+            </label>
             <p class="sr-only" id="orderHelp">Claude sees the clips in this order. Use the arrow buttons or drag to reorder.</p>
             <ol class="strip" id="clipStrip" aria-describedby="orderHelp"></ol>
             <ul class="grid" id="projUploads" aria-label="Uploads in progress" style="margin:0 0 12px"></ul>
@@ -170,6 +197,18 @@
                 <button type="button" data-v="bold" aria-pressed="true">Bold</button>
                 <button type="button" data-v="clean">Clean</button>
                 <button type="button" data-v="off">Off</button>
+              </div>
+            </div>
+
+            <div class="opt"><label class="lbl" for="music">Music</label>
+              <div class="music-row">
+                <select id="music"></select>
+                <div class="seg" data-name="musicLevel" data-single role="group" aria-label="Music volume">
+                  <button type="button" data-v="low">Quiet</button>
+                  <button type="button" data-v="medium" aria-pressed="true">Medium</button>
+                  <button type="button" data-v="high">Loud</button>
+                </div>
+                <small class="hint-line" id="musicHint"></small>
               </div>
             </div>
 
@@ -262,6 +301,7 @@
           <section class="card hidden" id="progressCard" aria-labelledby="progH">
             <h2 id="progH">Progress</h2>
             <ol class="steps">
+              <li class="step pending hidden" data-step="find"><div class="dot" aria-hidden="true"></div><div><div class="t">Find footage (Claude)</div><div class="m"></div></div></li>
               <li class="step pending" data-step="transcribe"><div class="dot" aria-hidden="true"></div><div><div class="t">Transcribe (Whisper)</div><div class="m"></div></div></li>
               <li class="step pending" data-step="plan"><div class="dot" aria-hidden="true"></div><div><div class="t">Plan the edit (Claude)</div><div class="m"></div></div></li>
               <li class="step pending" data-step="render"><div class="dot" aria-hidden="true"></div><div><div class="t">Render &amp; compress (HyperFrames)</div><div class="m"></div></div></li>
@@ -304,7 +344,7 @@
   </main>
 </div>
 
-<input type="file" id="fileInput" accept="video/*,.mkv,.mts,.m2ts,.mxf" multiple hidden />
+<input type="file" id="fileInput" accept="video/*,audio/*,.mkv,.mts,.m2ts,.mxf" multiple hidden />
 <div class="dropveil" id="dropveil" aria-hidden="true"><div>Drop to upload<small id="dropHint">Videos go to your library</small></div></div>
 
 <!-- Video preview -->
@@ -316,8 +356,18 @@
   <div class="dlg-b">
     <div class="player" id="vPlayer"></div>
     <dl class="facts" id="vFacts"></dl>
+    <div class="ai-box" id="vAI"></div>
     <div class="dlg-actions" id="vActions"></div>
   </div>
+</dialog>
+
+<!-- Import from Google Drive (rclone) -->
+<dialog id="importDlg" aria-labelledby="imTitle">
+  <div class="dlg-h">
+    <h2 id="imTitle">Import from Google Drive</h2>
+    <button class="icon-btn" type="button" data-close aria-label="Close"><svg><use href="#i-x"/></svg></button>
+  </div>
+  <div class="dlg-b" id="imBody"></div>
 </dialog>
 
 <!-- Library picker for a project -->

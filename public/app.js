@@ -18,7 +18,8 @@ const CODEC = { h264: 'H.264', hevc: 'HEVC', vp9: 'VP9', vp8: 'VP8', av1: 'AV1',
 const codec = (c) => CODEC[c] || (c ? c.toUpperCase() : '—');
 const FORMAT_LABEL = { '9x16': '9:16', '4x5': '4:5', '1x1': '1:1', '16x9': '16:9' };
 const VIDEO_EXT = /\.(mp4|mov|m4v|mkv|webm|avi|mts|m2ts|mpg|mpeg|3gp|wmv|flv|mxf|ts)$/i;
-const isVideoFile = (f) => f.size > 0 && (f.type.startsWith('video/') || VIDEO_EXT.test(f.name));
+const AUDIO_EXT = /\.(mp3|wav|m4a|aac|flac|ogg|oga|opus|aif|aiff)$/i;
+const isMediaFile = (f) => f.size > 0 && (f.type.startsWith('video/') || f.type.startsWith('audio/') || VIDEO_EXT.test(f.name) || AUDIO_EXT.test(f.name));
 const store = {
   get: (k, d = null) => { try { return JSON.parse(localStorage.getItem(k)) ?? d; } catch { return d; } },
   set: (k, v) => { try { localStorage.setItem(k, JSON.stringify(v)); } catch {} },
@@ -31,6 +32,8 @@ const state = {
   storage: null,
   projects: [],
   selected: new Set(),
+  scanner: null,
+  cloud: { available: false, remotes: [], connect: { status: 'idle' }, jobs: [] },
   jobId: null,
   project: null,
   clips: [],
@@ -119,25 +122,49 @@ document.addEventListener('pointerout', (e) => {
 // Library
 // ---------------------------------------------------------------------------
 function assetStatus(a) {
-  if (a.status === 'ready') return a.preview.proxy === 'failed' ? 'No browser preview' : '';
+  if (a.status === 'ready') {
+    if (a.ai.status === 'scanning') return 'Claude is looking…';
+    if (a.ai.status === 'queued') return 'Waiting for AI scan';
+    return a.preview.proxy === 'failed' ? 'No browser preview' : '';
+  }
   if (a.preview.proxy === 'encoding') return `Preparing preview ${Math.round((a.preview.progress || 0) * 100)}%`;
   if (a.preview.step === 'storyboard') return 'Making storyboard…';
   return 'Processing…';
 }
-const assetSub = (a) => [`${a.width}×${a.height}`, fmtSize(a.size), codec(a.videoCodec), a.hasAudio ? '' : 'no audio'].filter(Boolean).join(' · ');
+const assetSub = (a) => (a.kind === 'audio'
+  ? [a.tags.artist, a.tags.genre, fmtSize(a.size)]
+  : [`${a.width}×${a.height}`, fmtSize(a.size), codec(a.videoCodec), a.hasAudio ? '' : 'no audio']).filter(Boolean).join(' · ');
+const assetTitle = (a) => (a.kind === 'audio' && a.tags.title ? a.tags.title : a.name);
+/** One line of what Claude saw, plus the first few tags. */
+function aiHtml(a) {
+  if (a.kind === 'audio') return '<div class="tagrow"><span class="tag kind">Music</span></div>';
+  if (a.ai.status === 'error') return '<div class="ai-line" style="color:var(--warn)">AI scan failed — open to retry</div>';
+  if (a.ai.status !== 'done') return '';
+  return `<div class="ai-line" title="${esc(a.ai.summary)}">${esc(a.ai.summary)}</div>
+    <div class="tagrow">${a.ai.tags.slice(0, 4).map((t) => `<span class="tag">${esc(t)}</span>`).join('')}</div>`;
+}
 
 function assetCard(a) {
   const sel = state.selected.has(a.id);
   return `<li class="asset${sel ? ' selected' : ''}" data-id="${a.id}">
     <label class="sel"><input type="checkbox" data-select ${sel ? 'checked' : ''} aria-label="Select ${esc(a.name)}" /></label>
     ${thumbHtml(a, { previewLabel: `Preview ${a.name}`, status: assetStatus(a) })}
-    <div class="info"><div class="name" title="${esc(a.name)}">${esc(a.name)}</div><div class="sub">${esc(assetSub(a))}</div></div>
+    <div class="info"><div class="name" title="${esc(a.name)}">${esc(assetTitle(a))}</div><div class="sub">${esc(assetSub(a))}</div>${aiHtml(a)}</div>
   </li>`;
 }
 
-function visibleAssets(query, sort) {
-  const q = query.trim().toLowerCase();
-  const list = state.assets.filter((a) => !q || a.name.toLowerCase().includes(q));
+/** Search matches the file name, Claude's description and tags, and music metadata — every word must hit. */
+const haystack = (a) => [a.name, a.ai?.summary, ...(a.ai?.tags || []), ...(a.ai?.moments || []).map((m) => m.what), ...Object.values(a.tags || {})]
+  .filter(Boolean).join(' ').toLowerCase();
+function visibleAssets(query, sort, filter = 'all') {
+  const words = query.trim().toLowerCase().split(/\s+/).filter(Boolean);
+  const keep = {
+    all: () => true,
+    video: (a) => a.kind === 'video',
+    audio: (a) => a.kind === 'audio',
+    unscanned: (a) => a.kind === 'video' && a.ai.status !== 'done',
+  }[filter] || (() => true);
+  const list = state.assets.filter((a) => keep(a) && words.every((w) => haystack(a).includes(w)));
   const by = {
     new: (x, y) => y.createdAt - x.createdAt,
     old: (x, y) => x.createdAt - y.createdAt,
@@ -149,7 +176,7 @@ function visibleAssets(query, sort) {
 }
 
 function renderLibrary() {
-  const list = visibleAssets($('#libSearch').value, $('#libSort').value);
+  const list = visibleAssets($('#libSearch').value, $('#libSort').value, $('#libFilter').value);
   const grid = $('#assetGrid');
   const focusId = document.activeElement?.closest?.('.asset')?.dataset.id;
   const focusSel = document.activeElement?.matches?.('[data-select]') ? '[data-select]' : '[data-preview]';
@@ -157,10 +184,12 @@ function renderLibrary() {
   if (focusId) $(`.asset[data-id="${focusId}"] ${focusSel}`, grid)?.focus();
   $('#libEmpty').classList.toggle('hidden', list.length > 0 || state.assets.length === 0);
   $('#libDrop').classList.toggle('compact', state.assets.length > 0);
-  $('#libDrop strong').textContent = state.assets.length ? 'Drop more videos anywhere on this page' : 'Drop videos anywhere on this page';
+  $('#libDrop strong').textContent = state.assets.length ? 'Drop more videos or music anywhere on this page' : 'Drop videos or music anywhere on this page';
   $('#libCount').textContent = state.assets.length || '';
   renderSelbar();
   renderDisk();
+  renderScanBar();
+  renderMusicSelect();
 }
 
 /** Patch one card in place (keeps hover/focus) — used for live preview progress. */
@@ -215,11 +244,211 @@ function listenLibrary() {
       state.selected.delete(evt.id);
       renderLibrary();
       refreshStorageSoon();
+    } else if (evt.type === 'scanner') {
+      state.scanner = evt.scanner;
+      renderScanBar();
+    } else if (evt.type === 'import') {
+      const i = state.cloud.jobs.findIndex((j) => j.id === evt.job.id);
+      const was = state.cloud.jobs[i]?.state;
+      if (i >= 0) state.cloud.jobs[i] = evt.job;
+      else state.cloud.jobs.unshift(evt.job);
+      renderJobs();
+      if (was === 'running' && evt.job.state === 'done') {
+        toast(`Import finished: ${plural(evt.job.done - evt.job.failed.length, 'file')} added${evt.job.failed.length ? `, ${evt.job.failed.length} failed` : ''}.`, evt.job.failed.length ? 'error' : 'ok');
+        refreshStorageSoon();
+      }
+    } else if (evt.type === 'connect') {
+      state.cloud.connect = evt.connect;
+      if (evt.connect.status === 'done') loadCloud().then(() => toast('Google Drive connected.', 'ok'));
+      else if ($('#importDlg').open) renderImport();
     }
   };
 }
 
+// ---------------------------------------------------------------------------
+// AI scan bar
+// ---------------------------------------------------------------------------
+function renderScanBar() {
+  const sc = state.scanner;
+  if (!sc) return;
+  const videos = state.assets.filter((a) => a.kind === 'video' && a.status === 'ready');
+  const done = videos.filter((a) => a.ai.status === 'done').length;
+  const failed = videos.filter((a) => a.ai.status === 'error').length;
+  const waiting = videos.filter((a) => a.ai.status === 'none').length;
+  $('#autoScan').checked = sc.autoScan;
+  let text;
+  if (sc.scanning || sc.queued) text = `Claude is looking at your videos — ${sc.scanning + sc.queued} to go (${done} of ${videos.length} done).`;
+  else if (!videos.length) text = 'Claude looks at every video you add and notes what is in it, so you can search by content.';
+  else text = `${done} of ${plural(videos.length, 'video')} scanned.${failed ? ` ${failed} failed.` : ''}`;
+  if (sc.lastError && !sc.scanning) text += ` Last problem: ${sc.lastError}`;
+  $('#scanStatus').textContent = text;
+  const todo = waiting + failed;
+  $('#scanAll').classList.toggle('hidden', !todo || Boolean(sc.scanning || sc.queued));
+  $('#scanAll').textContent = `Scan ${plural(todo, 'video')} now`;
+}
+$('#autoScan').addEventListener('change', async () => {
+  try { state.scanner = await api('/api/scanner', { method: 'PATCH', body: { autoScan: $('#autoScan').checked } }); renderScanBar(); }
+  catch (err) { toast(err.message, 'error'); }
+});
+$('#scanAll').addEventListener('click', async () => {
+  try {
+    const r = await api('/api/library/scan', { method: 'POST', body: {} });
+    state.scanner = r.scanner;
+    renderScanBar();
+    announce(`Scanning ${plural(r.queued, 'video')}.`);
+  } catch (err) { toast(err.message, 'error'); }
+});
+
+// ---------------------------------------------------------------------------
+// Google Drive import (rclone on the server)
+// ---------------------------------------------------------------------------
+async function loadCloud() {
+  try { state.cloud = await api('/api/cloud'); } catch { return; }
+  renderJobs();
+  if ($('#importDlg').open) renderImport();
+}
+
+function renderJobs() {
+  const jobs = state.cloud.jobs.filter((j) => j.state === 'running' || Date.now() - j.startedAt < 30 * 60_000);
+  $('#importJobs').innerHTML = jobs.map((j) => {
+    const cur = j.current.reduce((n, c) => n + c.bytes, 0);
+    const pct = j.totalBytes ? Math.floor(((j.doneBytes + cur) / j.totalBytes) * 100) : j.total ? Math.floor((j.done / j.total) * 100) : 100;
+    const head = { running: 'Importing', done: 'Imported', cancelled: 'Import cancelled', error: 'Import failed' }[j.state];
+    return `<li class="job" data-job="${esc(j.id)}">
+      <div class="row"><strong>${head}: ${esc(j.label)}</strong>
+        ${j.state === 'running' ? `<button class="btn xs ghost" type="button" data-cancel-job>Cancel</button>` : `<button class="btn xs ghost" type="button" data-dismiss-job aria-label="Dismiss">×</button>`}</div>
+      <div class="pbar" role="progressbar" aria-label="Import progress" aria-valuemin="0" aria-valuemax="100" aria-valuenow="${pct}"><div style="width:${pct}%"></div></div>
+      <div class="sub">${j.done} of ${plural(j.total, 'file')} · ${fmtSize(j.doneBytes + cur)} of ${fmtSize(j.totalBytes)}${j.skipped ? ` · ${j.skipped} already in your library` : ''}${j.current.length ? ` · now: ${esc(j.current.map((c) => c.name.split('/').pop()).join(', '))}` : ''}</div>
+      ${j.failed.length ? `<div class="uperr">${j.failed.length} failed: ${esc(j.failed.slice(0, 3).map((f) => `${f.name.split('/').pop()} (${f.error})`).join('; '))}${j.failed.length > 3 ? '…' : ''}</div>` : ''}
+    </li>`;
+  }).join('');
+}
+$('#importJobs').addEventListener('click', async (e) => {
+  const li = e.target.closest('[data-job]');
+  if (!li) return;
+  if (e.target.closest('[data-cancel-job]')) await api(`/api/cloud/import/${li.dataset.job}`, { method: 'DELETE' }).catch(() => {});
+  if (e.target.closest('[data-dismiss-job]')) { state.cloud.jobs = state.cloud.jobs.filter((j) => j.id !== li.dataset.job); renderJobs(); }
+});
+
+const imp = { remote: '', link: '', sharedWithMe: false, preview: null, busy: false, error: '' };
+function renderImport() {
+  const c = state.cloud;
+  const body = $('#imBody');
+  const conn = c.connect || { status: 'idle' };
+  if (!c.available) {
+    body.innerHTML = `<p>Importing from Google Drive uses <a href="https://rclone.org" target="_blank" rel="noopener">rclone</a>, a free open-source tool, on the computer or server running ClipForge. It isn't installed yet.</p>
+      <ol class="im-steps"><li>Install it: <a href="https://rclone.org/install/" target="_blank" rel="noopener">rclone.org/install</a> (Mac: <code>brew install rclone</code> · Linux: <code>sudo -v ; curl https://rclone.org/install.sh | sudo bash</code> · or run <code>scripts/setup.sh</code>).</li>
+      <li>Restart ClipForge and open this again.</li></ol>`;
+    return;
+  }
+  const drives = c.remotes.filter((r) => r.type === 'drive' && !(conn.remote === r.name && conn.status !== 'done' && conn.status !== 'idle'));
+  if (conn.status === 'waiting-browser' || conn.status === 'starting') {
+    body.innerHTML = `<p><strong>Sign in to Google</strong> in the tab that opens and allow read-only access. ClipForge can copy your files but can never change or delete anything in your Drive.</p>
+      ${conn.url ? `<p class="im-actions"><a class="btn" href="${esc(conn.url)}" target="_blank" rel="noopener">Open Google sign-in</a> <span class="hint-line">This link only works on the computer running ClipForge.</span></p>` : '<p role="status">Starting…</p>'}
+      <p class="im-actions"><button class="btn sm ghost" type="button" data-im="cancel-connect">Cancel</button> <button class="btn sm ghost" type="button" data-im="remote-mode">I'm on a phone or a different computer</button></p>`;
+    return;
+  }
+  if (conn.status === 'need-token') {
+    body.innerHTML = `<p><strong>Connect from any computer with a browser</strong> (Windows, Mac or Linux):</p>
+      <ol class="im-steps">
+        <li>Install rclone on it: <a href="https://rclone.org/downloads/" target="_blank" rel="noopener">rclone.org/downloads</a></li>
+        <li>Open a terminal there and run this — it opens Google sign-in:
+          <div class="codebox"><code id="authCmd">${esc(conn.command)}</code><button class="btn xs ghost" type="button" data-im="copy">Copy</button></div></li>
+        <li>After you allow access, it prints a block of text starting with <code>{</code>. Paste all of it here:</li>
+      </ol>
+      <label class="sr-only" for="tokenIn">Result from rclone authorize</label>
+      <textarea class="token" id="tokenIn" placeholder='{"access_token":"…"}'></textarea>
+      ${conn.error ? `<p class="uperr" role="alert">${esc(conn.error)}</p>` : ''}
+      <p class="im-actions"><button class="btn" type="button" data-im="token">Connect</button> <button class="btn sm ghost" type="button" data-im="cancel-connect">Cancel</button></p>`;
+    return;
+  }
+  if (!drives.length && !imp.useOther) {
+    body.innerHTML = `<p>Connect your Google account once. ClipForge gets <strong>read-only</strong> access — it copies videos and music into your library and never changes anything in your Drive.</p>
+      ${conn.status === 'error' ? `<p class="uperr" role="alert">${esc(conn.error)}</p>` : ''}
+      <div class="im-actions">
+        <button class="btn" type="button" data-im="connect-local">Connect Google Drive</button>
+        <button class="btn ghost" type="button" data-im="connect-remote">I'm on a phone / ClipForge runs on a server</button>
+      </div>
+      ${c.remotes.length ? `<p class="hint-line">Other storage set up in rclone: ${c.remotes.map((r) => esc(`${r.name} (${r.type})`)).join(', ')} — <button class="btn xs ghost" type="button" data-im="use-other">import from those</button></p>` : ''}`;
+    return;
+  }
+  const remotes = c.remotes;
+  if (!remotes.some((r) => r.name === imp.remote)) imp.remote = drives[0]?.name || remotes[0].name;
+  const isDrive = remotes.find((r) => r.name === imp.remote)?.type === 'drive';
+  const p = imp.preview;
+  body.innerHTML = `<div class="im-grid">
+      ${remotes.length > 1 ? `<label class="f">From<select class="field" id="imRemote">${remotes.map((r) => `<option value="${esc(r.name)}"${r.name === imp.remote ? ' selected' : ''}>${esc(r.type === 'drive' ? `Google Drive (${r.name})` : `${r.name} (${r.type})`)}</option>`).join('')}</select></label>` : ''}
+      <label class="f">${isDrive ? 'Folder link' : 'Folder path'}
+        <small>${isDrive ? 'In Drive, right-click a folder → Share → Copy link. Leave empty to import your <strong>entire</strong> Drive.' : 'Leave empty for everything.'}</small>
+        <input class="field" id="imLink" value="${esc(imp.link)}" placeholder="${isDrive ? 'https://drive.google.com/drive/folders/…' : 'Videos/2024'}" autocomplete="off" /></label>
+      ${isDrive ? `<label class="tg"><input type="checkbox" id="imShared" ${imp.sharedWithMe ? 'checked' : ''} /> <span>Import “Shared with me” instead of My Drive</span></label>` : ''}
+      <div class="im-actions"><button class="btn ghost" type="button" data-im="preview" ${imp.busy ? 'disabled' : ''}>${imp.busy ? 'Looking…' : 'Check what\'s there'}</button></div>
+      ${imp.error ? `<p class="uperr" role="alert">${esc(imp.error)}</p>` : ''}
+      ${p ? `<div class="im-sum" role="status">Found <strong>${plural(p.videos, 'video')}</strong> and <strong>${plural(p.music, 'music file')}</strong>${p.alreadyImported ? ` (${p.alreadyImported} already in your library)` : ''}.
+          ${p.newFiles ? `<br /><strong>${plural(p.newFiles, 'new file')}, ${fmtSize(p.newBytes)}</strong> will be copied${state.storage?.free != null ? ` — ${fmtSize(state.storage.free)} free on the server` : ''}.
+          <ul>${p.sample.map((x) => `<li>${esc(x)}</li>`).join('')}${p.newFiles > p.sample.length ? `<li>…and ${p.newFiles - p.sample.length} more</li>` : ''}</ul>` : '<br />Nothing new to import.'}</div>
+        ${p.newFiles ? `<div class="im-actions"><button class="btn" type="button" data-im="import">Import ${plural(p.newFiles, 'file')}</button><span class="hint-line">Runs on the server — you can close this and keep working. ${$('#autoScan').checked ? 'Claude scans each video as it arrives.' : ''}</span></div>` : ''}` : ''}
+      <p class="hint-line"><button class="btn xs ghost" type="button" data-im="connect-local">${drives.length ? 'Connect another Google account' : 'Connect Google Drive'}</button></p>
+    </div>`;
+}
+
+$('#openImport').addEventListener('click', async () => {
+  imp.preview = null;
+  imp.error = '';
+  await loadCloud();
+  renderImport();
+  $('#importDlg').showModal();
+});
+$('#imBody').addEventListener('input', (e) => {
+  if (e.target.id === 'imLink') { imp.link = e.target.value; imp.preview = null; }
+  if (e.target.id === 'imShared') { imp.sharedWithMe = e.target.checked; imp.preview = null; renderImport(); }
+  if (e.target.id === 'imRemote') { imp.remote = e.target.value; imp.preview = null; renderImport(); }
+});
+$('#imBody').addEventListener('click', async (e) => {
+  const act = e.target.closest('[data-im]')?.dataset.im;
+  if (!act) return;
+  const opts = () => ({ remote: imp.remote, link: imp.link.trim(), sharedWithMe: imp.sharedWithMe });
+  try {
+    if (act === 'connect-local' || act === 'connect-remote' || act === 'remote-mode') {
+      state.cloud.connect = { status: 'starting' };
+      renderImport();
+      state.cloud.connect = await api('/api/cloud/connect', { method: 'POST', body: { local: act === 'connect-local' } });
+      if (state.cloud.connect.url) window.open(state.cloud.connect.url, '_blank', 'noopener');
+    } else if (act === 'cancel-connect') {
+      await api('/api/cloud/connect', { method: 'DELETE' });
+      state.cloud.connect = { status: 'idle' };
+      await loadCloud();
+    } else if (act === 'copy') {
+      await navigator.clipboard?.writeText($('#authCmd').textContent).catch(() => {});
+      toast('Copied.', 'ok', 1500);
+    } else if (act === 'token') {
+      state.cloud.connect = await api('/api/cloud/connect/token', { method: 'POST', body: { token: $('#tokenIn').value } });
+      await loadCloud();
+    } else if (act === 'use-other') {
+      imp.remote = state.cloud.remotes[0].name;
+      imp.useOther = true;
+    } else if (act === 'preview') {
+      imp.busy = true; imp.error = ''; renderImport();
+      try { imp.preview = await api('/api/cloud/preview', { method: 'POST', body: opts() }); }
+      catch (err) { imp.error = err.data?.hint ? `${err.message} ${err.data.hint}` : err.message; imp.preview = null; }
+      imp.busy = false;
+    } else if (act === 'import') {
+      const { job } = await api('/api/cloud/import', { method: 'POST', body: opts() });
+      state.cloud.jobs.unshift(job);
+      renderJobs();
+      $('#importDlg').close();
+      toast('Import started — files appear in your library as they arrive.', 'ok');
+      return;
+    }
+  } catch (err) {
+    state.cloud.connect = { ...state.cloud.connect, status: state.cloud.connect.status === 'starting' ? 'error' : state.cloud.connect.status, error: err.message };
+    toast(err.message, 'error');
+  }
+  renderImport();
+});
+
 $('#libSearch').addEventListener('input', renderLibrary);
+$('#libFilter').addEventListener('change', renderLibrary);
 $('#libSort').addEventListener('change', () => { store.set('clipforge:sort', $('#libSort').value); renderLibrary(); });
 
 $('#assetGrid').addEventListener('change', (e) => {
@@ -248,7 +477,8 @@ function renderSelbar() {
 }
 $('#selClear').addEventListener('click', () => { state.selected.clear(); renderLibrary(); });
 $('#selAdd').addEventListener('click', async () => {
-  const ids = visibleAssets('', $('#libSort').value).map((a) => a.id).filter((id) => state.selected.has(id));
+  const ids = visibleAssets('', $('#libSort').value, 'video').map((a) => a.id).filter((id) => state.selected.has(id));
+  if (!ids.length) return toast('Music goes in a project\'s Music option (under Output), not in its clips.', 'error');
   try {
     const projectId = await resolveProject($('#selProject').value);
     await api(`/api/projects/${projectId}/clips`, { method: 'POST', body: { assetIds: ids } });
@@ -304,8 +534,8 @@ async function filesFromDrop(dt) {
 
 function addFiles(fileList, projectId = null) {
   const files = [...fileList];
-  const ok = files.filter(isVideoFile);
-  const skipped = files.filter((f) => !isVideoFile(f));
+  const ok = files.filter(isMediaFile);
+  const skipped = files.filter((f) => !isMediaFile(f));
   if (skipped.length) toast(`Skipped ${plural(skipped.length, 'file')} that aren't videos: ${skipped.slice(0, 5).map((f) => f.name).join(', ')}${skipped.length > 5 ? '…' : ''}`, 'error');
   if (!ok.length) return;
   for (const file of ok) {
@@ -583,9 +813,13 @@ function openClip(clip, opener) {
 }
 const facts = (rows) => rows.map(([k, v]) => `<div><dt>${esc(k)}</dt><dd>${esc(v)}</dd></div>`).join('');
 
-function setPlayer(url, poster, waitMsg) {
+function setPlayer(url, poster, waitMsg, audio = false) {
   const box = $('#vPlayer');
   viewer.waiting = !url;
+  if (audio && url) {
+    box.innerHTML = `<div style="width:100%"><img src="${esc(poster)}" alt="" style="width:100%;max-height:220px;object-fit:contain" /><audio controls preload="metadata" src="${esc(url)}" style="width:100%;margin-top:8px"></audio></div>`;
+    return;
+  }
   if (!url) {
     box.innerHTML = `<div class="wait" role="status">${esc(waitMsg || 'Preview not available.')}</div>`;
     return;
@@ -600,7 +834,9 @@ function setPlayer(url, poster, waitMsg) {
 
 function refreshViewer(a, first = false) {
   $('#vTitle').textContent = a.name;
-  if (first || (viewer.waiting && a.streamUrl)) {
+  if (a.kind === 'audio') {
+    if (first) setPlayer(a.streamUrl, a.thumbnail, '', true);
+  } else if (first || (viewer.waiting && a.streamUrl)) {
     const wait = a.preview.proxy === 'failed'
       ? "Couldn't make a browser preview of this file. It can still be used in edits — download it to watch."
       : `Making a browser-friendly preview (${a.preview.proxyReason})… ${Math.round((a.preview.progress || 0) * 100)}%`;
@@ -608,16 +844,49 @@ function refreshViewer(a, first = false) {
   } else if (viewer.waiting) {
     $('#vPlayer .wait').textContent = `Making a browser-friendly preview (${a.preview.proxyReason})… ${Math.round((a.preview.progress || 0) * 100)}%`;
   }
-  $('#vFacts').innerHTML = facts([
-    ['Duration', fmtTime(a.duration)],
-    ['Resolution', `${a.width}×${a.height}`],
-    ['File size', fmtSize(a.size)],
-    ['Video', codec(a.videoCodec)],
-    ['Audio', a.hasAudio ? codec(a.audioCodec) : 'None'],
-    ['Added', new Date(a.createdAt).toLocaleString()],
-  ]);
+  $('#vFacts').innerHTML = facts(a.kind === 'audio'
+    ? [['Duration', fmtTime(a.duration)], ['Title', a.tags.title || '—'], ['Artist', a.tags.artist || '—'], ['Genre', a.tags.genre || '—'], ['File size', fmtSize(a.size)], ['Added', new Date(a.createdAt).toLocaleString()]]
+    : [
+      ['Duration', fmtTime(a.duration)],
+      ['Resolution', `${a.width}×${a.height}`],
+      ['File size', fmtSize(a.size)],
+      ['Video', codec(a.videoCodec)],
+      ['Audio', a.hasAudio ? codec(a.audioCodec) : 'None'],
+      ['Added', new Date(a.createdAt).toLocaleString()],
+      ...(a.source ? [['Imported from', a.source.path.split('/').slice(-2).join('/')]] : []),
+    ]);
+  renderViewerAI(a);
   if (first) renderViewerActions(a);
 }
+
+function renderViewerAI(a) {
+  const box = $('#vAI');
+  if (!a || a.kind === 'audio') { box.innerHTML = ''; return; }
+  const ai = a.ai;
+  const head = '<h3><svg aria-hidden="true"><use href="#i-spark"/></svg>What Claude sees</h3>';
+  if (ai.status === 'done') {
+    box.innerHTML = `${head}<p style="margin:0">${esc(ai.summary)}</p>
+      <div class="tagrow">${ai.tags.map((t) => `<span class="tag">${esc(t)}</span>`).join('')}${ai.shot && ai.shot !== 'other' && !ai.tags.includes(ai.shot) ? `<span class="tag kind">${esc(ai.shot)}</span>` : ''}</div>
+      ${ai.moments.length ? `<ul class="moments" aria-label="Best moments — jump to">${ai.moments.map((m) => `<li><button type="button" data-seek="${m.start}"><b>${fmtTime(m.start)}</b>${esc(m.what)}</button></li>`).join('')}</ul>` : ''}
+      <div class="im-actions">${ai.quality ? `<span class="hint-line">Quality: ${esc(ai.quality)}</span>` : ''}<button class="btn xs ghost" type="button" data-rescan>Rescan</button></div>`;
+  } else if (ai.status === 'queued' || ai.status === 'scanning') {
+    box.innerHTML = `${head}<p class="hint-line" role="status" style="margin:0">${ai.status === 'scanning' ? 'Claude is looking at this video now…' : 'Waiting in line for Claude to look at it…'}</p>`;
+  } else {
+    box.innerHTML = `${head}<div class="im-actions"><span class="hint-line">${ai.status === 'error' ? esc(ai.error || 'Scan failed.') : 'Not scanned yet.'}</span><button class="btn xs" type="button" data-rescan>${ai.status === 'error' ? 'Try again' : 'Scan with Claude'}</button></div>`;
+  }
+}
+$('#vAI').addEventListener('click', async (e) => {
+  const seek = e.target.closest('[data-seek]');
+  if (seek) {
+    const v = $('#vPlayer video');
+    if (v) { v.currentTime = Number(seek.dataset.seek); v.play().catch(() => {}); v.focus(); }
+    return;
+  }
+  if (e.target.closest('[data-rescan]') && viewer.assetId) {
+    try { await api('/api/library/scan', { method: 'POST', body: { ids: [viewer.assetId] } }); }
+    catch (err) { toast(err.message, 'error'); }
+  }
+});
 
 function renderViewerActions(a) {
   const box = $('#vActions');
@@ -626,7 +895,7 @@ function renderViewerActions(a) {
     ${a ? `<label class="sr-only" for="vName">Video name</label><input class="field" id="vName" value="${esc(a.name)}" maxlength="200" style="flex:1 1 220px" />
       <button class="btn sm ghost" type="button" data-v="rename">Rename</button>` : ''}
     <span class="spacer"></span>
-    ${a && !inProject ? `<label class="sr-only" for="vProject">Project</label><select class="field" id="vProject">${projectOptions(state.jobId || store.get('clipforge:last'))}</select>
+    ${a && a.kind !== 'audio' && !inProject ? `<label class="sr-only" for="vProject">Project</label><select class="field" id="vProject">${projectOptions(state.jobId || store.get('clipforge:last'))}</select>
       <button class="btn sm" type="button" data-v="add">Add to project</button>` : ''}
     ${a ? `<a class="btn sm ghost" href="${esc(a.downloadUrl)}" download>Download original</a>` : ''}
     ${inProject ? `<button class="btn sm danger" type="button" data-v="unclip">Remove from project</button>` : ''}
@@ -668,7 +937,7 @@ $('#vActions').addEventListener('click', async (e) => {
   } catch (err) { toast(err.message, 'error'); }
 });
 
-for (const d of [dlg, $('#picker')]) {
+for (const d of [dlg, $('#picker'), $('#importDlg')]) {
   d.addEventListener('click', (e) => {
     if (e.target === d || e.target.closest('[data-close]')) d.close();
   });
@@ -686,14 +955,14 @@ dlg.addEventListener('close', () => {
 // ---------------------------------------------------------------------------
 const pickSel = new Set();
 function renderPicker() {
-  const list = visibleAssets($('#pkSearch').value, 'new');
+  const list = visibleAssets($('#pkSearch').value, 'new', 'video');
   $('#pkGrid').innerHTML = list.length ? list.map((a) => `
     <li class="asset${pickSel.has(a.id) ? ' selected' : ''}" data-id="${a.id}">
       <label style="cursor:pointer;display:block">
         ${thumbHtml(a, { status: assetStatus(a) })}
         <span class="info" style="display:flex;gap:8px;align-items:flex-start">
           <input type="checkbox" ${pickSel.has(a.id) ? 'checked' : ''} style="margin-top:3px;accent-color:var(--accent)" />
-          <span style="min-width:0"><span class="name" style="display:block">${esc(a.name)}</span><span class="sub" style="display:block">${esc(assetSub(a))}</span></span>
+          <span style="min-width:0"><span class="name" style="display:block">${esc(a.name)}</span><span class="sub" style="display:block">${esc(assetSub(a))}</span>${aiHtml(a)}</span>
         </span>
       </label>
     </li>`).join('')
@@ -865,15 +1134,21 @@ function renderClips() {
       <span class="num" aria-hidden="true" title="Drag to reorder">${i + 1}</span>
       ${thumbHtml(c, { previewLabel: `Preview ${c.name}` })}
       <div style="min-width:0"><div class="name" title="${esc(c.name)}">${esc(c.name)}</div>
-        <div class="sub">${fmtTime(c.duration)} · ${c.width}×${c.height}${c.hasAudio ? '' : ' · no audio'}</div></div>
+        <div class="sub">${fmtTime(c.duration)} · ${c.width}×${c.height}${c.hasAudio ? '' : ' · no audio'}</div>
+        ${c.auto ? `<div class="why">✦ Picked by Claude${c.why ? `: ${esc(c.why)}` : ''}</div>` : ''}</div>
       <div class="acts">
         <button class="icon-btn" type="button" data-move="-1" aria-label="Move ${esc(c.name)} earlier" ${i === 0 ? 'disabled' : ''}><svg><use href="#i-up"/></svg></button>
         <button class="icon-btn" type="button" data-move="1" aria-label="Move ${esc(c.name)} later" ${i === n - 1 ? 'disabled' : ''}><svg><use href="#i-down"/></svg></button>
         <button class="icon-btn" type="button" data-remove aria-label="Remove ${esc(c.name)} from project"><svg><use href="#i-x"/></svg></button>
       </div>
     </li>`).join('');
-  if (!n) $('#clipStrip').innerHTML = '<li style="display:block;text-align:center;color:var(--muted);padding:18px">No clips yet — upload videos or add some from your library.</li>';
+  if (!n) $('#clipStrip').innerHTML = `<li style="display:block;text-align:center;color:var(--muted);padding:18px">${$('#autoFind').checked ? 'Claude will pick clips from your library when you hit Forge.' : 'No clips yet — upload videos, add some from your library, or let Claude find them.'}</li>`;
   updateGo();
+}
+
+function renderClipsEmpty() {
+  const li = $('#clipStrip li:not([data-id])');
+  if (li) li.textContent = $('#autoFind').checked ? 'Claude will pick clips from your library when you hit Forge.' : 'No clips yet — upload videos, add some from your library, or let Claude find them.';
 }
 
 async function saveOrder(ids, focusSel) {
@@ -993,12 +1268,18 @@ function readSettings() {
     cleanVoice: $('#cleanVoice').checked,
     watermark: $('#watermark').checked,
     useLogo: true,
+    autoFind: $('#autoFind').checked,
+    music: $('#music').value || 'auto',
+    musicLevel: segValue('musicLevel')[0],
   };
 }
 function applySaved(saved) {
   $('#prompt').value = saved.prompt || '';
   const s = saved.settings || {};
-  for (const k of ['goal', 'formats', 'lengths', 'captions', 'framing', 'size']) if (s[k]) setSeg(k, s[k]);
+  for (const k of ['goal', 'formats', 'lengths', 'captions', 'framing', 'size', 'musicLevel']) if (s[k]) setSeg(k, s[k]);
+  $('#autoFind').checked = s.autoFind === true;
+  state.musicWanted = s.music || 'auto';
+  renderMusicSelect();
   for (const k of ['brand', 'cta', 'accent', 'whisperModel', 'engine']) if (s[k]) $('#' + k).value = s[k];
   for (const k of ['silence', 'shots', 'cleanVoice', 'watermark']) {
     const el = $('#' + k);
@@ -1024,6 +1305,22 @@ function onOptionsChange() {
 }
 ['#brand', '#cta', '#accent', '#whisperModel', '#engine', '#silence', '#shots', '#cleanVoice', '#watermark', '#logoCutout']
   .forEach((sel) => $(sel).addEventListener('input', remember));
+$('#autoFind').addEventListener('change', () => { updateGo(); remember(); });
+$('#music').addEventListener('change', () => { state.musicWanted = $('#music').value; renderMusicSelect(); remember(); });
+
+/** Music choices: off, let Claude pick, or a specific track from the library. */
+function renderMusicSelect() {
+  const sel = $('#music');
+  if (!sel) return;
+  const tracks = state.assets.filter((a) => a.kind === 'audio' && a.status === 'ready');
+  const want = state.musicWanted || sel.value || 'auto';
+  sel.innerHTML = `<option value="auto">Claude picks from my music (${tracks.length})</option><option value="off">No music</option>` +
+    (tracks.length ? `<optgroup label="Use this track">${tracks.map((a) => `<option value="${a.id}">${esc(assetTitle(a))}${a.tags.artist ? ` — ${esc(a.tags.artist)}` : ''} (${fmtTime(a.duration)})</option>`).join('')}</optgroup>` : '');
+  sel.value = [...sel.options].some((o) => o.value === want) ? want : 'auto';
+  $('#musicHint').textContent = sel.value === 'auto' && !tracks.length
+    ? 'Your library has no music yet — drop MP3/WAV files on the Library page (or import a Drive folder with music).'
+    : sel.value !== 'off' ? 'Music is lowered automatically whenever someone speaks.' : '';
+}
 
 $('#chips').addEventListener('click', (e) => {
   if (!e.target.classList.contains('chip')) return;
@@ -1039,14 +1336,16 @@ function updateGo() {
   const s = readSettings();
   const n = s.formats.length * s.lengths.length;
   const pending = uploads.some((u) => u.projectId === state.jobId);
-  const ready = state.clips.length > 0 && $('#prompt').value.trim().length > 0 && n <= 8;
+  const hasFootage = state.clips.length > 0 || s.autoFind;
+  const ready = hasFootage && $('#prompt').value.trim().length > 0 && n <= 8;
   $('#go').disabled = !ready || state.running;
   $('#go').textContent = n > 1 ? `Forge ${n} videos` : 'Forge video';
   $('#rerender').classList.toggle('hidden', !state.shown || state.running);
+  if (!state.clips.length) renderClipsEmpty();
   $('#rerender').disabled = n > 8;
   $('#goHint').textContent = state.running ? 'Working — you can leave this page and come back later.'
     : n > 8 ? 'Pick at most 8 format × length combinations.'
-    : !state.clips.length ? (pending ? 'Waiting for uploads to finish…' : 'Add at least one clip.')
+    : !hasFootage ? (pending ? 'Waiting for uploads to finish…' : 'Add a clip, or let Claude find them.')
     : !ready ? 'Describe the edit you want.' : '';
 }
 
@@ -1078,7 +1377,7 @@ function subscribe() {
   state.es.onmessage = (e) => { if (state.jobId === id) showStatus(JSON.parse(e.data)); };
 }
 
-const STEP_NAMES = { transcribe: 'Transcription', plan: 'Planning', render: 'Rendering' };
+const STEP_NAMES = { find: 'Footage search', transcribe: 'Transcription', plan: 'Planning', render: 'Rendering' };
 function showStatus(s) {
   const prev = state.lastState;
   state.lastState = s.state;
@@ -1098,7 +1397,9 @@ function showStatus(s) {
 
   for (const [name, st] of Object.entries(s.steps)) {
     const el = $(`.step[data-step="${name}"]`);
-    el.className = `step ${st.status}`;
+    if (!el) continue;
+    el.className = `step ${st.status}${st.status === 'skipped' ? ' hidden' : ''}`;
+    if (name === 'find' && st.status === 'done' && state.steps.find && state.steps.find !== 'done') reloadClips(); // show what Claude picked
     $('.m', el).textContent = st.message || '';
     if (state.running && state.steps[name] && state.steps[name] !== st.status && st.status === 'done') announce(`${STEP_NAMES[name]} done.`);
     state.steps[name] = st.status;
@@ -1131,7 +1432,7 @@ async function showResult(r) {
   state.shown = key;
   $('#resultCard').classList.remove('hidden');
   $('#resultTitle').textContent = r.title || 'Videos';
-  $('#resultMeta').textContent = `${plural(r.variants.length, 'video')} · ${fmtSize(r.totalSize)}`;
+  $('#resultMeta').textContent = `${plural(r.variants.length, 'video')} · ${fmtSize(r.totalSize)}${r.music ? ` · ♪ ${r.music.name}` : ''}`;
   $('#variants').innerHTML = r.variants.map((v) => {
     const label = `${v.length === 'full' ? 'Full' : v.length + 's'} · ${FORMAT_LABEL[v.format] || v.format}`;
     return `<div class="variant">
@@ -1296,6 +1597,8 @@ async function init() {
   migrate();
   $('#libSort').value = store.get('clipforge:sort') || 'new';
   loadHealth();
+  loadCloud();
+  api('/api/scanner').then((sc) => { state.scanner = sc; renderScanBar(); }).catch(() => {});
   await Promise.all([loadLibrary().catch((err) => toast(err.message, 'error')), loadProjects()]);
   if (!booted) { listenLibrary(); booted = true; }
   showInterrupted();

@@ -129,6 +129,12 @@ export async function probe(file) {
     pixFmt: video?.pix_fmt || null,
     container: info.format?.format_name || null,
     bitRate: Number(info.format?.bit_rate || 0),
+    // Title/artist/genre help Claude pick music; keys vary in case between containers.
+    tags: Object.fromEntries(
+      Object.entries(info.format?.tags || {})
+        .map(([k, v]) => [k.toLowerCase(), String(v).slice(0, 120)])
+        .filter(([k]) => ['title', 'artist', 'album', 'genre', 'comment'].includes(k)),
+    ),
   };
 }
 

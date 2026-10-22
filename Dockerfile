@@ -5,7 +5,7 @@ FROM node:22-bookworm-slim
 
 # FFmpeg, Python, fonts, and the shared libraries HyperFrames' headless Chrome needs.
 RUN apt-get update && apt-get install -y --no-install-recommends \
-      ffmpeg python3 python3-venv ca-certificates curl git \
+      ffmpeg python3 python3-venv ca-certificates curl git rclone \
       fonts-dejavu-core fonts-liberation fonts-noto-color-emoji \
       libnss3 libatk1.0-0 libatk-bridge2.0-0 libcups2 libdrm2 libxkbcommon0 libxcomposite1 \
       libxdamage1 libxfixes3 libxrandr2 libgbm1 libasound2 libpango-1.0-0 libcairo2 libxshmfence1 \
@@ -31,5 +31,5 @@ COPY . .
 
 ENV PORT=3000 HYPERFRAMES_NO_TELEMETRY=1 DO_NOT_TRACK=1
 EXPOSE 3000
-VOLUME ["/app/library", "/app/uploads", "/app/workspace", "/app/output", "/root/.cache"]
+VOLUME ["/app/library", "/app/uploads", "/app/workspace", "/app/output", "/root/.cache", "/root/.config/rclone"]
 CMD ["node", "src/server.js", "--lan"]

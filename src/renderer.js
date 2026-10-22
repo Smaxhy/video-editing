@@ -125,6 +125,45 @@ function segmentsToWords(segments) {
   });
 }
 
+/**
+ * Volume automation for background music: full level where nobody talks, ducked to `ducked`
+ * under speech (with short ramps). Speech gaps under a second are bridged so music doesn't pump.
+ */
+export function musicAutomation(speech, total, base, ducked) {
+  const RAMP = 0.3;
+  const merged = [];
+  for (const c of [...speech].sort((a, b) => a.start - b.start)) {
+    const last = merged[merged.length - 1];
+    if (last && c.start - last.end < 1) last.end = Math.max(last.end, c.end);
+    else merged.push({ start: c.start, end: c.end });
+  }
+  const pts = [{ t: 0, v: base }];
+  for (const { start, end } of merged) {
+    const down = Math.max(pts[pts.length - 1].t, start - RAMP);
+    pts.push({ t: round(down, 3), v: pts[pts.length - 1].v }, { t: round(Math.max(down, start), 3), v: ducked });
+    const up = Math.min(total, end + 0.1);
+    pts.push({ t: round(up, 3), v: ducked }, { t: round(Math.min(total, up + 0.4), 3), v: base });
+  }
+  if (pts[pts.length - 1].t < total) pts.push({ t: round(total, 3), v: pts[pts.length - 1].v });
+  return pts.filter((p, i) => i === 0 || p.t >= pts[i - 1].t);
+}
+
+/**
+ * Cut a music track to the video: start at `start`, loop if it's too short, fade in/out, and
+ * normalize loudness so every track sits at the same level before the mix volume is applied.
+ */
+export async function prepareMusic(srcPath, outPath, { start = 0, duration, signal }) {
+  await fs.mkdir(path.dirname(outPath), { recursive: true });
+  const fadeOut = Math.min(2.5, duration / 3);
+  const res = await run('ffmpeg', [
+    '-v', 'error', '-y', '-stream_loop', '-1', '-ss', String(start), '-i', srcPath, '-t', String(duration), '-vn',
+    '-af', `loudnorm=I=-16:TP=-1.5:LRA=11,afade=t=in:st=0:d=${Math.min(1.2, duration / 4).toFixed(2)},afade=t=out:st=${Math.max(0, duration - fadeOut).toFixed(2)}:d=${fadeOut.toFixed(2)}`,
+    '-ac', '2', '-ar', '48000', '-c:a', 'aac', '-b:a', '192k', outPath,
+  ], { signal });
+  if (res.code !== 0) throw new PipelineError('Could not prepare the music track.', { detail: tail(res.stderr) });
+  return outPath;
+}
+
 /** True when the source aspect ratio differs noticeably from the output frame. */
 export function aspectMismatch(clip, W, H) {
   if (!clip.width || !clip.height) return false;
@@ -341,6 +380,15 @@ export function buildComposition({ plan, clips, transcripts, settings, gsapSrc =
     return `    <div id="${id}" class="clip cap cap-${settings.captions}" data-start="${c.start}" data-duration="${round(c.end - c.start, 3)}" data-track-index="9"><span id="${id}i">${escapeHtml(c.text)}</span></div>`;
   });
   const layerHtml = (n) => overlayHtml.filter((o) => o.layer === n).map((o) => o.html);
+  // Background music: one track under the whole video, ducked wherever an audible scene has speech.
+  const music = [];
+  if (settings.musicFile) {
+    const audibleScenes = laid.scenes.filter((sc) => sc.volume > 0 && clipById.get(sc.clip)?.hasAudio);
+    const speech = buildCaptions({ scenes: audibleScenes }, transcripts, 'clean');
+    const base = clamp(Number(settings.musicVolume) || 0.8, 0, 1.5);
+    const automation = JSON.stringify({ version: 1, lanes: [{ target: 'volume', points: musicAutomation(speech, total, base, round(base * 0.22, 3)) }] });
+    music.push(`    <audio id="music" src="media/${escapeHtml(settings.musicFile)}" data-start="0" data-duration="${total}" data-track-index="50" data-volume="1" data-automation='${automation}'></audio>`);
+  }
   // Brand watermark: the logo in the top-right corner for the whole video.
   const watermark =
     settings.watermark && settings.logoFile
@@ -410,7 +458,7 @@ export function buildComposition({ plan, clips, transcripts, settings, gsapSrc =
 </head>
 <body>
   <div id="root" data-composition-id="main" data-start="0" data-width="${W}" data-height="${H}" data-duration="${total}" data-fps="${FPS}">
-${[...sceneHtml, ...layerHtml(0), ...captionHtml, ...watermark, ...layerHtml(1), ...layerHtml(2)].join('\n')}
+${[...sceneHtml, ...music, ...layerHtml(0), ...captionHtml, ...watermark, ...layerHtml(1), ...layerHtml(2)].join('\n')}
   </div>
   <script>
     const tl = gsap.timeline({ paused: true });
@@ -511,11 +559,16 @@ export async function writeProject({ projectDir, plan, clips, transcripts, setti
     logoFile = `logo${path.extname(settings.logoPath)}`;
     await linkOrCopy(settings.logoPath, path.join(projectDir, 'media', logoFile));
   }
+  let musicFile = null;
+  if (settings.musicPath) {
+    musicFile = `music${path.extname(settings.musicPath)}`;
+    await linkOrCopy(settings.musicPath, path.join(projectDir, 'media', musicFile));
+  }
   let gsapSrc = 'gsap.min.js';
   if (await exists(GSAP_LOCAL)) await fs.copyFile(GSAP_LOCAL, path.join(projectDir, 'gsap.min.js'));
   else gsapSrc = GSAP_CDN;
 
-  const result = buildComposition({ plan, clips: projectClips, transcripts, settings: { ...settings, logoFile }, gsapSrc });
+  const result = buildComposition({ plan, clips: projectClips, transcripts, settings: { ...settings, logoFile, musicFile }, gsapSrc });
   await fs.writeFile(path.join(projectDir, 'index.html'), result.html);
   return result;
 }

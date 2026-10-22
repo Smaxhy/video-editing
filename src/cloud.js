@@ -116,11 +116,19 @@ export function createCloud({ library, toolsDir, onChange = () => {} }) {
     await ready();
     if (!onPath(RCLONE)) return [];
     const r = await run(RCLONE, ['listremotes', '--long']);
+    // A Google Drive remote without a saved login (an interrupted sign-in) isn't usable — say so,
+    // so the app offers "Connect" instead of a folder form that can only fail. Tokens never leave here.
+    let dump = {};
+    try {
+      dump = JSON.parse((await run(RCLONE, ['config', 'dump'])).stdout || '{}');
+    } catch {
+      /* treat as unknown */
+    }
     return r.stdout
       .split('\n')
       .map((l) => l.match(/^(.+?):\s+(\S+)/))
       .filter(Boolean)
-      .map(([, name, type]) => ({ name, type }));
+      .map(([, name, type]) => ({ name, type, connected: type !== 'drive' || Boolean(dump[name]?.token) }));
   }
 
   async function checkRemote(name) {
@@ -143,17 +151,46 @@ export function createCloud({ library, toolsDir, onChange = () => {} }) {
   }
 
   // ---- connecting Google Drive (rclone's non-interactive config: https://rclone.org/commands/rclone_config_create/)
+  /**
+   * One step of rclone's question-and-answer setup. rclone reports problems either on stderr or in the
+   * "Error" field of its JSON answer (with no stderr at all) — surface both, in plain words.
+   */
   async function configStep(args) {
-    const r = await run(RCLONE, [...args, '--non-interactive']);
-    if (r.code !== 0) throw new PipelineError('rclone could not save the connection.', { detail: tail(r.stderr) });
-    return parseState(r.stdout);
+    const r = await run(RCLONE, [...args, '--non-interactive'], { timeoutMs: 120_000 });
+    const st = parseState(r.stdout);
+    if (r.code !== 0 || st.Error) {
+      const why = String(st.Error || reason(r.stderr) || reason(r.stdout) || `rclone exited with code ${r.code}`).slice(0, 300);
+      const shown = args.map((a, i) => (args[i - 1] === '--result' && a.startsWith('{') ? '<token>' : a)).join(' ');
+      console.error(`[rclone setup] rclone ${shown} → ${why}\n${tail(r.stderr, 10)}`);
+      throw new PipelineError(`rclone could not save the connection: ${why}`, {
+        detail: `$ rclone ${shown}\n${tail(`${r.stderr}\n${st.Error ? '' : r.stdout}`, 15) || '(no output)'}`,
+      });
+    }
+    return st;
+  }
+  /** The most telling line of rclone output, without the timestamp prefix. */
+  const reason = (text) => {
+    const lines = String(text || '').split('\n').map((l) => l.replace(/^\d{4}\/\d\d\/\d\d \d\d:\d\d:\d\d\s+/, '').trim()).filter(Boolean);
+    return lines.reverse().find((l) => /error|fail|denied|invalid|couldn't|can't/i.test(l)) || lines[0] || '';
+  };
+
+  /** Does the remote actually work? (rclone may grumble about a follow-up question after the token is saved.) */
+  async function remoteWorks(name) {
+    const r = await run(RCLONE, ['lsjson', `${name}:`, '--max-depth', '1', '--dirs-only'], { timeoutMs: 45_000 }).catch(() => ({ code: 1 }));
+    return r.code === 0;
   }
 
   /** Answer any remaining setup questions with rclone's defaults (e.g. "is this a shared drive? no"). */
   async function finishConfig(name, state) {
-    for (let i = 0; state.State && i < 10; i++) {
-      if (state.Option?.Name === 'config_token') throw new PipelineError('Google sign-in did not complete.');
-      state = await configStep(['config', 'update', name, '--continue', '--state', state.State, '--result', state.Option?.DefaultStr ?? '']);
+    try {
+      for (let i = 0; state.State && i < 10; i++) {
+        if (state.Option?.Name === 'config_token') throw new PipelineError('Google sign-in did not complete.');
+        state = await configStep(['config', 'update', name, '--continue', '--state', state.State, '--result', state.Option?.DefaultStr ?? '']);
+      }
+    } catch (err) {
+      // The Google login is saved before these follow-up questions — if Drive answers, we're connected.
+      if (!(await remoteWorks(name))) throw err;
+      console.error(`[rclone setup] ${err.message} — but the connection works, so continuing.`);
     }
     connect = { status: 'done', remote: name };
     emitConnect();
@@ -165,7 +202,14 @@ export function createCloud({ library, toolsDir, onChange = () => {} }) {
     if (!/^[\w-]{1,32}$/.test(name)) throw new PipelineError('Use letters, numbers and dashes for the name.');
     await cancelConnect();
     // Read-only access: ClipForge can copy from your Drive but never change or delete anything there.
-    const first = await configStep(['config', 'create', name, 'drive', 'scope=drive.readonly']);
+    let first;
+    try {
+      first = await configStep(['config', 'create', name, 'drive', 'scope=drive.readonly']);
+    } catch {
+      // A broken leftover from an earlier attempt can trip rclone up — clear it and try once more.
+      await run(RCLONE, ['config', 'delete', name]).catch(() => {});
+      first = await configStep(['config', 'create', name, 'drive', 'scope=drive.readonly']);
+    }
     if (first.Option?.Name !== 'config_is_local') return finishConfig(name, first).then(() => connect);
 
     if (!local) {

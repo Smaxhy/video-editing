@@ -132,8 +132,8 @@ if node_modules/.bin/hyperframes browser ensure; then ok "Chrome ready"
 else warn "Could not fetch Chrome now — HyperFrames will retry on first render (npx hyperframes browser ensure)"; fi
 
 # --- Directories --------------------------------------------------------------
-mkdir -p uploads workspace output
-ok "Created uploads/, workspace/, output/"
+mkdir -p library uploads workspace output
+ok "Created library/, uploads/, workspace/, output/"
 
 echo
 if [ "$FAILED" -ne 0 ]; then

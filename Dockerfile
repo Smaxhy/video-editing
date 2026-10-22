@@ -31,5 +31,5 @@ COPY . .
 
 ENV PORT=3000 HYPERFRAMES_NO_TELEMETRY=1 DO_NOT_TRACK=1
 EXPOSE 3000
-VOLUME ["/app/uploads", "/app/workspace", "/app/output", "/root/.cache"]
+VOLUME ["/app/library", "/app/uploads", "/app/workspace", "/app/output", "/root/.cache"]
 CMD ["node", "src/server.js", "--lan"]

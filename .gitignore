@@ -2,6 +2,7 @@ node_modules/
 uploads/
 workspace/
 output/
+library/
 .DS_Store
 *.log
 .env

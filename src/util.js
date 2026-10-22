@@ -123,6 +123,12 @@ export async function probe(file) {
     height,
     hasVideo: Boolean(video),
     hasAudio: Boolean(audio),
+    // Codec details decide whether a browser can preview the file as-is (see library.js).
+    videoCodec: video?.codec_name || null,
+    audioCodec: audio?.codec_name || null,
+    pixFmt: video?.pix_fmt || null,
+    container: info.format?.format_name || null,
+    bitRate: Number(info.format?.bit_rate || 0),
   };
 }
 

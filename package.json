@@ -10,7 +10,7 @@
     "start:lan": "node src/server.js --lan",
     "dev": "node --watch src/server.js",
     "setup": "bash scripts/setup.sh",
-    "test": "node --test"
+    "test": "node --test test/*.test.js"
   },
   "engines": {
     "node": ">=22"
@@ -23,6 +23,7 @@
     "gsap": "^3.15.0",
     "hyperframes": "^0.8.154",
     "multer": "^2.4.0",
+    "qrcode": "^1.5.4",
     "tus-js-client": "^4.3.1"
   }
 }

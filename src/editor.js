@@ -168,6 +168,8 @@ ${PLAN_SCHEMA}
  * Ask Claude Code (pipe mode, your subscription — no API key) for every version's edit plan
  * in a single call, then validate. Retries once with the validation error.
  */
+export const PLANNER_MODELS = ['sonnet', 'haiku', 'opus'];
+
 export async function generateEditPlans({ clips, userPrompt, options, cwd, onStatus, signal }) {
   const prompt = buildPrompt({ clips, userPrompt, options });
   let lastError;
@@ -180,7 +182,7 @@ export async function generateEditPlans({ clips, userPrompt, options, cwd, onSta
         : `${prompt}\n\n## Your previous answer was rejected\nReason: ${lastError.message}\nPrevious answer (truncated):\n${raw.slice(0, 4000)}\n\nReturn the corrected JSON object only.`;
 
     onStatus?.(attempt === 1 ? 'Claude is planning the edit…' : 'Plan was invalid — asking Claude to fix it…');
-    raw = await callClaude(input, { cwd, signal, tools: clips.some((c) => c.sheet) ? 'Read' : '' });
+    raw = await callClaude(input, { cwd, signal, model: options.model, tools: clips.some((c) => c.sheet) ? 'Read' : '' });
 
     try {
       const result = normalizeResponse(extractJson(raw), clips, options);
@@ -199,10 +201,11 @@ export async function generateEditPlans({ clips, userPrompt, options, cwd, onSta
  * One `claude -p` call. tools '' = pure text; tools 'Read' lets Claude open the frame-grid
  * images in cwd (and nothing else — no shell, no writes). --no-session-persistence: don't clutter history.
  */
-export async function callClaude(input, { cwd, signal, tools = '' }) {
+export async function callClaude(input, { cwd, signal, tools = '', model }) {
   const args = ['-p', '--output-format', 'text', '--tools', tools, '--no-session-persistence'];
   if (tools) args.push('--allowedTools', tools);
-  if (process.env.CLAUDE_MODEL) args.push('--model', process.env.CLAUDE_MODEL);
+  // Sonnet by default: plans edits well while using far less of your plan than Opus.
+  args.push('--model', process.env.CLAUDE_MODEL || model || 'sonnet');
 
   let res;
   try {

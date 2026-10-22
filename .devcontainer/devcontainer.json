@@ -1,0 +1,23 @@
+{
+  // Run ClipForge in GitHub Codespaces (a cloud computer from GitHub) — no PC, no server to rent.
+  // Before creating the codespace, add two Codespaces secrets (github.com → Settings → Codespaces):
+  //   CLIPFORGE_PASSWORD and CLAUDE_CODE_OAUTH_TOKEN. ClipForge starts by itself on port 3000.
+  "name": "ClipForge",
+  "build": { "dockerfile": "../Dockerfile", "context": ".." },
+  "remoteUser": "root",
+  "hostRequirements": { "cpus": 2, "memory": "8gb", "storage": "32gb" },
+  "secrets": {
+    "CLIPFORGE_PASSWORD": {
+      "description": "Password for the ClipForge app — pick something long."
+    },
+    "CLAUDE_CODE_OAUTH_TOKEN": {
+      "description": "Run `claude setup-token` and paste the token (sk-ant-oat01-…). Uses your Claude Pro/Max plan, never API credits."
+    }
+  },
+  "forwardPorts": [3000],
+  "portsAttributes": {
+    "3000": { "label": "ClipForge", "onAutoForward": "openBrowser" }
+  },
+  "postCreateCommand": "npm ci",
+  "postStartCommand": "bash deploy/codespace-start.sh"
+}

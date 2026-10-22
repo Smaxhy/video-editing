@@ -56,6 +56,15 @@ export function spriteLayout(duration) {
 }
 
 /**
+ * Footage above 1080p or ~16 Mbit/s is worth shrinking: ClipForge never outputs more than 1080p, so
+ * the extra pixels only cost disk space and slow down transcription and rendering.
+ */
+export function shouldShrink(meta, size) {
+  const mbps = meta.duration ? (size * 8) / meta.duration / 1e6 : 0;
+  return Math.max(meta.width || 0, meta.height || 0) > 1920 * 1.05 || mbps > 16;
+}
+
+/**
  * Contact sheet for AI scanning: a frame every ~3 s (4–16 frames), 4 per row, 384×216 tiles.
  * `times` says which source second each tile shows, in reading order.
  */
@@ -68,6 +77,13 @@ export function sheetLayout(duration) {
 export function createLibrary({ dir, onChange = () => {}, onReady = () => {} }) {
   const incoming = path.join(dir, '.incoming');
   fsSync.mkdirSync(incoming, { recursive: true });
+  const settingsFile = path.join(dir, '.library.json');
+  let settings = { shrinkLarge: true };
+  try {
+    settings = { ...settings, ...JSON.parse(fsSync.readFileSync(settingsFile, 'utf8')) };
+  } catch {
+    /* defaults */
+  }
   const assets = new Map();
   const isAssetId = (s) => typeof s === 'string' && /^[a-f0-9]{16}$/.test(s);
   const assetDir = (id) => path.join(dir, id);
@@ -97,6 +113,7 @@ export function createLibrary({ dir, onChange = () => {}, onReady = () => {} }) 
       tags: a.tags || {},
       source: a.source || null,
       ai: a.ai || { status: 'none' },
+      shrunk: a.shrunk && a.shrunk !== 'failed' ? a.shrunk.from : null,
       thumbnail: `/api/library/${a.id}/thumb?v=${v}`,
       sprite: a.preview.sprite ? { url: `/api/library/${a.id}/sprite?v=${v}`, ...a.preview.sprite } : null,
       streamUrl: a.preview.proxy === 'ready' || !a.preview.proxyReason ? `/api/library/${a.id}/stream?v=${v}` : null,
@@ -138,6 +155,7 @@ export function createLibrary({ dir, onChange = () => {}, onReady = () => {} }) 
       await update(a, { status: 'ready' });
       return onReady(a);
     }
+    if (settings.shrinkLarge && !a.shrunk && shouldShrink(a, a.size)) await shrink(a);
     if (!a.preview.sprite) {
       await update(a, { preview: { ...a.preview, step: 'storyboard' } });
       const layout = spriteLayout(a.duration);
@@ -156,6 +174,46 @@ export function createLibrary({ dir, onChange = () => {}, onReady = () => {} }) 
     }
     await update(a, { status: 'ready' });
     if (assets.has(a.id)) onReady(a);
+  }
+
+  /** Re-encode to ≤1080p H.264 with a keyframe every second and replace the stored file. */
+  async function shrink(a) {
+    const src = file(a.id, a.file);
+    const tmp = file(a.id, 'shrink.part.mp4');
+    await update(a, { preview: { ...a.preview, step: 'shrinking', progress: 0 } });
+    const r = await run('ffmpeg', [
+      '-v', 'error', '-y', '-progress', 'pipe:1', '-nostats', '-i', src,
+      '-map', '0:v:0', '-map', '0:a:0?',
+      '-vf', 'scale=w=1920:h=1920:force_original_aspect_ratio=decrease:force_divisible_by=2,format=yuv420p',
+      '-c:v', 'libx264', '-preset', 'veryfast', '-crf', '20', '-g', '30',
+      '-c:a', 'aac', '-b:a', '160k', '-movflags', '+faststart', tmp,
+    ], {
+      onLine: (line) => {
+        const m = line.match(/^out_time_us=(\d+)/);
+        if (!m || !a.duration) return;
+        const p = Math.min(0.99, Number(m[1]) / 1e6 / a.duration);
+        if (p - (a.preview.progress || 0) < 0.02) return;
+        a.preview = { ...a.preview, progress: p };
+        changed(a);
+      },
+    });
+    if (r.code !== 0 || !assets.has(a.id)) {
+      await fs.rm(tmp, { force: true });
+      if (r.code !== 0) console.error(`[library ${a.id}] shrink failed — keeping the original:`, tail(r.stderr, 3));
+      return update(a, { shrunk: 'failed', preview: { ...a.preview, step: null, progress: 0 } });
+    }
+    const meta = await probe(tmp);
+    const size = (await fs.stat(tmp)).size;
+    await fs.rename(tmp, file(a.id, 'source.mp4'));
+    if (a.file !== 'source.mp4') await fs.rm(src, { force: true });
+    // The new file plays in every browser, so no preview copy is needed any more.
+    await update(a, {
+      ...meta,
+      file: 'source.mp4',
+      size,
+      shrunk: { from: { width: a.width, height: a.height, size: a.size } },
+      preview: { ...a.preview, proxyReason: null, proxy: 'none', step: null, progress: 0 },
+    });
   }
 
   const makeSprite = (src, out, { count, cols, rows, w, h, interval }, id) =>
@@ -242,6 +300,12 @@ export function createLibrary({ dir, onChange = () => {}, onReady = () => {} }) 
       }
     },
 
+    settings: () => ({ ...settings }),
+    async setSettings(patch) {
+      settings = { ...settings, ...patch };
+      await fs.writeFile(settingsFile, JSON.stringify(settings, null, 2));
+      return { ...settings };
+    },
     list: () => [...assets.values()].sort((x, y) => y.createdAt - x.createdAt).map(toPublic),
     get: (id) => (isAssetId(id) ? assets.get(id) || null : null),
     toPublic,

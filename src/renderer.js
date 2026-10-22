@@ -499,11 +499,28 @@ export async function maxKeyframeInterval(file) {
     '-v', 'error', '-select_streams', 'v:0', '-skip_frame', 'nokey',
     '-show_entries', 'frame=pts_time', '-of', 'csv=p=0', file,
   ]);
-  const times = res.stdout.split('\n').map(Number).filter(Number.isFinite);
-  const duration = Number((await run('ffprobe', ['-v', 'error', '-show_entries', 'format=duration', '-of', 'csv=p=0', file])).stdout);
-  if (Number.isFinite(duration)) times.push(duration);
+  const duration = parseFloat((await run('ffprobe', ['-v', 'error', '-show_entries', 'format=duration', '-of', 'csv=p=0', file])).stdout);
+  return largestKeyframeGap(parseKeyframeTimes(res.stdout), duration);
+}
+
+/** Keyframe timestamps from `ffprobe -show_entries frame=pts_time -of csv=p=0` output. */
+export function parseKeyframeTimes(stdout) {
+  // Lines can carry a trailing comma ("0.000000,"); blank lines must not count as t=0.
+  return stdout
+    .split('\n')
+    .map((l) => l.trim().replace(/,+$/, ''))
+    .filter(Boolean)
+    .map(Number)
+    .filter(Number.isFinite)
+    .sort((a, b) => a - b);
+}
+
+/** Longest stretch without a keyframe, including the tail up to the clip's end. */
+export function largestKeyframeGap(times, duration) {
+  if (!times.length) return Number.isFinite(duration) ? duration : Infinity;
+  const points = Number.isFinite(duration) && duration > times[times.length - 1] ? [...times, duration] : times;
   let max = 0;
-  for (let i = 1; i < times.length; i++) max = Math.max(max, times[i] - times[i - 1]);
+  for (let i = 1; i < points.length; i++) max = Math.max(max, points[i] - points[i - 1]);
   return max;
 }
 

@@ -127,6 +127,7 @@ function assetStatus(a) {
     if (a.ai.status === 'queued') return 'Waiting for AI scan';
     return a.preview.proxy === 'failed' ? 'No browser preview' : '';
   }
+  if (a.preview.step === 'shrinking') return `Saving space ${Math.round((a.preview.progress || 0) * 100)}%`;
   if (a.preview.proxy === 'encoding') return `Preparing preview ${Math.round((a.preview.progress || 0) * 100)}%`;
   if (a.preview.step === 'storyboard') return 'Making storyboard…';
   return 'Processing…';
@@ -288,6 +289,10 @@ function renderScanBar() {
 }
 $('#autoScan').addEventListener('change', async () => {
   try { state.scanner = await api('/api/scanner', { method: 'PATCH', body: { autoScan: $('#autoScan').checked } }); renderScanBar(); }
+  catch (err) { toast(err.message, 'error'); }
+});
+$('#shrinkLarge').addEventListener('change', async () => {
+  try { await api('/api/library/settings', { method: 'PATCH', body: { shrinkLarge: $('#shrinkLarge').checked } }); }
   catch (err) { toast(err.message, 'error'); }
 });
 $('#scanAll').addEventListener('click', async () => {
@@ -513,6 +518,23 @@ async function resolveProject(value) {
 const uploads = [];
 let uploadSeq = 0;
 const MAX_PARALLEL = 2;
+// Each upload request carries one piece. Proxies in front of ClipForge cap request size — GitHub
+// Codespaces answers 413 above ~16 MB, Cloudflare at 100 MB, nginx at 1 MB by default — so pieces
+// start at 8 MB and halve whenever a 413 comes back. The size that works is remembered per device.
+const MIN_CHUNK = 256 * 1024;
+let chunkSize = Number(store.get('clipforge:chunk')) || 8 * 1024 * 1024;
+
+// Keep a phone's screen on while uploading — a locked screen pauses the browser.
+let wakeLock = null;
+async function holdWakeLock(on) {
+  try {
+    if (on && !wakeLock) wakeLock = await navigator.wakeLock?.request('screen');
+    if (!on && wakeLock) { await wakeLock.release(); wakeLock = null; }
+  } catch { wakeLock = null; }
+}
+document.addEventListener('visibilitychange', () => {
+  if (document.visibilityState === 'visible' && uploads.some((u) => u.status === 'uploading')) { wakeLock = null; holdWakeLock(true); }
+});
 
 async function filesFromDrop(dt) {
   // Folders: walk them for videos. webkitGetAsEntry must be read synchronously in the drop event.
@@ -549,6 +571,7 @@ function addFiles(fileList, projectId = null) {
 }
 
 function pump() {
+  holdWakeLock(uploads.some((u) => ['queued', 'uploading', 'finishing'].includes(u.status)));
   while (uploads.filter((u) => u.status === 'uploading' || u.status === 'finishing').length < MAX_PARALLEL) {
     const next = uploads.find((u) => u.status === 'queued');
     if (!next) break;
@@ -563,8 +586,7 @@ function startUpload(u) {
   if (!u.tus) {
     u.tus = new tus.Upload(u.file, {
       endpoint: `${location.origin}/api/uploads`,
-      // 64 MB per request: under Cloudflare's 100 MB cap (behind nginx set client_max_body_size 100m).
-      chunkSize: 64 * 1024 * 1024,
+      chunkSize,
       retryDelays: [0, 1000, 3000, 5000, 10000, 20000, 30000, 60000, 120000],
       metadata: { filename: u.file.name, filetype: u.file.type || '' },
       removeFingerprintOnSuccess: true,
@@ -591,6 +613,15 @@ function startUpload(u) {
       },
       onError: (err) => {
         const s = err.originalResponse?.getStatus?.();
+        if (s === 413 && chunkSize > MIN_CHUNK) {
+          // The proxy refused the piece size — retry this file (it resumes) with smaller pieces.
+          chunkSize = Math.max(MIN_CHUNK, Math.floor(chunkSize / 2));
+          store.set('clipforge:chunk', chunkSize);
+          u.tus = null;
+          u.status = 'queued';
+          renderUploads();
+          return pump();
+        }
         if (s === 401) $('#login').classList.remove('hidden');
         const body = err.originalResponse?.getBody?.()?.trim();
         u.status = 'error';
@@ -854,6 +885,7 @@ function refreshViewer(a, first = false) {
       ['Audio', a.hasAudio ? codec(a.audioCodec) : 'None'],
       ['Added', new Date(a.createdAt).toLocaleString()],
       ...(a.source ? [['Imported from', a.source.path.split('/').slice(-2).join('/')]] : []),
+      ...(a.shrunk ? [['Original', `${a.shrunk.width}×${a.shrunk.height}, ${fmtSize(a.shrunk.size)} — shrunk to save space`]] : []),
     ]);
   renderViewerAI(a);
   if (first) renderViewerActions(a);
@@ -1263,6 +1295,7 @@ function readSettings() {
     accent: $('#accent').value,
     whisperModel: $('#whisperModel').value,
     engine: $('#engine').value,
+    plannerModel: $('#plannerModel').value,
     silence: $('#silence').checked,
     shots: $('#shots').checked,
     cleanVoice: $('#cleanVoice').checked,
@@ -1280,7 +1313,7 @@ function applySaved(saved) {
   $('#autoFind').checked = s.autoFind === true;
   state.musicWanted = s.music || 'auto';
   renderMusicSelect();
-  for (const k of ['brand', 'cta', 'accent', 'whisperModel', 'engine']) if (s[k]) $('#' + k).value = s[k];
+  for (const k of ['brand', 'cta', 'accent', 'whisperModel', 'engine', 'plannerModel']) if (s[k]) $('#' + k).value = s[k];
   for (const k of ['silence', 'shots', 'cleanVoice', 'watermark']) {
     const el = $('#' + k);
     if (typeof s[k] === 'boolean' && !el.disabled) el.checked = s[k];
@@ -1303,7 +1336,7 @@ function onOptionsChange() {
   updateGo();
   remember();
 }
-['#brand', '#cta', '#accent', '#whisperModel', '#engine', '#silence', '#shots', '#cleanVoice', '#watermark', '#logoCutout']
+['#brand', '#cta', '#accent', '#whisperModel', '#engine', '#plannerModel', '#silence', '#shots', '#cleanVoice', '#watermark', '#logoCutout']
   .forEach((sel) => $(sel).addEventListener('input', remember));
 $('#autoFind').addEventListener('change', () => { updateGo(); remember(); });
 $('#music').addEventListener('change', () => { state.musicWanted = $('#music').value; renderMusicSelect(); remember(); });
@@ -1599,6 +1632,7 @@ async function init() {
   loadHealth();
   loadCloud();
   api('/api/scanner').then((sc) => { state.scanner = sc; renderScanBar(); }).catch(() => {});
+  api('/api/library/settings').then((ls) => { $('#shrinkLarge').checked = ls.shrinkLarge; }).catch(() => {});
   await Promise.all([loadLibrary().catch((err) => toast(err.message, 'error')), loadProjects()]);
   if (!booted) { listenLibrary(); booted = true; }
   showInterrupted();

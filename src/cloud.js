@@ -3,6 +3,7 @@ import fs from 'node:fs/promises';
 import fsSync from 'node:fs';
 import path from 'node:path';
 import { spawn } from 'node:child_process';
+import net from 'node:net';
 
 import { run, tail, PipelineError } from './util.js';
 import { onPath } from './tools.js';
@@ -71,6 +72,43 @@ export function ensureRclone(toolsDir) {
   return ensuring;
 }
 const PARALLEL = 2;
+
+const AUTH_PORT = 53682; // rclone's sign-in listener — only one can run at a time
+
+/** True while something is listening on rclone's sign-in port. */
+function authPortBusy() {
+  return new Promise((resolve) => {
+    const s = net.connect(AUTH_PORT, '127.0.0.1');
+    s.once('connect', () => { s.destroy(); resolve(true); });
+    s.once('error', () => resolve(false));
+  });
+}
+
+/**
+ * Stop rclone sign-in processes left over from earlier attempts (e.g. orphaned when ClipForge
+ * restarted for an update) — they hold port 53682 and every new sign-in fails with "address
+ * already in use". Linux/macOS with /proc only; elsewhere this is a no-op.
+ */
+export async function stopStraySignIns() {
+  let pids = [];
+  try {
+    pids = fsSync.readdirSync('/proc').filter((d) => /^\d+$/.test(d) && Number(d) !== process.pid);
+  } catch {
+    return;
+  }
+  for (const pid of pids) {
+    let argv;
+    try {
+      argv = fsSync.readFileSync(`/proc/${pid}/cmdline`, 'utf8').split('\0');
+    } catch {
+      continue;
+    }
+    if (path.basename(argv[0] || '') === 'rclone' && (argv.includes('authorize') || (argv[1] === 'config' && argv.includes('--continue')))) {
+      try { process.kill(Number(pid)); } catch { /* already gone */ }
+    }
+  }
+  for (let i = 0; i < 30 && (await authPortBusy()); i++) await new Promise((r) => setTimeout(r, 100));
+}
 
 /** Folder/file id from any Google Drive link (or a bare id). */
 export function parseDriveLink(input) {
@@ -201,15 +239,15 @@ export function createCloud({ library, toolsDir, onChange = () => {} }) {
     if (!onPath(RCLONE)) throw new PipelineError('rclone is not installed.', { hint: 'Install it from https://rclone.org/install/ (or run scripts/setup.sh), then reload.' });
     if (!/^[\w-]{1,32}$/.test(name)) throw new PipelineError('Use letters, numbers and dashes for the name.');
     await cancelConnect();
-    // Read-only access: ClipForge can copy from your Drive but never change or delete anything there.
-    let first;
-    try {
-      first = await configStep(['config', 'create', name, 'drive', 'scope=drive.readonly']);
-    } catch {
-      // A broken leftover from an earlier attempt can trip rclone up — clear it and try once more.
-      await run(RCLONE, ['config', 'delete', name]).catch(() => {});
-      first = await configStep(['config', 'create', name, 'drive', 'scope=drive.readonly']);
+    await stopStraySignIns();
+    if (await authPortBusy()) {
+      throw new PipelineError('Another program is using port 53682, which Google sign-in needs.', { hint: 'Restart the codespace (or computer) and try again.' });
     }
+    // Start clean: an existing remote with this name (a half-finished earlier attempt) makes rclone try
+    // to refresh its token instead of signing in fresh. Read-only access: ClipForge can copy from your
+    // Drive but never change or delete anything there.
+    await run(RCLONE, ['config', 'delete', name]).catch(() => {});
+    const first = await configStep(['config', 'create', name, 'drive', 'scope=drive.readonly']);
     if (first.Option?.Name !== 'config_is_local') return finishConfig(name, first).then(() => connect);
 
     if (!local) {
@@ -469,6 +507,11 @@ export function createCloud({ library, toolsDir, onChange = () => {} }) {
     submitToken,
     finishFromRedirect,
     cancelConnect,
+    /** Before ClipForge exits (auto-update): don't leave a sign-in listener behind. */
+    shutdown() {
+      connectProc?.kill();
+      connectProc = null;
+    },
     preview,
     startImport,
     cancelImport,

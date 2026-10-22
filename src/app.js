@@ -1202,6 +1202,7 @@ const updater = createUpdater({
     scanner.status().scanning > 0 ||
     library.list().some((a) => a.status !== 'ready'),
   beforeRestart: async () => {
+    cloud.shutdown();
     for (const res of libraryListeners) res.end();
     for (const job of jobs.values()) for (const l of job.listeners) l.end();
     server.closeAllConnections();

@@ -65,7 +65,7 @@ const library = createLibrary({ dir: DIRS.library, onChange: broadcast, onReady:
 await library.load();
 scanner = createScanner({ library, dir: DIRS.library, onChange: broadcast });
 scanner.load();
-const cloud = createCloud({ library, onChange: broadcast });
+const cloud = createCloud({ library, toolsDir: path.join(ROOT, '.tools'), onChange: broadcast });
 
 // Startup sweep: nothing is running yet, so half-finished uploads from older versions,
 // compositions and raw renders left by a crash or restart are garbage.
@@ -1188,7 +1188,8 @@ app.use((err, _req, res, _next) => {
         : 500;
   const message = err.code === 'LIMIT_FILE_SIZE' ? 'File too large.' : err.message;
   if (status === 500) console.error(err);
-  res.status(status).json({ error: message, hint: err.hint });
+  // Technical detail only for our own errors (never stack traces of unexpected ones).
+  res.status(status).json({ error: message, hint: err.hint, detail: err instanceof PipelineError ? err.detail : undefined });
 });
 
 // Self-update (codespaces): waits until nothing is running, then pulls main and restarts.

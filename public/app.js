@@ -336,6 +336,10 @@ $('#importJobs').addEventListener('click', async (e) => {
 });
 
 const imp = { remote: '', link: '', sharedWithMe: false, preview: null, busy: false, error: '' };
+/** The error, plus rclone's own words under "Technical details" — screenshot-able when asking for help. */
+const errorHtml = (c) => (c.error
+  ? `<div class="uperr" role="alert">${esc(c.error)}</div>${c.detail ? `<details class="adv"><summary>Technical details</summary><pre>${esc(String(c.detail).split('\n').slice(-12).join('\n'))}</pre></details>` : ''}`
+  : '');
 function renderImport() {
   const c = state.cloud;
   const body = $('#imBody');
@@ -360,7 +364,7 @@ function renderImport() {
       </ol>
       <label class="sr-only" for="redirIn">Address of the page Google opened</label>
       <textarea class="token" id="redirIn" placeholder="http://127.0.0.1:53682/?state=…&code=…" style="min-height:70px"></textarea>
-      ${conn.error ? `<p class="uperr" role="alert">${esc(conn.error)}</p>` : ''}
+      ${errorHtml(conn)}
       <p class="im-actions"><button class="btn" type="button" data-im="finish">Finish connecting</button>
         <button class="btn sm ghost" type="button" data-im="cancel-connect">Cancel</button></p>
       <p class="hint-line">Only if ClipForge runs on this very computer (not in a codespace) does it connect by itself after Allow.</p>`;
@@ -376,13 +380,13 @@ function renderImport() {
       </ol>
       <label class="sr-only" for="tokenIn">Result from rclone authorize</label>
       <textarea class="token" id="tokenIn" placeholder='{"access_token":"…"}'></textarea>
-      ${conn.error ? `<p class="uperr" role="alert">${esc(conn.error)}</p>` : ''}
+      ${errorHtml(conn)}
       <p class="im-actions"><button class="btn" type="button" data-im="token">Connect</button> <button class="btn sm ghost" type="button" data-im="cancel-connect">Cancel</button></p>`;
     return;
   }
   if (!drives.length && !imp.useOther) {
     body.innerHTML = `<p>Connect your Google account once. ClipForge gets <strong>read-only</strong> access — it copies videos and music into your library and never changes anything in your Drive.</p>
-      ${conn.status === 'error' ? `<p class="uperr" role="alert">${esc(conn.error)}</p>` : ''}
+      ${conn.status === 'error' ? errorHtml(conn) : ''}
       <div class="im-actions">
         <button class="btn" type="button" data-im="connect-local">Connect Google Drive</button>
       </div>
@@ -461,7 +465,12 @@ $('#imBody').addEventListener('click', async (e) => {
       return;
     }
   } catch (err) {
-    state.cloud.connect = { ...state.cloud.connect, status: state.cloud.connect.status === 'starting' ? 'error' : state.cloud.connect.status, error: err.message };
+    state.cloud.connect = {
+      ...state.cloud.connect,
+      status: state.cloud.connect.status === 'starting' ? 'error' : state.cloud.connect.status,
+      error: err.message,
+      detail: err.data?.detail || null,
+    };
     toast(err.message, 'error');
   }
   renderImport();

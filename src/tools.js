@@ -65,7 +65,7 @@ print(json.dumps({"fasterWhisper": has("faster_whisper"), "sceneDetect": has("sc
     demucs: Boolean(py.demucs) || onPath('demucs'),
     ffmpegNormalize: onPath('ffmpeg-normalize'),
     rembg: onPath('rembg'),
-    rclone: onPath(process.env.RCLONE_BIN || 'rclone'),
+    rclone: onPath(process.env.RCLONE_BIN || 'rclone') || fsSync.existsSync(path.join(ROOT, '.tools', 'rclone')),
   };
   cache = { at: Date.now(), tools };
   return tools;

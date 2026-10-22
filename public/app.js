@@ -354,6 +354,9 @@ function renderImport() {
   if (['waiting-browser', 'starting', 'resolving'].includes(conn.status)) {
     if (!conn.url) {
       body.innerHTML = '<p role="status">Getting the Google sign-in ready…</p>';
+      // Don't rely only on the live event stream (it can drop, e.g. right after an update): check again.
+      clearTimeout(renderImport.poll);
+      renderImport.poll = setTimeout(() => { if ($('#importDlg').open) loadCloud(); }, 1500);
       return;
     }
     body.innerHTML = `<p>ClipForge gets <strong>read-only</strong> access — it can copy your videos and music but never change or delete anything in your Drive.</p>

@@ -276,7 +276,12 @@ export function createCloud({ library, toolsDir, onChange = () => {} }) {
         connect = { status: 'resolving', remote: name };
         googleUrl(local).then((url) => {
           if (connect.status !== 'resolving') return;
-          connect = { status: 'waiting-browser', remote: name, url, state: new URL(local).searchParams.get('state') };
+          if (!url) {
+            proc.kill();
+            connect = { status: 'error', remote: name, error: 'Couldn’t get the Google sign-in page from rclone — tap “Connect Google Drive” again.', detail: tail(err, 12) };
+          } else {
+            connect = { status: 'waiting-browser', remote: name, url, state: new URL(local).searchParams.get('state') };
+          }
           emitConnect();
         });
       }
@@ -301,21 +306,34 @@ export function createCloud({ library, toolsDir, onChange = () => {} }) {
         emitConnect();
       }
     });
-    // Give rclone a moment to print the sign-in link so the first response already has it.
-    for (let i = 0; i < 50 && ['starting', 'resolving'].includes(connect.status); i++) await new Promise((r) => setTimeout(r, 100));
+    // Give rclone time to print the sign-in link so the first response already has it; if it never
+    // does, stop it and say so instead of leaving the page waiting.
+    for (let i = 0; i < 200 && ['starting', 'resolving'].includes(connect.status); i++) await new Promise((r) => setTimeout(r, 100));
+    if (connect.status === 'starting' && connectProc === proc) {
+      proc.kill();
+      connect = { status: 'error', remote: name, error: 'rclone didn’t start the Google sign-in — tap “Connect Google Drive” again.', detail: tail(err, 12) || '(rclone printed nothing)' };
+      emitConnect();
+    }
     return connect;
   }
 
-  /** rclone's local /auth page just redirects to Google — hand out Google's address so any device can open it. */
+  /**
+   * rclone's local /auth page just redirects to Google — hand out Google's address so any device can
+   * open it. rclone prints the link a moment before its listener is up, so keep asking for a while.
+   * Returns null if it never answers (the local 127.0.0.1 link is useless on any other device).
+   */
   async function googleUrl(local) {
-    try {
-      const r = await fetch(local, { redirect: 'manual' });
-      const loc = r.headers.get('location');
-      if (loc && /^https:\/\/accounts\.google\.com\//.test(loc)) return loc;
-    } catch {
-      /* fall back to the local address (works on the ClipForge machine itself) */
+    for (let i = 0; i < 40; i++) {
+      try {
+        const r = await fetch(local, { redirect: 'manual', signal: AbortSignal.timeout(3000) });
+        const loc = r.headers.get('location');
+        if (loc && /^https:\/\/accounts\.google\.com\//.test(loc)) return loc;
+      } catch {
+        /* not listening yet */
+      }
+      await new Promise((res) => setTimeout(res, 250));
     }
-    return local;
+    return null;
   }
 
   /**

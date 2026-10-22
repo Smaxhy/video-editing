@@ -168,3 +168,14 @@ test('buildComposition: face crop, isolated voice track and watermark', () => {
   assert.match(html, /<audio id="a0" src="media\/clip1-voice\.m4a" data-start="0" data-duration="4" data-media-start="0"[^>]*data-volume="1"/);
   assert.match(html, /<div id="wm" class="clip wm" data-start="0" data-duration="4"[^>]*><img src="media\/logo\.png"/);
 });
+
+import { parseKeyframeTimes, largestKeyframeGap } from '../src/renderer.js';
+
+test('keyframe gap parsing ignores blank lines and trailing commas', () => {
+  const out = '0.000000,\n1.000000\n2.000000\n3.000000\n\n';
+  const times = parseKeyframeTimes(out);
+  assert.deepEqual(times, [0, 1, 2, 3]);
+  assert.equal(largestKeyframeGap(times, 3.5), 1);
+  assert.equal(largestKeyframeGap(parseKeyframeTimes('0.0\n8.33\n'), 17), 8.67);
+  assert.equal(largestKeyframeGap([], 12), 12);
+});

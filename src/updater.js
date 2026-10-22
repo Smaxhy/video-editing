@@ -11,7 +11,7 @@ import { run, tail } from './util.js';
  * rolls back to the version that was running. Docker images have no .git and never self-update.
  * CLIPFORGE_AUTO_UPDATE=0 turns it off.
  */
-export function createUpdater({ root, isBusy, beforeRestart, branch = 'main', intervalMs = 5 * 60_000, log = console.log }) {
+export function createUpdater({ root, isBusy, beforeRestart, branch = 'main', intervalMs = 60_000, log = console.log }) {
   const flag = process.env.CLIPFORGE_AUTO_UPDATE;
   const enabled = flag !== '0' && (flag === '1' || process.env.CODESPACES === 'true') && fs.existsSync(path.join(root, '.git'));
   const state = { enabled, status: enabled ? 'idle' : 'off', version: null, lastCheck: null, error: null };
@@ -49,8 +49,10 @@ export function createUpdater({ root, isBusy, beforeRestart, branch = 'main', in
       state.error = 'This copy has its own changes, so it is not updated automatically.';
       return state;
     }
-    if (isBusy()) {
-      state.status = 'waiting'; // a render, upload or import is running — try again next round
+    const busy = isBusy(); // a reason string while something must not be interrupted, else falsy
+    if (busy) {
+      state.status = 'waiting'; // try again next round
+      state.error = `Update ready — waiting until ${busy} finishes.`;
       return state;
     }
 

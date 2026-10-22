@@ -14,6 +14,7 @@ services:
       CLIPFORGE_PASSWORD: ${CLIPFORGE_PASSWORD:?set CLIPFORGE_PASSWORD in .env}
       CLAUDE_CODE_OAUTH_TOKEN: ${CLAUDE_CODE_OAUTH_TOKEN:?run `claude setup-token` and set CLAUDE_CODE_OAUTH_TOKEN in .env}
     volumes:
+      - ./library:/app/library     # your uploaded videos (point this at a big disk if you like)
       - ./uploads:/app/uploads
       - ./workspace:/app/workspace
       - ./output:/app/output

@@ -2,6 +2,7 @@ node_modules
 uploads
 workspace
 output
+library
 .git
 .env
 *.log

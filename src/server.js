@@ -16,25 +16,50 @@ import {
   FORMATS, CAPTION_STYLES, FRAMINGS,
 } from './renderer.js';
 import { compressVideo, SIZE_PRESETS, RENDER_QUALITY } from './compress.js';
-import { run, probe, exists, PipelineError } from './util.js';
+import { run, exists, PipelineError } from './util.js';
 import { createAuth } from './auth.js';
+import { createLibrary, VIDEO_EXT } from './library.js';
+import { Server as TusServer } from '@tus/server';
+import { FileStore } from '@tus/file-store';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const DIRS = {
   uploads: path.join(ROOT, 'uploads'),
   workspace: path.join(ROOT, 'workspace'),
   output: path.join(ROOT, 'output'),
+  library: process.env.LIBRARY_DIR ? path.resolve(process.env.LIBRARY_DIR) : path.join(ROOT, 'library'),
   public: path.join(ROOT, 'public'),
 };
 const PORT = Number(process.env.PORT || 3000);
 // `--lan` (npm run start:lan) listens on every interface so phones on your Wi-Fi/Tailscale can connect.
 const HOST = process.argv.includes('--lan') ? '0.0.0.0' : process.env.HOST || '127.0.0.1';
 const LOOPBACK = ['127.0.0.1', 'localhost', '::1'].includes(HOST);
-const MAX_UPLOAD_BYTES = Number(process.env.MAX_UPLOAD_MB || 4096) * 1024 * 1024;
+// No size cap by default — uploads are resumable and only limited by free disk space.
+const MAX_UPLOAD_BYTES = process.env.MAX_UPLOAD_MB ? Number(process.env.MAX_UPLOAD_MB) * 1024 * 1024 : 0;
+const DISK_HEADROOM = 2 * 1024 ** 3; // keep 2 GB free for transcodes and renders
 const MAX_VARIANTS = 8;
-const VIDEO_EXT = /\.(mp4|mov|m4v|mkv|webm|avi|mts|m2ts|mpg|mpeg|3gp|wmv|flv)$/i;
 
-for (const d of [DIRS.uploads, DIRS.workspace, DIRS.output]) fsSync.mkdirSync(d, { recursive: true });
+for (const d of [DIRS.uploads, DIRS.workspace, DIRS.output, DIRS.library]) fsSync.mkdirSync(d, { recursive: true });
+
+async function diskFree(dir) {
+  try {
+    const s = await fs.statfs(dir);
+    return { free: s.bavail * s.bsize, total: s.blocks * s.bsize };
+  } catch {
+    return { free: null, total: null };
+  }
+}
+
+// Library SSE listeners get every asset change (upload finished, storyboard ready, proxy progress…).
+const libraryListeners = new Set();
+const library = createLibrary({
+  dir: DIRS.library,
+  onChange: (evt) => {
+    const data = `data: ${JSON.stringify(evt)}\n\n`;
+    for (const res of libraryListeners) res.write(data);
+  },
+});
+await library.load();
 
 // ---------------------------------------------------------------------------
 // Job store. A job = one project (a set of uploaded clips); each POST /api/edit
@@ -46,9 +71,11 @@ const jobs = new Map();
 const isId = (s) => typeof s === 'string' && /^[a-z0-9-]{1,64}$/i.test(s);
 const resultFile = (id) => path.join(DIRS.output, id, 'result.json');
 
-function newJob(id = crypto.randomUUID().slice(0, 12)) {
+function newJob(id = crypto.randomUUID().slice(0, 12), name = '') {
   const job = {
     id,
+    name,
+    createdAt: Date.now(),
     clips: [],
     nextClip: 1,
     state: 'idle', // idle | running | done | error
@@ -81,9 +108,13 @@ async function getJob(id) {
   if (!(await exists(manifest))) return null;
   const job = newJob(id);
   const saved = JSON.parse(await fs.readFile(manifest, 'utf8'));
-  job.clips = saved.clips.map((c) => ({ ...c, path: path.join(DIRS.uploads, id, c.file) }));
+  job.clips = saved.clips
+    .filter((c) => !c.assetId || library.get(c.assetId)) // asset deleted while the server was down
+    .map((c) => ({ ...c, path: c.assetId ? library.sourcePath(c.assetId) : path.join(DIRS.uploads, id, c.file) }));
   job.nextClip = saved.nextClip;
   job.logo = saved.logo || null;
+  job.name = saved.name || '';
+  job.createdAt = saved.createdAt || (await fs.stat(manifest)).mtimeMs;
   if (await exists(resultFile(id))) {
     job.result = JSON.parse(await fs.readFile(resultFile(id), 'utf8'));
     job.state = 'done';
@@ -93,11 +124,45 @@ async function getJob(id) {
   return job;
 }
 
-const saveManifest = (job) =>
-  fs.writeFile(
+async function saveManifest(job) {
+  await fs.mkdir(path.join(DIRS.uploads, job.id), { recursive: true });
+  await fs.writeFile(
     path.join(DIRS.uploads, job.id, 'clips.json'),
-    JSON.stringify({ clips: job.clips.map(({ path: _p, ...c }) => c), nextClip: job.nextClip, logo: job.logo || null }, null, 2),
+    JSON.stringify(
+      {
+        name: job.name || '',
+        createdAt: job.createdAt,
+        clips: job.clips.map(({ path: _p, ...c }) => c),
+        nextClip: job.nextClip,
+        logo: job.logo || null,
+      },
+      null,
+      2,
+    ),
   );
+}
+
+/** Every project on disk (newest first), loading each into memory once. */
+async function allProjects() {
+  const ids = (await fs.readdir(DIRS.uploads, { withFileTypes: true }).catch(() => []))
+    .filter((e) => e.isDirectory() && isId(e.name))
+    .map((e) => e.name);
+  const list = (await Promise.all(ids.map((id) => getJob(id).catch(() => null)))).filter(Boolean);
+  return list.sort((a, b) => b.createdAt - a.createdAt);
+}
+
+const projectName = (job) => job.name || job.result?.title || job.clips[0]?.name?.replace(/\.[^.]+$/, '') || 'Untitled project';
+
+const publicProject = (job) => ({
+  id: job.id,
+  name: projectName(job),
+  createdAt: job.createdAt,
+  clips: job.clips.length,
+  duration: job.clips.reduce((s, c) => s + (c.duration || 0), 0),
+  thumbnail: job.clips[0] ? publicClip(job.id, job.clips[0]).thumbnail : null,
+  state: job.state,
+  videos: job.result?.variants?.length || 0,
+});
 
 function snapshot(job) {
   return {
@@ -126,16 +191,24 @@ function setStep(job, step, status, message, progress) {
 const publicLogo = (job) =>
   job.logo ? { url: `/api/logo/${job.id}?v=${job.logo.at}`, cutout: job.logo.cutout, note: job.logo.note || null } : null;
 
-const publicClip = (jobId, c) => ({
-  id: c.id,
-  name: c.name,
-  size: c.size,
-  duration: c.duration,
-  width: c.width,
-  height: c.height,
-  hasAudio: c.hasAudio,
-  thumbnail: `/api/thumb/${jobId}/${c.id}`,
-});
+function publicClip(jobId, c) {
+  const asset = c.assetId ? library.get(c.assetId) : null;
+  const pub = asset ? library.toPublic(asset) : null;
+  return {
+    id: c.id,
+    assetId: c.assetId || null,
+    name: pub?.name || c.name,
+    size: c.size,
+    duration: c.duration,
+    width: c.width,
+    height: c.height,
+    hasAudio: c.hasAudio,
+    thumbnail: pub?.thumbnail || `/api/thumb/${jobId}/${c.id}`,
+    sprite: pub?.sprite || null,
+    // Clips uploaded before the library existed stream straight from the project folder.
+    streamUrl: pub ? pub.streamUrl : `/api/clipfile/${jobId}/${c.id}`,
+  };
+}
 
 async function dirSize(dir) {
   let total = 0;
@@ -173,8 +246,14 @@ async function runPipeline(job, { prompt, clipIds, settings, reusePlan }) {
   const ws = path.join(DIRS.workspace, job.id);
   const outDir = path.join(DIRS.output, job.id);
   const signal = job.abort.signal;
-  const clips = clipIds.map((id) => job.clips.find((c) => c.id === id));
+  const clips = clipIds
+    .map((id) => job.clips.find((c) => c.id === id))
+    .map((c) => (c.assetId && library.get(c.assetId) ? { ...c, name: library.get(c.assetId).name } : c)); // follow renames
   const formats = settings.formats.map((key) => ({ key, ...FORMATS[key] }));
+  // Library clips keep transcripts, analysis and pre-renders next to the asset, so every
+  // project that reuses a clip skips that work. Legacy clips cache per project.
+  const cache = (c, sub, ext) =>
+    c.assetId ? path.join(library.cacheDir(c.assetId), sub, `source${ext}`) : path.join(ws, sub, `${c.id}${ext}`);
   const checkAbort = () => {
     if (signal.aborted) throw new PipelineError('Cancelled.');
   };
@@ -193,7 +272,7 @@ async function runPipeline(job, { prompt, clipIds, settings, reusePlan }) {
       tools,
       label: c.name,
       anyCached: reusePlan,
-      outDir: path.join(ws, 'transcripts', c.id),
+      outDir: c.assetId ? path.join(library.cacheDir(c.assetId), 'transcripts') : path.join(ws, 'transcripts', c.id),
       signal,
       onProgress: (p) => {
         const overall = ((i + p) / clips.length) * 0.3;
@@ -215,7 +294,7 @@ async function runPipeline(job, { prompt, clipIds, settings, reusePlan }) {
   if (features.silence || features.shots || features.faces) {
     for (const [i, c] of clips.entries()) {
       setStep(job, 'transcribe', 'active', `Analyzing footage ${i + 1}/${clips.length} (${c.name})…`, 0.26 + (i / clips.length) * 0.04);
-      analysis[c.id] = await analyzeClip(c, { cacheFile: path.join(ws, 'analysis', `${c.id}.json`), features, tools, signal });
+      analysis[c.id] = await analyzeClip(c, { cacheFile: cache(c, 'analysis', '.json'), features, tools, signal });
       notes.push(...analysis[c.id].notes);
       checkAbort();
     }
@@ -278,7 +357,7 @@ async function runPipeline(job, { prompt, clipIds, settings, reusePlan }) {
   const renderPaths = {};
   for (const [k, c] of clips.entries()) {
     setStep(job, 'render', 'active', `Checking clip ${k + 1}/${clips.length} for smooth seeking…`, 0.38);
-    renderPaths[c.id] = await ensureSeekable(c.path, path.join(ws, 'seekable', `${c.id}.mp4`), { signal });
+    renderPaths[c.id] = await ensureSeekable(c.path, cache(c, 'seekable', '.mp4'), { signal });
     checkAbort();
   }
 
@@ -290,7 +369,7 @@ async function runPipeline(job, { prompt, clipIds, settings, reusePlan }) {
     for (const [k, c] of (tools.demucs ? withAudio : []).entries()) {
       setStep(job, 'render', 'active', `Isolating voice ${k + 1}/${withAudio.length} with Demucs (slow on CPU)…`, 0.38);
       try {
-        voicePaths[c.id] = await isolateVoice(c.path, path.join(ws, 'voice', `${c.id}.m4a`), { signal });
+        voicePaths[c.id] = await isolateVoice(c.path, cache(c, 'voice', '.m4a'), { signal });
       } catch (err) {
         if (signal.aborted) throw new PipelineError('Cancelled.');
         notes.push(`Voice isolation failed for ${c.name} — kept the original audio. (${String(err.message).split('\n').pop()})`);
@@ -304,7 +383,7 @@ async function runPipeline(job, { prompt, clipIds, settings, reusePlan }) {
     const needs = clips.filter((c) => formats.some((f) => aspectMismatch(c, f.width, f.height)));
     for (const [k, c] of needs.entries()) {
       setStep(job, 'render', 'active', `Preparing blur-fill background ${k + 1}/${needs.length}…`, 0.38);
-      blurPaths[c.id] = await makeBlurBackground(c.path, path.join(ws, 'blur', `${c.id}.mp4`));
+      blurPaths[c.id] = await makeBlurBackground(c.path, cache(c, 'blur', '.mp4'));
       checkAbort();
     }
   }
@@ -446,6 +525,8 @@ const app = express();
 app.set('trust proxy', 'loopback'); // honour X-Forwarded-Proto from a local HTTPS proxy (Tailscale Serve, Caddy)
 app.use(express.json({ limit: '1mb' }));
 app.use(express.static(DIRS.public));
+// Browser build of tus-js-client for resumable uploads.
+app.use('/vendor/tus', express.static(path.join(ROOT, 'node_modules', 'tus-js-client', 'dist')));
 app.get('/api/auth', auth.status);
 app.post('/api/login', auth.login);
 app.post('/api/logout', auth.logout);
@@ -479,86 +560,174 @@ app.get('/api/health', async (_req, res) => {
   res.json(data);
 });
 
-const upload = multer({
-  storage: multer.diskStorage({
-    destination: (req, _file, cb) => {
-      const dir = path.join(DIRS.uploads, req.job.id);
-      fs.mkdir(dir, { recursive: true }).then(() => cb(null, dir), cb);
-    },
-    filename: (req, file, cb) => {
-      const ext = (path.extname(file.originalname) || '.mp4').toLowerCase();
-      cb(null, `clip${req.job.nextClip++}${ext}`);
-    },
-  }),
-  limits: { fileSize: MAX_UPLOAD_BYTES, files: 50 },
-  fileFilter: (req, file, cb) => {
-    const ok = file.mimetype.startsWith('video/') || VIDEO_EXT.test(file.originalname);
-    if (!ok) {
-      // Skip non-video files but keep the rest of the batch.
-      req.rejected.push({ name: Buffer.from(file.originalname, 'latin1').toString('utf8'), error: 'not a video file' });
+// ---------------------------------------------------------------------------
+// Uploads: tus resumable protocol (https://tus.io). Files of any size go up in chunks; a
+// dropped connection, closed laptop or server restart resumes where it stopped instead of
+// starting over. Finished uploads move into the media library.
+// ---------------------------------------------------------------------------
+
+const tus = new TusServer({
+  path: '/api/uploads',
+  datastore: new FileStore({ directory: library.incoming, expirationPeriodInMilliseconds: 7 * 24 * 3600_000 }),
+  relativeLocation: true,
+  respectForwardedHeaders: true,
+  ...(MAX_UPLOAD_BYTES ? { maxSize: MAX_UPLOAD_BYTES } : {}),
+  async onUploadCreate(_req, upload) {
+    const name = upload.metadata?.filename || '';
+    const type = upload.metadata?.filetype || '';
+    if (!type.startsWith('video/') && !VIDEO_EXT.test(name)) {
+      throw { status_code: 415, body: `${name || 'That file'} is not a video file.\n` };
     }
-    cb(null, ok);
+    const { free } = await diskFree(DIRS.library);
+    if (free != null && upload.size && upload.size > free - DISK_HEADROOM) {
+      const gb = (n) => (n / 1024 ** 3).toFixed(1);
+      throw { status_code: 507, body: `Not enough disk space: ${name} is ${gb(upload.size)} GB, ${gb(Math.max(0, free - DISK_HEADROOM))} GB free.\n` };
+    }
+    return {};
+  },
+  async onUploadFinish(_req, upload) {
+    const name = String(upload.metadata?.filename || 'video.mp4').slice(0, 200);
+    try {
+      const asset = await library.ingest(path.join(library.incoming, upload.id), { name, size: upload.size || upload.offset });
+      await fs.rm(path.join(library.incoming, `${upload.id}.json`), { force: true });
+      return { status_code: 200, headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ asset }) };
+    } catch (err) {
+      await fs.rm(path.join(library.incoming, upload.id), { force: true });
+      await fs.rm(path.join(library.incoming, `${upload.id}.json`), { force: true });
+      throw { status_code: 422, body: `${err.message}\n` };
+    }
   },
 });
+app.all(['/api/uploads', '/api/uploads/*'], (req, res) => tus.handle(req, res));
+setInterval(() => tus.cleanUpExpiredUploads().catch(() => {}), 3600_000).unref();
 
-// POST /api/upload[?jobId=…] — multipart field "clips" (multiple). Appends to jobId if given.
-app.post(
-  '/api/upload',
-  async (req, res, next) => {
-    try {
-      const existing = req.query.jobId ? await getJob(String(req.query.jobId)) : null;
-      if (req.query.jobId && !existing) return res.status(404).json({ error: 'Unknown project.' });
-      if (existing?.state === 'running') return res.status(409).json({ error: 'A render is running for this project.' });
-      req.job = existing || newJob();
-      req.rejected = [];
-      next();
-    } catch (err) {
-      next(err);
-    }
-  },
-  (req, res, next) => upload.array('clips', 50)(req, res, (err) => (err ? next(err) : next())),
-  async (req, res, next) => {
-    try {
-      const job = req.job;
-      const files = req.files || [];
-      const rejected = req.rejected;
-      if (!files.length) {
-        const why = rejected.length ? `Not video files: ${rejected.map((r) => r.name).join(', ')}` : 'No files received.';
-        return res.status(400).json({ error: why });
-      }
-      const added = [];
-      for (const f of files) {
-        const name = Buffer.from(f.originalname, 'latin1').toString('utf8');
-        try {
-          const meta = await probe(f.path);
-          if (!meta.hasVideo || !meta.duration) throw new PipelineError('no video stream found');
-          const id = path.basename(f.filename, path.extname(f.filename));
-          const thumb = path.join(DIRS.uploads, job.id, 'thumbs', `${id}.jpg`);
-          await fs.mkdir(path.dirname(thumb), { recursive: true });
-          await run('ffmpeg', [
-            '-v', 'error', '-y', '-ss', String(Math.min(1, meta.duration / 3)), '-i', f.path,
-            '-frames:v', '1', '-vf', 'scale=480:-2', '-q:v', '4', thumb,
-          ]).catch(() => null);
-          const clip = { id, name, file: f.filename, path: f.path, size: f.size, ...meta };
-          job.clips.push(clip);
-          added.push(publicClip(job.id, clip));
-        } catch (err) {
-          await fs.rm(f.path, { force: true });
-          rejected.push({ name, error: err.message });
-        }
-      }
-      await saveManifest(job);
-      res.json({ jobId: job.id, added, rejected, clips: job.clips.map((c) => publicClip(job.id, c)) });
-    } catch (err) {
-      next(err);
-    }
-  },
-);
+// ---- library -------------------------------------------------------------------
+
+async function storageInfo() {
+  const [uploads, workspace, output] = await Promise.all([DIRS.uploads, DIRS.workspace, DIRS.output].map(dirSize));
+  const disk = await diskFree(DIRS.library);
+  return { library: library.totalSize(), projects: uploads + workspace + output, ...disk };
+}
+
+app.get('/api/library', async (_req, res) => {
+  res.json({ assets: library.list(), storage: await storageInfo() });
+});
+
+app.get('/api/library/events', (req, res) => {
+  res.writeHead(200, {
+    'Content-Type': 'text/event-stream',
+    'Cache-Control': 'no-cache, no-transform',
+    Connection: 'keep-alive',
+    'X-Accel-Buffering': 'no',
+  });
+  res.write('retry: 2000\n\n');
+  libraryListeners.add(res);
+  const ping = setInterval(() => res.write(': ping\n\n'), 15_000);
+  req.on('close', () => {
+    clearInterval(ping);
+    libraryListeners.delete(res);
+  });
+});
+
+const withAsset = (handler) => async (req, res, next) => {
+  const asset = library.get(req.params.assetId);
+  if (!asset) return res.status(404).json({ error: 'That video is no longer in the library.' });
+  try {
+    await handler(req, res, asset);
+  } catch (err) {
+    next(err);
+  }
+};
+
+app.get('/api/library/:assetId/thumb', withAsset((_req, res, a) => res.sendFile(library.thumbPath(a.id), { maxAge: '1y' })));
+app.get('/api/library/:assetId/sprite', withAsset((_req, res, a) => res.sendFile(library.spritePath(a.id), { maxAge: '1y' })));
+app.get('/api/library/:assetId/stream', withAsset((_req, res, a) => {
+  const file = library.streamPath(a.id);
+  if (!file) return res.status(409).json({ error: 'Preview is still being prepared.' });
+  res.sendFile(file); // supports Range requests, so seeking works on huge files
+}));
+app.get('/api/library/:assetId/download', withAsset((_req, res, a) => res.download(library.sourcePath(a.id), a.name)));
+
+app.patch('/api/library/:assetId', withAsset(async (req, res, a) => {
+  const name = cleanText(req.body?.name, 200);
+  if (!name) return res.status(400).json({ error: 'Give the video a name.' });
+  res.json({ asset: await library.rename(a.id, name) });
+}));
+
+// Deleting a library video also removes it from every project that uses it.
+app.delete('/api/library/:assetId', withAsset(async (_req, res, a) => {
+  const using = (await allProjects()).filter((j) => j.clips.some((c) => c.assetId === a.id));
+  const busy = using.find((j) => j.state === 'running');
+  if (busy) return res.status(409).json({ error: `"${projectName(busy)}" is rendering with this video — cancel it first.` });
+  for (const job of using) {
+    job.clips = job.clips.filter((c) => c.assetId !== a.id);
+    await saveManifest(job);
+  }
+  await library.remove(a.id);
+  res.json({ ok: true, removedFrom: using.map((j) => j.id) });
+}));
+
+// ---- projects ------------------------------------------------------------------
+
+app.get('/api/projects', async (_req, res) => {
+  res.json({ projects: (await allProjects()).map(publicProject) });
+});
+
+app.post('/api/projects', async (req, res) => {
+  const job = newJob(undefined, cleanText(req.body?.name, 80));
+  await saveManifest(job);
+  res.status(201).json({ project: publicProject(job) });
+});
+
+app.patch('/api/projects/:jobId', async (req, res) => {
+  const job = await getJob(req.params.jobId);
+  if (!job) return res.status(404).json({ error: 'Unknown project.' });
+  job.name = cleanText(req.body?.name, 80);
+  await saveManifest(job);
+  res.json({ project: publicProject(job) });
+});
+
+// POST /api/projects/:jobId/clips — { assetIds: [...] } adds library videos (in that order).
+app.post('/api/projects/:jobId/clips', async (req, res) => {
+  const job = await getJob(req.params.jobId);
+  if (!job) return res.status(404).json({ error: 'Unknown project.' });
+  if (job.state === 'running') return res.status(409).json({ error: 'A render is running for this project.' });
+  const ids = Array.isArray(req.body?.assetIds) ? req.body.assetIds : [];
+  const assets = ids.map((id) => library.get(id));
+  if (!ids.length || assets.some((a) => !a)) return res.status(400).json({ error: 'Pick videos from the library.' });
+  if (job.clips.length + assets.length > 50) return res.status(400).json({ error: 'A project can hold at most 50 clips.' });
+  for (const a of assets) {
+    const id = `clip${job.nextClip++}`;
+    const { id: _a, name, file, size, createdAt: _c, updatedAt: _u, status: _s, preview: _p, ...meta } = a;
+    job.clips.push({ ...meta, id, assetId: a.id, name, size, file: `${id}${path.extname(file)}`, path: library.sourcePath(a.id) });
+  }
+  await saveManifest(job);
+  res.json({ clips: job.clips.map((c) => publicClip(job.id, c)), project: publicProject(job) });
+});
+
+// PUT /api/projects/:jobId/order — { clipIds: [...] } sets the clip order Claude sees.
+app.put('/api/projects/:jobId/order', async (req, res) => {
+  const job = await getJob(req.params.jobId);
+  if (!job) return res.status(404).json({ error: 'Unknown project.' });
+  const order = Array.isArray(req.body?.clipIds) ? req.body.clipIds : [];
+  if (order.length !== job.clips.length || !job.clips.every((c) => order.includes(c.id))) {
+    return res.status(400).json({ error: 'Clip list is out of date — reload.' });
+  }
+  job.clips = order.map((id) => job.clips.find((c) => c.id === id));
+  await saveManifest(job);
+  res.json({ clips: job.clips.map((c) => publicClip(job.id, c)) });
+});
 
 app.get('/api/clips/:jobId', async (req, res) => {
   const job = await getJob(req.params.jobId);
   if (!job) return res.status(404).json({ error: 'Unknown project.' });
-  res.json({ jobId: job.id, clips: job.clips.map((c) => publicClip(job.id, c)), logo: publicLogo(job), state: snapshot(job) });
+  res.json({
+    jobId: job.id,
+    project: publicProject(job),
+    clips: job.clips.map((c) => publicClip(job.id, c)),
+    logo: publicLogo(job),
+    state: snapshot(job),
+  });
 });
 
 app.delete('/api/clips/:jobId/:clipId', async (req, res) => {
@@ -568,11 +737,16 @@ app.delete('/api/clips/:jobId/:clipId', async (req, res) => {
   const clip = job.clips.find((c) => c.id === req.params.clipId);
   if (!clip) return res.status(404).json({ error: 'Unknown clip.' });
   job.clips = job.clips.filter((c) => c !== clip);
-  await fs.rm(clip.path, { force: true });
-  await fs.rm(path.join(DIRS.uploads, job.id, 'thumbs', `${clip.id}.jpg`), { force: true });
-  await fs.rm(path.join(DIRS.workspace, job.id, 'transcripts', clip.id), { recursive: true, force: true });
-  for (const sub of ['blur', 'seekable']) {
-    await fs.rm(path.join(DIRS.workspace, job.id, sub, `${clip.id}.mp4`), { force: true });
+  // Library videos stay in the library; only legacy per-project uploads are deleted.
+  if (!clip.assetId) {
+    const ws = path.join(DIRS.workspace, job.id);
+    await fs.rm(clip.path, { force: true });
+    await fs.rm(path.join(DIRS.uploads, job.id, 'thumbs', `${clip.id}.jpg`), { force: true });
+    await fs.rm(path.join(ws, 'transcripts', clip.id), { recursive: true, force: true });
+    for (const f of ['blur/.mp4', 'seekable/.mp4', 'voice/.m4a', 'analysis/.json']) {
+      const [sub, ext] = f.split('/.');
+      await fs.rm(path.join(ws, sub, `${clip.id}.${ext}`), { force: true });
+    }
   }
   await saveManifest(job);
   res.json({ clips: job.clips.map((c) => publicClip(job.id, c)) });
@@ -583,6 +757,14 @@ app.get('/api/thumb/:jobId/:clipId', async (req, res) => {
   const file = path.join(DIRS.uploads, req.params.jobId, 'thumbs', `${req.params.clipId}.jpg`);
   if (!(await exists(file))) return res.sendStatus(404);
   res.sendFile(file);
+});
+
+// Preview stream for clips uploaded before the library existed.
+app.get('/api/clipfile/:jobId/:clipId', async (req, res) => {
+  const job = await getJob(req.params.jobId);
+  const clip = job?.clips.find((c) => c.id === req.params.clipId);
+  if (!clip || !(await exists(clip.path))) return res.sendStatus(404);
+  res.sendFile(clip.path);
 });
 
 // Logo / product image for CTA end cards and the watermark. With ?cutout=1 the background
@@ -746,10 +928,10 @@ app.get('/api/poster/:jobId/:variantId', async (req, res) => {
   res.sendFile(file);
 });
 
-// GET /api/storage[?jobId=…] — disk used by ClipForge (and by one project).
+// GET /api/storage[?jobId=…] — disk used by ClipForge (and by one project; library videos not included).
 app.get('/api/storage', async (req, res) => {
-  const [uploads, workspace, output] = await Promise.all([DIRS.uploads, DIRS.workspace, DIRS.output].map(dirSize));
-  const out = { total: uploads + workspace + output, uploads, workspace, output };
+  const out = await storageInfo();
+  out.used = out.library + out.projects;
   if (isId(req.query.jobId)) {
     out.project = (
       await Promise.all([DIRS.uploads, DIRS.workspace, DIRS.output].map((d) => dirSize(path.join(d, req.query.jobId))))
@@ -758,7 +940,7 @@ app.get('/api/storage', async (req, res) => {
   res.json(out);
 });
 
-// DELETE /api/jobs/:jobId — remove a project's uploads, working files and renders.
+// DELETE /api/jobs/:jobId — remove a project's working files and renders (library videos are kept).
 app.delete('/api/jobs/:jobId', async (req, res) => {
   const job = await getJob(req.params.jobId);
   if (!job) return res.status(404).json({ error: 'Unknown project.' });
@@ -775,12 +957,12 @@ app.delete('/api/jobs/:jobId', async (req, res) => {
 app.use((err, _req, res, _next) => {
   const status =
     err instanceof multer.MulterError || err instanceof PipelineError || err.type === 'entity.parse.failed' ? 400 : 500;
-  const message = err.code === 'LIMIT_FILE_SIZE' ? `File too large (max ${Math.round(MAX_UPLOAD_BYTES / 1048576)} MB).` : err.message;
+  const message = err.code === 'LIMIT_FILE_SIZE' ? 'File too large.' : err.message;
   if (status === 500) console.error(err);
   res.status(status).json({ error: message, hint: err.hint });
 });
 
-app.listen(PORT, HOST, () => {
+const server = app.listen(PORT, HOST, () => {
   console.log(`\n  ClipForge running at http://${LOOPBACK ? 'localhost' : '127.0.0.1'}:${PORT}`);
   if (!LOOPBACK) {
     const lan = Object.values(os.networkInterfaces())
@@ -792,3 +974,5 @@ app.listen(PORT, HOST, () => {
   }
   console.log('');
 });
+// A 64 MB upload chunk on a slow phone connection can take longer than Node's 5-minute default.
+server.requestTimeout = 0;

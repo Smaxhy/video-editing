@@ -18,6 +18,7 @@ import { VIDEO_EXT, AUDIO_EXT } from './library.js';
 
 let RCLONE = process.env.RCLONE_BIN || 'rclone';
 const MIN_RCLONE = [1, 66];
+const PINNED_RCLONE = '1.71.2';
 
 /** "rclone v1.60.1-DEV" → [1, 60]; null when it isn't installed. */
 async function rcloneVersion(bin) {
@@ -35,18 +36,17 @@ let ensuring = null;
 export function ensureRclone(toolsDir) {
   ensuring ||= (async () => {
     if (process.env.RCLONE_BIN) return RCLONE;
-    const local = path.join(toolsDir, 'rclone');
+    // A pinned, tested build: rclone's setup questions change between versions.
+    const local = path.join(toolsDir, `rclone-v${PINNED_RCLONE}`);
     if (fsSync.existsSync(local)) return (RCLONE = local);
-    const v = await rcloneVersion('rclone');
-    if (v && (v[0] > MIN_RCLONE[0] || (v[0] === MIN_RCLONE[0] && v[1] >= MIN_RCLONE[1]))) return (RCLONE = 'rclone');
     const os = { linux: 'linux', darwin: 'osx' }[process.platform];
     const arch = { x64: 'amd64', arm64: 'arm64' }[process.arch];
     if (!os || !arch) return RCLONE;
     await fs.mkdir(toolsDir, { recursive: true });
     const zip = path.join(toolsDir, 'rclone.zip');
     for (const url of [
-      `https://downloads.rclone.org/rclone-current-${os}-${arch}.zip`,
-      `https://github.com/rclone/rclone/releases/download/v1.71.2/rclone-v1.71.2-${os}-${arch}.zip`,
+      `https://github.com/rclone/rclone/releases/download/v${PINNED_RCLONE}/rclone-v${PINNED_RCLONE}-${os}-${arch}.zip`,
+      `https://downloads.rclone.org/v${PINNED_RCLONE}/rclone-v${PINNED_RCLONE}-${os}-${arch}.zip`,
     ]) {
       try {
         const r = await fetch(url);
@@ -67,7 +67,10 @@ export function ensureRclone(toolsDir) {
         await fs.rm(zip, { force: true }).catch(() => {});
       }
     }
-    return RCLONE; // keep whatever is installed
+    // Download impossible: use an installed rclone if it's recent enough.
+    const v = await rcloneVersion('rclone');
+    if (v && (v[0] > MIN_RCLONE[0] || (v[0] === MIN_RCLONE[0] && v[1] >= MIN_RCLONE[1]))) RCLONE = 'rclone';
+    return RCLONE;
   })();
   return ensuring;
 }
@@ -222,7 +225,9 @@ export function createCloud({ library, toolsDir, onChange = () => {} }) {
   async function finishConfig(name, state) {
     try {
       for (let i = 0; state.State && i < 10; i++) {
-        if (state.Option?.Name === 'config_token') throw new PipelineError('Google sign-in did not complete.');
+        if (state.Option?.Name === 'config_token' || state.Option?.Name === 'config_is_local') {
+          throw new PipelineError('Google sign-in did not complete.');
+        }
         state = await configStep(['config', 'update', name, '--continue', '--state', state.State, '--result', state.Option?.DefaultStr ?? '']);
       }
     } catch (err) {
@@ -247,7 +252,14 @@ export function createCloud({ library, toolsDir, onChange = () => {} }) {
     // to refresh its token instead of signing in fresh. Read-only access: ClipForge can copy from your
     // Drive but never change or delete anything there.
     await run(RCLONE, ['config', 'delete', name]).catch(() => {});
-    const first = await configStep(['config', 'create', name, 'drive', 'scope=drive.readonly']);
+    // rclone asks its setup questions in an order that differs between versions. Answer everything
+    // with its defaults until it asks "use a browser on this machine?" — that one must never get the
+    // default (yes): the browser is on the person's phone/computer, not on this server.
+    let first = await configStep(['config', 'create', name, 'drive', 'scope=drive.readonly']);
+    for (let i = 0; first.State && first.Option?.Name !== 'config_is_local' && i < 10; i++) {
+      if (first.Option?.Name === 'config_token') break;
+      first = await configStep(['config', 'update', name, '--continue', '--state', first.State, '--result', first.Option?.DefaultStr ?? '']);
+    }
     if (first.Option?.Name !== 'config_is_local') return finishConfig(name, first).then(() => connect);
 
     if (!local) {

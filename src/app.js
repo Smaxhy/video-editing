@@ -21,6 +21,7 @@ import { createAuth } from './auth.js';
 import { createLibrary, VIDEO_EXT, AUDIO_EXT } from './library.js';
 import { createScanner } from './scanner.js';
 import { createCloud } from './cloud.js';
+import { createUpdater } from './updater.js';
 import { Server as TusServer } from '@tus/server';
 import { FileStore } from '@tus/file-store';
 
@@ -668,6 +669,9 @@ app.use('/api', auth.guard);
 
 // Tool availability + option lists, so the UI can warn before a job fails.
 let healthCache = null;
+// GET /api/version — which commit is running; the page reloads itself when this changes.
+app.get('/api/version', (_req, res) => res.json(updater.state()));
+
 app.get('/api/health', async (_req, res) => {
   if (healthCache && Date.now() - healthCache.at < 30_000) return res.json(healthCache.data);
 
@@ -700,11 +704,15 @@ app.get('/api/health', async (_req, res) => {
 // starting over. Finished uploads move into the media library.
 // ---------------------------------------------------------------------------
 
+let lastUploadAt = 0;
 const tus = new TusServer({
   path: '/api/uploads',
   datastore: new FileStore({ directory: library.incoming, expirationPeriodInMilliseconds: 7 * 24 * 3600_000 }),
   relativeLocation: true,
   respectForwardedHeaders: true,
+  async onIncomingRequest() {
+    lastUploadAt = Date.now(); // the auto-updater waits while uploads are coming in
+  },
   ...(MAX_UPLOAD_BYTES ? { maxSize: MAX_UPLOAD_BYTES } : {}),
   async onUploadCreate(_req, upload) {
     const name = upload.metadata?.filename || '';
@@ -1175,6 +1183,24 @@ app.use((err, _req, res, _next) => {
   res.status(status).json({ error: message, hint: err.hint });
 });
 
+// Self-update (codespaces): waits until nothing is running, then pulls main and restarts.
+const updater = createUpdater({
+  root: ROOT,
+  isBusy: () =>
+    [...jobs.values()].some((j) => j.state === 'running') ||
+    Date.now() - lastUploadAt < 3 * 60_000 ||
+    cloud.jobs().some((j) => j.state === 'running') ||
+    scanner.status().scanning > 0 ||
+    library.list().some((a) => a.status !== 'ready'),
+  beforeRestart: async () => {
+    for (const res of libraryListeners) res.end();
+    for (const job of jobs.values()) for (const l of job.listeners) l.end();
+    server.closeAllConnections();
+    await new Promise((resolve) => server.close(resolve));
+  },
+});
+await updater.start();
+
 const server = app.listen(PORT, HOST, () => {
   console.log(`\n  ClipForge running at http://${LOOPBACK ? 'localhost' : '127.0.0.1'}:${PORT}`);
   if (!LOOPBACK) {
@@ -1185,6 +1211,8 @@ const server = app.listen(PORT, HOST, () => {
     if (lan.length) console.log(`  On your phone (same Wi-Fi or Tailscale): ${lan.join('  ·  ')}`);
     console.log(`  Password protection: ${auth.enabled ? 'on' : 'OFF'}`);
   }
+  const u = updater.state();
+  if (u.version) console.log(`  Version ${u.version}${u.enabled ? ' · updates itself from GitHub (CLIPFORGE_AUTO_UPDATE=0 turns this off)' : ''}`);
   console.log('');
 });
 // A 64 MB upload chunk on a slow phone connection can take longer than Node's 5-minute default.

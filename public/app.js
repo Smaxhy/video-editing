@@ -1611,6 +1611,25 @@ if (matchMedia('(pointer: coarse)').matches) {
 }
 if ('serviceWorker' in navigator) navigator.serviceWorker.register('/sw.js').catch(() => {});
 
+// ---------------------------------------------------------------------------
+// Version: show it, and pick up a self-update — reload once nothing is in progress.
+// ---------------------------------------------------------------------------
+let runningVersion = null;
+let reloadPending = false;
+async function checkVersion() {
+  let v;
+  try { v = await api('/api/version'); } catch { return; } // server restarting — try again next time
+  $('#version').textContent = v.version ? `Version ${v.version}${v.enabled ? ' · updates automatically' : ''}` : '';
+  if (!v.version) return;
+  if (!runningVersion) { runningVersion = v.version; return; }
+  if (v.version === runningVersion || reloadPending) return;
+  const busy = uploads.length > 0 || state.running || $('dialog[open]') || document.activeElement?.matches?.('textarea, input');
+  if (!busy) return location.reload();
+  reloadPending = true;
+  toast('ClipForge was updated — reload the page when you’re ready to get the new version.', 'ok', 15000);
+}
+setInterval(checkVersion, 60_000);
+
 /** One-time move of the old single-project localStorage entry. */
 function migrate() {
   const old = store.get('clipforge');
@@ -1631,6 +1650,7 @@ async function init() {
   $('#libSort').value = store.get('clipforge:sort') || 'new';
   loadHealth();
   loadCloud();
+  checkVersion();
   api('/api/scanner').then((sc) => { state.scanner = sc; renderScanBar(); }).catch(() => {});
   api('/api/library/settings').then((ls) => { $('#shrinkLarge').checked = ls.shrinkLarge; }).catch(() => {});
   await Promise.all([loadLibrary().catch((err) => toast(err.message, 'error')), loadProjects()]);

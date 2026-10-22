@@ -1647,7 +1647,9 @@ let reloadPending = false;
 async function checkVersion() {
   let v;
   try { v = await api('/api/version'); } catch { return; } // server restarting — try again next time
-  $('#version').textContent = v.version ? `Version ${v.version}${v.enabled ? ' · updates automatically' : ''}` : '';
+  $('#version').innerHTML = v.version
+    ? `Version ${esc(v.version)}${v.enabled ? ` · updates automatically <button class="btn xs ghost" type="button" id="updateNow">Update now</button>` : ''}${v.error ? `<br>${esc(v.error)}` : ''}`
+    : '';
   if (!v.version) return;
   if (!runningVersion) { runningVersion = v.version; return; }
   if (v.version === runningVersion || reloadPending) return;
@@ -1657,6 +1659,20 @@ async function checkVersion() {
   toast('ClipForge was updated — reload the page when you’re ready to get the new version.', 'ok', 15000);
 }
 setInterval(checkVersion, 60_000);
+document.addEventListener('click', async (e) => {
+  const b = e.target.closest('#updateNow');
+  if (!b) return;
+  b.disabled = true;
+  b.textContent = 'Checking…';
+  try {
+    const s = await api('/api/update', { method: 'POST', body: {} });
+    if (s.status === 'idle' && !s.error) toast('You’re on the newest version.', 'ok');
+    else if (s.error) toast(s.error, s.status === 'waiting' ? 'info' : 'error');
+  } catch {
+    toast('Updating — the page reloads in a moment.', 'ok'); // the server restarts mid-request
+  }
+  setTimeout(checkVersion, 4000);
+});
 
 /** One-time move of the old single-project localStorage entry. */
 function migrate() {

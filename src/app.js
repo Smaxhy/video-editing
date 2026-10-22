@@ -671,6 +671,8 @@ app.use('/api', auth.guard);
 let healthCache = null;
 // GET /api/version — which commit is running; the page reloads itself when this changes.
 app.get('/api/version', (_req, res) => res.json(updater.state()));
+// POST /api/update — check GitHub now instead of waiting for the next round.
+app.post('/api/update', async (_req, res) => res.json(await updater.check()));
 
 app.get('/api/health', async (_req, res) => {
   if (healthCache && Date.now() - healthCache.at < 30_000) return res.json(healthCache.data);
@@ -1195,12 +1197,12 @@ app.use((err, _req, res, _next) => {
 // Self-update (codespaces): waits until nothing is running, then pulls main and restarts.
 const updater = createUpdater({
   root: ROOT,
+  // Only work a restart would lose. Previews and AI scans resume by themselves after a restart.
   isBusy: () =>
-    [...jobs.values()].some((j) => j.state === 'running') ||
-    Date.now() - lastUploadAt < 3 * 60_000 ||
-    cloud.jobs().some((j) => j.state === 'running') ||
-    scanner.status().scanning > 0 ||
-    library.list().some((a) => a.status !== 'ready'),
+    ([...jobs.values()].some((j) => j.state === 'running') && 'a video render') ||
+    (Date.now() - lastUploadAt < 2 * 60_000 && 'an upload') ||
+    (cloud.jobs().some((j) => j.state === 'running') && 'a Google Drive import') ||
+    false,
   beforeRestart: async () => {
     cloud.shutdown();
     for (const res of libraryListeners) res.end();

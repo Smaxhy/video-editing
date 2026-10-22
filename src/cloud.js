@@ -1,5 +1,6 @@
 import crypto from 'node:crypto';
 import fs from 'node:fs/promises';
+import fsSync from 'node:fs';
 import path from 'node:path';
 import { spawn } from 'node:child_process';
 
@@ -14,7 +15,61 @@ import { VIDEO_EXT, AUDIO_EXT } from './library.js';
  * skipping files that were imported before.
  */
 
-const RCLONE = process.env.RCLONE_BIN || 'rclone';
+let RCLONE = process.env.RCLONE_BIN || 'rclone';
+const MIN_RCLONE = [1, 66];
+
+/** "rclone v1.60.1-DEV" → [1, 60]; null when it isn't installed. */
+async function rcloneVersion(bin) {
+  if (!onPath(bin)) return null;
+  const r = await run(bin, ['version']).catch(() => null);
+  const m = r?.stdout.match(/rclone v(\d+)\.(\d+)/);
+  return m ? [Number(m[1]), Number(m[2])] : null;
+}
+
+/**
+ * Use a recent rclone: Linux distros ship old ones (Debian bookworm has 1.60). If the installed one is
+ * missing or older than MIN_RCLONE, download the current official build into toolsDir once.
+ */
+let ensuring = null;
+export function ensureRclone(toolsDir) {
+  ensuring ||= (async () => {
+    if (process.env.RCLONE_BIN) return RCLONE;
+    const local = path.join(toolsDir, 'rclone');
+    if (fsSync.existsSync(local)) return (RCLONE = local);
+    const v = await rcloneVersion('rclone');
+    if (v && (v[0] > MIN_RCLONE[0] || (v[0] === MIN_RCLONE[0] && v[1] >= MIN_RCLONE[1]))) return (RCLONE = 'rclone');
+    const os = { linux: 'linux', darwin: 'osx' }[process.platform];
+    const arch = { x64: 'amd64', arm64: 'arm64' }[process.arch];
+    if (!os || !arch) return RCLONE;
+    await fs.mkdir(toolsDir, { recursive: true });
+    const zip = path.join(toolsDir, 'rclone.zip');
+    for (const url of [
+      `https://downloads.rclone.org/rclone-current-${os}-${arch}.zip`,
+      `https://github.com/rclone/rclone/releases/download/v1.71.2/rclone-v1.71.2-${os}-${arch}.zip`,
+    ]) {
+      try {
+        const r = await fetch(url);
+        if (!r.ok) continue;
+        await fs.writeFile(zip, Buffer.from(await r.arrayBuffer()));
+        // Pull the single `rclone` binary out of the zip (python3 is always there; unzip as a fallback).
+        const py = "import sys,zipfile\nz=zipfile.ZipFile(sys.argv[1])\nm=[n for n in z.namelist() if n.endswith('/rclone')][0]\nopen(sys.argv[2],'wb').write(z.read(m))";
+        let x = await run('python3', ['-I', '-c', py, zip, `${local}.part`]).catch(() => ({ code: 1 }));
+        if (x.code !== 0) x = await run('sh', ['-c', `unzip -p "${zip}" '*/rclone' > "${local}.part"`]).catch(() => ({ code: 1 }));
+        if (x.code !== 0) continue;
+        await fs.chmod(`${local}.part`, 0o755);
+        await fs.rename(`${local}.part`, local);
+        console.log(`  Installed rclone for Google Drive import: ${(await run(local, ['version'])).stdout.split('\n')[0]}`);
+        return (RCLONE = local);
+      } catch {
+        /* try the next source */
+      } finally {
+        await fs.rm(zip, { force: true }).catch(() => {});
+      }
+    }
+    return RCLONE; // keep whatever is installed
+  })();
+  return ensuring;
+}
 const PARALLEL = 2;
 
 /** Folder/file id from any Google Drive link (or a bare id). */
@@ -43,7 +98,9 @@ function parseState(stdout) {
   }
 }
 
-export function createCloud({ library, onChange = () => {} }) {
+export function createCloud({ library, toolsDir, onChange = () => {} }) {
+  const ready = () => (toolsDir ? ensureRclone(toolsDir) : Promise.resolve(RCLONE));
+  ready().catch(() => {});
   const jobs = new Map();
   let connect = { status: 'idle' };
   let connectProc = null;
@@ -56,6 +113,7 @@ export function createCloud({ library, onChange = () => {} }) {
   };
 
   async function remotes() {
+    await ready();
     if (!onPath(RCLONE)) return [];
     const r = await run(RCLONE, ['listremotes', '--long']);
     return r.stdout
@@ -102,6 +160,7 @@ export function createCloud({ library, onChange = () => {} }) {
   }
 
   async function startConnect({ name = 'gdrive', local }) {
+    await ready();
     if (!onPath(RCLONE)) throw new PipelineError('rclone is not installed.', { hint: 'Install it from https://rclone.org/install/ (or run scripts/setup.sh), then reload.' });
     if (!/^[\w-]{1,32}$/.test(name)) throw new PipelineError('Use letters, numbers and dashes for the name.');
     await cancelConnect();
@@ -145,6 +204,7 @@ export function createCloud({ library, onChange = () => {} }) {
       connectProc = null;
       try {
         if (code !== 0) {
+          console.error(`[google sign-in] rclone exited with ${code}:\n${tail(err, 15)}`);
           const expired = /invalid_grant/.test(err);
           throw new PipelineError(
             expired ? 'Google didn’t accept that sign-in — it expired or was already used. Tap “Connect Google Drive” and try again.' : 'Google sign-in failed.',

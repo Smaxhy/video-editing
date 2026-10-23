@@ -173,6 +173,7 @@
               <option value="off">Never</option>
             </select>
           </label>
+          <label class="switch" style="align-self:center"><input type="checkbox" id="autoTrending" role="switch" /><span>I'll add trending sounds in the app (no music in the files)</span></label>
           <label>Voice
             <select class="field" id="autoVoice"></select>
           </label>
@@ -284,6 +285,8 @@
                   <button type="button" data-v="medium" aria-pressed="true">Medium</button>
                   <button type="button" data-v="high">Loud</button>
                 </div>
+                <label class="tg" style="align-items:center;width:100%"><input type="checkbox" id="trendingSound" /><span>I'll add a trending sound in TikTok/Instagram
+                  <small>Exports without background music (trending sounds are licensed inside the apps). Cuts are paced to a beat — pick one of your tracks above to cut to its exact rhythm.</small></span></label>
                 <small class="hint-line" id="musicHint"></small>
               </div>
             </div>
@@ -446,6 +449,7 @@
           <section class="card hidden" id="resultCard" aria-labelledby="resultTitle">
             <h2><span id="resultTitle">Videos</span> <span class="meta" id="resultMeta"></span></h2>
             <div class="variants" id="variants"></div>
+            <div class="sound-tip hidden" id="soundTip" role="note"></div>
             <div class="review hidden" id="review" role="note"></div>
             <form class="fixbox" id="fixForm">
               <label class="lbl" for="fixText">Not quite right? Tell Claude what to fix</label>

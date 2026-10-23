@@ -80,3 +80,18 @@ test('revision remarks can only change known settings to allowed values', () => 
   assert.match(p, /everything looks green/);
   assert.match(p, /"polish": true \| false .*\(now true\)/);
 });
+
+import { normalizeSound, beatGrid } from '../src/editor.js';
+import { captionText } from '../src/autopilot.js';
+
+test('sound suggestions are cleaned and a beat grid is made from the tempo', () => {
+  const s = normalizeSound({ search: 'slowed phonk; dramatic orchestra', style: 'dark cinematic', bpm: 300, part: 'start on the drop' });
+  assert.deepEqual(s.search, ['slowed phonk', 'dramatic orchestra']);
+  assert.equal(s.bpm, 180);
+  assert.equal(normalizeSound({}), null);
+  const g = beatGrid(120, 4.1);
+  assert.deepEqual(g.beats, [0.5, 1, 1.5, 2, 2.5, 3, 3.5, 4]);
+  assert.deepEqual(g.downbeats, [2, 4]);
+  const txt = captionText({ title: 'T', caption: 'C', hashtags: ['#a'], sound: { search: ['epic sound'], style: 'cinematic', part: 'the drop' } });
+  assert.match(txt, /Sound to add: epic sound — cinematic \(the drop\)/);
+});

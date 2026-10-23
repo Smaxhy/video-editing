@@ -67,7 +67,14 @@ const PLAN_SCHEMA = `{
   "music": { "track": "m1", "start": 0 },  // ONLY when a music section is given below; omit otherwise
   "emphasis": [                            // ONLY when captions are on: words the captions should make pop
     { "word": "timber", "emoji": "🌲" }    // a single spoken word; emoji optional (null) — at most 1 in 3 gets one
-  ]
+  ],
+  "sound": {                               // the trending-style sound to add in TikTok/Instagram when posting
+    "search": ["what to type in the app's sound search", "an alternative"],
+    "style": "e.g. slowed phonk, upbeat sped-up pop, cinematic ambient",
+    "bpm": 120,
+    "part": "which part of the sound to use (e.g. start on the drop)",
+    "why": "one line: why it fits"
+  }
 }`;
 
 /** Settings a revision may change (e.g. "no green filter" → polish off), with their allowed values. */
@@ -128,6 +135,41 @@ export function normalizeSettingChanges(raw) {
     if (raw && Object.prototype.hasOwnProperty.call(raw, k) && allowed.includes(raw[k])) out[k] = raw[k];
   }
   return out;
+}
+
+/** "Sound for posting" section: the creator attaches a trending sound in TikTok/Instagram themselves. */
+function soundSection(options) {
+  if (options.trendingSound) {
+    return `
+## Trending sound (added in the app when posting)
+NO background music is mixed into this video — the creator adds a trending sound inside TikTok/Instagram when posting (that is where it is licensed). So:
+- Keep the clips' natural sound (scene "volume" ~0.6-1) unless it is ugly; talking stays at full volume.
+- Pace it like a video made for a trending track: pick a tempo for the vibe ("sound.bpm", usually 90-150) and cut B-roll/montage on every 2nd or 4th beat of it (ClipForge snaps the cuts to that grid). Put the biggest visual moment where a drop would land (~1/3 in).
+- Fill "sound" with what to search for in the app's sound picker.
+`;
+  }
+  return `
+## Sound idea for posting
+Also fill "sound": the kind of trending sound that would suit this video if the creator swaps or adds one in the app.
+`;
+}
+
+/** Validate the planner's sound suggestion. Exported for tests. */
+export function normalizeSound(raw) {
+  if (!raw || typeof raw !== 'object') return null;
+  const t = (v, n) => String(v ?? '').replace(/\s+/g, ' ').trim().slice(0, n);
+  const search = (Array.isArray(raw.search) ? raw.search : String(raw.search || '').split(/[;,|]/)).map((s) => t(s, 60)).filter(Boolean).slice(0, 4);
+  const bpm = Number(raw.bpm);
+  const out = { search, style: t(raw.style, 120), part: t(raw.part, 120), why: t(raw.why, 200), bpm: Number.isFinite(bpm) ? Math.round(clamp(bpm, 60, 180)) : null };
+  return out.search.length || out.style ? out : null;
+}
+
+/** A steady beat grid (seconds) for cutting to a sound that isn't in the library. */
+export function beatGrid(bpm, total) {
+  const step = 60 / clamp(bpm || 120, 60, 180);
+  const beats = [];
+  for (let t = step; t < total; t += step) beats.push(round(t, 3));
+  return { beats, downbeats: beats.filter((_, i) => i % 4 === 3) };
 }
 
 function versionLine(id) {
@@ -227,7 +269,7 @@ ${options.style}
 
 Generic advice (only where the style above says nothing):
 ` : ''}${GOAL_GUIDE[options.goal]}
-${musicSection}${voiceoverSection}
+${musicSection}${voiceoverSection}${soundSection(options)}
 ## Clip catalog
 ${catalog}
 
@@ -407,7 +449,7 @@ export function normalizeResponse(raw, clips, options) {
 
   const settingsChanges = options.revision ? normalizeSettingChanges(raw.settings) : {};
 
-  return { title: String(raw.title || 'ClipForge edit').slice(0, 120), checklist, versions, warnings, music, emphasis, settingsChanges };
+  return { title: String(raw.title || 'ClipForge edit').slice(0, 120), checklist, versions, warnings, music, emphasis, settingsChanges, sound: normalizeSound(raw.sound) };
 }
 
 /** Output length of a normalized plan (sum of scene lengths minus transition overlaps). */

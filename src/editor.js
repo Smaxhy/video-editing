@@ -1,5 +1,6 @@
 import fs from 'node:fs/promises';
 import path from 'node:path';
+import { jsonrepair } from 'jsonrepair';
 import { run, tail, round, clamp, PipelineError } from './util.js';
 
 const CLAUDE_BIN = process.env.CLAUDE_BIN || 'claude';
@@ -313,7 +314,7 @@ ${catalog}
 - "hook" = big punchy text at the top in the opening seconds. "title" = centered title card. "lower-third" = name/role or place label (3-5s). "text" = short on-screen point. "cta" = end card with the call to action (last 2-3s).
 
 ## Response format
-Respond with ONE JSON object and nothing else — no prose, no markdown fences. Shape (comments are explanatory, omit them):
+Respond with ONE JSON object and nothing else — no prose, no markdown fences. Escape double quotes inside text (\\"). Keep every "note" under 12 words and every checklist "done" under 30 words so the answer stays short. Shape (comments are explanatory, omit them):
 ${PLAN_SCHEMA}
 `;
 }
@@ -329,17 +330,22 @@ export async function generateEditPlans({ clips, userPrompt, options, cwd, onSta
   let lastError;
   let raw = '';
 
-  for (let attempt = 1; attempt <= 2; attempt++) {
+  const ATTEMPTS = 3;
+  for (let attempt = 1; attempt <= ATTEMPTS; attempt++) {
     const input =
       attempt === 1
         ? prompt
-        : `${prompt}\n\n## Your previous answer was rejected\nReason: ${lastError.message}\nPrevious answer (truncated):\n${raw.slice(0, 4000)}\n\nReturn the corrected JSON object only.`;
+        : `${prompt}\n\n## Your previous answer was rejected\nReason: ${lastError.message}\nReply again with the complete, valid JSON object only: escape every double quote inside text as \\", no comments, keep every "note" under 12 words and every checklist "done" under 30 words.`;
 
-    onStatus?.(attempt === 1 ? 'Claude is planning the edit…' : 'Plan was invalid — asking Claude to fix it…');
+    onStatus?.(attempt === 1 ? 'Claude is planning the edit…' : `Plan was invalid — asking Claude to fix it (try ${attempt}/${ATTEMPTS})…`);
     raw = await callClaude(input, { cwd, signal, model: options.model, tools: clips.some((c) => c.sheet) ? 'Read' : '' });
 
     try {
-      const result = normalizeResponse(extractJson(raw), clips, options);
+      const json = extractJson(raw);
+      // A cut-off answer is only used on the last try (its final scenes may be missing).
+      if (wasTruncated(json) && attempt < ATTEMPTS) throw new Error('your answer was cut off before the end — it was too long');
+      const result = normalizeResponse(json, clips, options);
+      if (wasTruncated(json)) result.warnings.push('Claude\'s plan was cut off — the last part of the edit may be shorter than planned.');
       return { ...result, prompt, raw };
     } catch (err) {
       lastError = err;
@@ -402,7 +408,46 @@ export async function callClaude(input, { cwd, signal, tools = '', model }) {
   return out;
 }
 
-/** Pull a JSON object out of a model response (tolerates fences or stray prose). */
+/** Answers that were cut off before the end (repaired, but possibly missing their last parts). */
+const TRUNCATED = new WeakSet();
+export const wasTruncated = (v) => TRUNCATED.has(v);
+
+/**
+ * Index of the brace that closes the object opened at `start` (strings skipped), or -1 when the text
+ * ends first — i.e. the answer was cut off. A stray unescaped quote can fool it, which only means we
+ * treat the answer as cut off and ask again.
+ */
+function closingIndex(text, start) {
+  let depth = 0;
+  let inStr = false;
+  for (let i = start; i < text.length; i++) {
+    const ch = text[i];
+    if (inStr) {
+      if (ch === '\\') i++;
+      else if (ch === '"') inStr = false;
+    } else if (ch === '"') inStr = true;
+    else if (ch === '{' || ch === '[') depth++;
+    else if (ch === '}' || ch === ']') {
+      depth--;
+      if (depth === 0) return i;
+    }
+  }
+  return -1;
+}
+
+/** Where strict JSON parsing fails, with a short excerpt — tells Claude exactly what to fix. */
+function parseProblem(text) {
+  try {
+    JSON.parse(text);
+    return null;
+  } catch (err) {
+    const m = String(err.message).match(/position (\d+)/);
+    const pos = m ? Number(m[1]) : null;
+    return pos == null ? err.message : `${err.message} — near: …${text.slice(Math.max(0, pos - 80), pos + 40).replace(/\s+/g, ' ')}…`;
+  }
+}
+
+/** Pull a JSON object out of a model response (tolerates fences, stray prose and common JSON slips). */
 export function extractJson(text) {
   const fenced = text.match(/```(?:json)?\s*([\s\S]*?)```/i);
   const candidates = [];
@@ -414,9 +459,7 @@ export function extractJson(text) {
   for (const c of candidates) {
     // Second variant strips trailing // comments in case the model echoed the schema's style.
     const noComments = c.replace(/\/\/[^\n"]*$/gm, '');
-    // Last resort: common slips — trailing commas, curly quotes around keys/values.
-    const repaired = noComments.replace(/,\s*([}\]])/g, '$1').replace(/[\u201c\u201d]/g, '"');
-    for (const variant of [c, noComments, repaired]) {
+    for (const variant of [c, noComments]) {
       try {
         const v = JSON.parse(variant);
         if (v && typeof v === 'object' && !Array.isArray(v)) return v;
@@ -425,8 +468,25 @@ export function extractJson(text) {
       }
     }
   }
-  throw new Error('response was not a JSON object');
+  // Repair: unescaped quotes inside text, trailing commas, curly quotes, missing commas — and
+  // answers cut off before the end (brackets get closed; flagged so the caller can decide).
+  if (first !== -1) {
+    const end = closingIndex(text, first);
+    const complete = end !== -1;
+    try {
+      const v = JSON.parse(jsonrepair(complete ? text.slice(first, end + 1) : text.slice(first)));
+      if (v && typeof v === 'object' && !Array.isArray(v)) {
+        if (!complete) TRUNCATED.add(v);
+        return v;
+      }
+    } catch {
+      /* fall through */
+    }
+  }
+  const problem = first !== -1 ? parseProblem(text.slice(first, last > first ? last + 1 : undefined)) : 'no JSON object in the answer';
+  throw new Error(`response was not valid JSON (${problem})`);
 }
+
 
 /**
  * Validate the multi-version response. Each requested version id must be present
@@ -514,6 +574,10 @@ export function normalizePlan(raw, clips) {
     const clip = byId.get(String(s?.clip ?? '').trim());
     if (!clip) {
       warnings.push(`scene ${i + 1} used unknown clip "${s?.clip}" — dropped.`);
+      return;
+    }
+    if (!Number.isFinite(Number(s.end)) || !Number.isFinite(Number(s.start))) {
+      warnings.push(`scene ${i + 1} had no start/end — dropped.`);
       return;
     }
     const start = clamp(num(s.start, 0), 0, clip.duration);

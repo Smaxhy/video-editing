@@ -110,13 +110,23 @@ export async function measureClip(src, { start = 0, end, work, signal }) {
   return { stats: parseSignalstats(stats.stdout), shake };
 }
 
+/** Creative looks laid over the correction (a style's colour grade). Exported for tests. */
+export const LOOKS = {
+  natural: [],
+  warm: ['colortemperature=temperature=5300:mix=0.55', 'eq=saturation=1.05'],
+  cool: ['colortemperature=temperature=8200:mix=0.5'],
+  moody: ['eq=brightness=-0.03:contrast=1.08:saturation=0.82', 'vignette=PI/5'],
+  vibrant: ['eq=saturation=1.22:contrast=1.05'],
+  film: ['eq=contrast=0.96:saturation=0.88', 'colorbalance=rs=0.04:bs=-0.03:rh=0.03:bh=-0.04', 'noise=alls=5:allf=t'],
+};
+
 export const SHAKY = 1.5; // % of frame width of jitter — above this, stabilise (a tripod shot measures ~0)
 
 /**
  * Polished, seek-friendly copy of [start, end) of `src`. Returns { path, offset, applied } where
  * offset = the source second the copy starts at.
  */
-export async function preparePicture(src, out, { start = 0, end, grade = true, stabilize = true, signal }) {
+export async function preparePicture(src, out, { start = 0, end, grade = true, stabilize = true, look = 'natural', signal }) {
   if (await exists(`${out}.json`) && (await exists(out))) {
     const meta = JSON.parse(await fs.readFile(`${out}.json`, 'utf8'));
     return { path: out, offset: start, applied: meta.applied };
@@ -143,6 +153,10 @@ export async function preparePicture(src, out, { start = 0, end, grade = true, s
     const g = grade ? gradeFilters(stats) : [];
     if (g.length) applied.push('colour & exposure corrected');
     vf.push(...g);
+    if (LOOKS[look]?.length) {
+      vf.push(...LOOKS[look]);
+      applied.push(`${look} look`);
+    }
     if (grade) vf.push('cas=strength=0.35');
     vf.push('format=yuv420p');
     const tmp = `${out}.part.mp4`;

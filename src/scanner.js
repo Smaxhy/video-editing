@@ -287,7 +287,7 @@ export function createScanner({ library, dir, onChange = () => {}, rank = null }
      * Ask Claude which library clips fit a brief. Returns [{ id, why }] (ids validated) and a note.
      */
     async findFootage({ brief, maxClips = 10, targetSeconds, signal, cwd }) {
-      const assets = library.list().filter((a) => a.kind === 'video' && a.ai.status === 'done');
+      const assets = library.list().filter((a) => a.kind === 'video' && a.ai.status === 'done' && !a.styleRef);
       if (!assets.length) {
         throw new PipelineError('No scanned videos in your library yet.', { hint: 'Upload or import videos first — Claude scans them so it can pick footage.' });
       }

@@ -64,7 +64,7 @@ export function ensureSfx(toolsDir) {
  * transition, impact on title cards, pop on hooks and emoji, tick on text/lower-thirds, riser into the
  * CTA. At least 0.35 s between effects so it never turns into noise.
  */
-export function sfxCues({ timeline, overlays, emojiTimes = [] }) {
+export function sfxCues({ timeline, overlays, emojiTimes = [], level = 'full' }) {
   const cues = [];
   for (const s of timeline.scenes) {
     if (s.index > 0 && s.transition !== 'cut') cues.push({ name: 'whoosh', start: s.tlStart - 0.3, prio: 2 });
@@ -78,8 +78,11 @@ export function sfxCues({ timeline, overlays, emojiTimes = [] }) {
     } else cues.push({ name: 'tick', start: o.start, prio: 1 });
   }
   for (const t of emojiTimes) cues.push({ name: 'pop', start: t, prio: 1 });
+  // "subtle" (the default) keeps only what a human editor would add: whooshes on real transitions,
+  // the hook pop and the build into the CTA — no ticks or pops on every caption.
+  const keep = level === 'subtle' ? (c) => c.prio >= 2 && c.name !== 'impact' : () => true;
   const out = [];
-  for (const c of cues.filter((x) => x.start >= 0).sort((a, b) => b.prio - a.prio || a.start - b.start)) {
+  for (const c of cues.filter((x) => x.start >= 0 && keep(x)).sort((a, b) => b.prio - a.prio || a.start - b.start)) {
     // Risers overlap what comes after them by design; everything else keeps its distance.
     if (out.some((o) => Math.abs(o.start - c.start) < 0.35 && o.name !== 'riser' && c.name !== 'riser')) continue;
     out.push({ name: c.name, start: round(c.start, 3) });

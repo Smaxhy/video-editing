@@ -145,7 +145,8 @@ function aiHtml(a) {
   const q = a.quality?.score != null
     ? `<span class="tag ${a.quality.score >= 60 ? 'q-good' : a.quality.score >= 35 ? 'q-ok' : 'q-bad'}" title="Measured quality: sharpness, exposure, shake, sound${a.quality.flags.length ? ` — ${esc(a.quality.flags.join(', '))}` : ''}">★ ${a.quality.score}${a.quality.flags.length ? ` · ${esc(a.quality.flags[0])}` : ''}</span>`
     : '';
-  const sounds = (a.sounds || []).map((x) => `<span class="tag snd" title="Heard in the clip">🔊 ${esc(x)}</span>`).join('');
+  const sounds = (a.styleRef ? '<span class="tag ref" title="Used as a style reference — never used as footage">Style reference</span>' : '') +
+    (a.sounds || []).map((x) => `<span class="tag snd" title="Heard in the clip">🔊 ${esc(x)}</span>`).join('');
   if (a.ai.status !== 'done') return q || sounds ? `<div class="tagrow">${q}${sounds}</div>` : '';
   return `<div class="ai-line" title="${esc(a.ai.summary)}">${esc(a.ai.summary)}</div>
     <div class="tagrow">${q}${sounds}${a.ai.tags.slice(0, 3).map((t) => `<span class="tag">${esc(t)}</span>`).join('')}</div>`;
@@ -271,6 +272,15 @@ function listenLibrary() {
         toast(`Import finished: ${plural(evt.job.done - evt.job.failed.length, 'file')} added${evt.job.failed.length ? `, ${evt.job.failed.length} failed` : ''}.`, evt.job.failed.length ? 'error' : 'ok');
         refreshStorageSoon();
       }
+    } else if (evt.type === 'styles') {
+      const before = new Map((state.styles || []).map((x) => [x.id, x.status]));
+      state.styles = evt.styles;
+      for (const st of evt.styles) {
+        if (before.get(st.id) === 'analyzing' && st.status === 'ready') toast(`Style "${st.name}" is ready — pick it under Style.`, 'ok');
+        if (before.get(st.id) === 'analyzing' && st.status === 'error') toast(`Style analysis failed: ${st.error?.message || ''}`, 'error');
+      }
+      renderStyleSelects();
+      if ($('#styleDlg').open) renderStyleDialog();
     } else if (evt.type === 'autopilot') {
       onAutopilot(evt.autopilot);
     } else if (evt.type === 'connect') {
@@ -1376,6 +1386,7 @@ function readSettings() {
     music: $('#music').value || 'auto',
     voiceover: $('#voiceover').value,
     voice: $('#voice').value,
+    style: $('#style').value || null,
     musicLevel: segValue('musicLevel')[0],
   };
 }
@@ -1389,6 +1400,8 @@ function applySaved(saved) {
   state.musicWanted = s.music || 'auto';
   renderMusicSelect();
   for (const k of ['brand', 'cta', 'accent', 'whisperModel', 'engine', 'plannerModel', 'voiceover', 'voice']) if (s[k]) $('#' + k).value = s[k];
+  state.styleWanted = s.style || '';
+  renderStyleSelects();
   for (const k of ['silence', 'shots', 'cleanVoice', 'watermark', ...PRO_TOGGLES]) {
     const el = $('#' + k);
     if (typeof s[k] === 'boolean' && !el.disabled) el.checked = s[k];
@@ -1415,6 +1428,12 @@ function onOptionsChange() {
   .forEach((sel) => $(sel).addEventListener('input', remember));
 $('#autoFind').addEventListener('change', () => { updateGo(); remember(); });
 $('#music').addEventListener('change', () => { state.musicWanted = $('#music').value; renderMusicSelect(); remember(); });
+$('#style').addEventListener('change', () => {
+  if ($('#style').value === '__new') { $('#style').value = state.styleWanted || ''; openStyleDialog(); return; }
+  state.styleWanted = $('#style').value;
+  renderStyleHint();
+  remember();
+});
 
 /** Music choices: off, let Claude pick, or a specific track from the library. */
 function renderMusicSelect() {
@@ -1782,6 +1801,8 @@ function fillAutoForm(s) {
   if (document.activeElement !== $('#autoCta')) $('#autoCta').value = s.cta;
   if (!$('#autoVoice').options.length) $('#autoVoice').innerHTML = $('#voice').innerHTML;
   $('#autoVoiceover').value = s.voiceover || 'auto';
+  state.autoStyleWanted = s.style || '';
+  renderStyleSelects();
   $('#autoVoice').value = s.voice || 'am_michael';
 }
 
@@ -1897,6 +1918,7 @@ async function saveAutopilot() {
         cta: $('#autoCta').value,
         voiceover: $('#autoVoiceover').value,
         voice: $('#autoVoice').value,
+        style: $('#autoStyle').value || null,
       },
     }));
   } catch (err) { toast(err.message, 'error'); }
@@ -1958,6 +1980,87 @@ async function pollActivity() {
   activityTimer = setTimeout(pollActivity, document.hidden ? 20_000 : lines.length ? 3000 : 15_000);
 }
 
+// ---------------------------------------------------------------------------
+// Styles: copy the look & feel of reels the creator likes
+// ---------------------------------------------------------------------------
+async function loadStyles() {
+  try { state.styles = (await api('/api/styles')).styles; } catch { state.styles = []; }
+  renderStyleSelects();
+}
+
+function renderStyleSelects() {
+  const ready = (state.styles || []).filter((x) => x.status === 'ready');
+  const opts = `<option value="">Natural (ClipForge default)</option>${ready.map((x) => `<option value="${x.id}">${esc(x.name)}</option>`).join('')}`;
+  const p = $('#style');
+  if (p) {
+    p.innerHTML = `${opts}<option value="__new">+ Copy a style from reels…</option>`;
+    p.value = ready.some((x) => x.id === state.styleWanted) ? state.styleWanted : '';
+    renderStyleHint();
+  }
+  const a = $('#autoStyle');
+  if (a) {
+    a.innerHTML = opts;
+    a.value = ready.some((x) => x.id === state.autoStyleWanted) ? state.autoStyleWanted : '';
+  }
+}
+
+function renderStyleHint() {
+  const st = (state.styles || []).find((x) => x.id === $('#style').value);
+  $('#styleHint').textContent = st?.profile
+    ? `${st.profile.summary} — captions, effects, colour and pacing follow this style.`
+    : 'Natural ClipForge style. Copy a creator\'s style and every edit follows their pacing, captions, colour and feel.';
+}
+
+function openStyleDialog() {
+  $('#stMsg').textContent = '';
+  renderStyleDialog();
+  $('#styleDlg').showModal();
+}
+
+function renderStyleDialog() {
+  const vids = state.assets.filter((a) => a.kind === 'video' && a.status === 'ready');
+  const checked = new Set($$('#stPick input:checked').map((i) => i.value));
+  $('#stPick').innerHTML = vids.length
+    ? vids.map((a) => `<li><label><input type="checkbox" value="${a.id}" ${checked.has(a.id) ? 'checked' : ''} /><img src="${a.thumbnail}" alt="" loading="lazy" /><span>${esc(a.name)}${a.styleRef ? ' · <em>reference</em>' : ''}</span></label></li>`).join('')
+    : '<li class="empty-note">No videos in the Library yet — upload saved reels there, or paste links above.</li>';
+  const list = state.styles || [];
+  $('#stList').innerHTML = list.length ? list.map((st) => {
+    const p = st.profile;
+    const status = st.status === 'analyzing' ? `<span class="hint-line">${esc(st.message || 'Working…')}</span>`
+      : st.status === 'error' ? `<span style="color:var(--err)">⚠ ${esc(st.error?.message || 'Failed')}${st.error?.hint ? ` — ${esc(st.error.hint)}` : ''}</span>` : '';
+    return `<li><div class="row"><strong>${esc(st.name)}</strong>${st.status !== 'analyzing' ? `<button class="btn xs ghost" type="button" data-del-style="${st.id}">Delete</button>` : ''}</div>
+      ${status}
+      ${st.warnings?.length ? `<span class="hint-line" style="color:var(--warn)">${st.warnings.map((w) => `⚠ ${esc(w)}`).join('<br>')}</span>` : ''}
+      ${p ? `<div>${esc(p.summary)}</div>
+        <div class="knobs">Captions: ${esc(p.captions.style)} (${esc(p.captions.case)}, ${esc(p.captions.position)}) · motion ${esc(p.motion)} · sound effects ${esc(p.sfx)} · ${esc(p.look)} look · music ${esc(p.music)} · voiceover ${esc(p.voiceover)}${p.measured?.avgShot ? ` · ~${p.measured.avgShot}s per shot` : ''}</div>
+        ${p.guide.length ? `<ul>${p.guide.slice(0, 6).map((g) => `<li>${esc(g)}</li>`).join('')}</ul>` : ''}` : ''}</li>`;
+  }).join('') : '<li class="hint-line">No styles yet.</li>';
+}
+
+$$('[data-open-style]').forEach((b) => b.addEventListener('click', openStyleDialog));
+$('#stGo').addEventListener('click', async () => {
+  const urls = $('#stUrls').value.split(/\s+/).filter(Boolean);
+  const assetIds = $$('#stPick input:checked').map((i) => i.value);
+  if (!urls.length && !assetIds.length) { $('#stMsg').textContent = 'Paste a link or pick at least one video.'; return; }
+  $('#stGo').disabled = true;
+  try {
+    await api('/api/styles', { method: 'POST', body: { name: $('#stName').value, urls, assetIds } });
+    $('#stUrls').value = '';
+    $('#stName').value = '';
+    $$('#stPick input:checked').forEach((i) => { i.checked = false; });
+    $('#stMsg').textContent = 'Studying the style — this takes a few minutes. You can close this window.';
+    await loadStyles();
+    renderStyleDialog();
+  } catch (err) { $('#stMsg').textContent = err.message; }
+  finally { $('#stGo').disabled = false; }
+});
+$('#stList').addEventListener('click', async (e) => {
+  const b = e.target.closest('[data-del-style]');
+  if (!b || !confirm('Delete this style? (The reference videos stay in your library.)')) return;
+  try { state.styles = (await api(`/api/styles/${b.dataset.delStyle}`, { method: 'DELETE' })).styles; renderStyleSelects(); renderStyleDialog(); }
+  catch (err) { toast(err.message, 'error'); }
+});
+
 async function init() {
   const a = await nativeFetch('/api/auth').then((r) => r.json()).catch(() => ({}));
   if (a.enabled && !a.authed) { $('#login').classList.remove('hidden'); $('#pw').focus(); return; }
@@ -1967,6 +2070,7 @@ async function init() {
   loadCloud();
   checkVersion();
   loadAutopilot();
+  loadStyles();
   pollActivity();
   api('/api/scanner').then((sc) => { state.scanner = sc; renderScanBar(); }).catch(() => {});
   api('/api/library/settings').then((ls) => { $('#shrinkLarge').checked = ls.shrinkLarge; }).catch(() => {});

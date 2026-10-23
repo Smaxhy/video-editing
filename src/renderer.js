@@ -86,7 +86,7 @@ export const wordKey = (w) => String(w).toLowerCase().normalize('NFKD').replace(
  * Turn Whisper word timings inside each scene's source range into caption cues on the output
  * timeline. Each cue keeps its words with their own output-timeline times (for karaoke highlighting).
  */
-export function buildCaptions(timeline, transcripts, style) {
+export function buildCaptions(timeline, transcripts, style, { upperCase } = {}) {
   if (style === 'off') return [];
   const rule = CAPTION_RULES[style] || CAPTION_RULES.bold;
   const cues = [];
@@ -108,7 +108,7 @@ export function buildCaptions(timeline, transcripts, style) {
       const text = group.map((w) => w.word).join(' ').replace(/\s+([,.!?;:])/g, '$1');
       const start = map(group[0].start);
       const end = Math.min(Math.max(map(group[group.length - 1].end) + 0.15, start + 0.4), sceneEnd);
-      const upper = style === 'bold' || style === 'pop';
+      const upper = upperCase ?? (style === 'bold' || style === 'pop');
       const cueWords = group.map((w) => ({ text: upper ? w.word.toUpperCase() : w.word, start: round(map(w.start), 3), end: round(map(w.end), 3) }));
       cues.push({ start, end, text: upper ? text.toUpperCase() : text, words: cueWords });
       group = [];
@@ -139,10 +139,10 @@ export function buildCaptions(timeline, transcripts, style) {
 }
 
 /** Captions for an AI voiceover (words on the output timeline), merged in; narration wins overlaps. */
-export function withNarration(cues, narration, total, style) {
+export function withNarration(cues, narration, total, style, opts = {}) {
   if (!narration?.words?.length || style === 'off') return cues;
   const scene = { clip: '__narration', srcStart: 0, srcEnd: total, tlStart: 0, duration: total, speed: 1 };
-  const narr = buildCaptions({ scenes: [scene] }, { __narration: { words: narration.words } }, style);
+  const narr = buildCaptions({ scenes: [scene] }, { __narration: { words: narration.words } }, style, opts);
   const free = cues.filter((c) => !narr.some((n) => c.start < n.end && c.end > n.start));
   return [...free, ...narr].sort((a, b) => a.start - b.start);
 }
@@ -253,7 +253,8 @@ export function buildComposition({ plan, clips, transcripts, settings, gsapSrc =
   const safeBottom = Math.round(H * (tall > 1.5 ? 0.22 : tall > 1.1 ? 0.12 : 0.08));
   const accent = /^#[0-9a-f]{6}$/i.test(settings.accent || '') ? settings.accent : '#7c5cff';
   // Captions clear the platform UI: ~27% from the bottom on 9:16 (caption text, buttons, nav bar).
-  const capBottom = Math.round(H * (tall > 1.5 ? 0.27 : tall > 1.1 ? 0.14 : 0.1));
+  // "middle" (a style choice): lower-middle of the frame, where many creators put their captions.
+  const capBottom = Math.round(H * (settings.captionPos === 'middle' ? 0.4 : tall > 1.5 ? 0.27 : tall > 1.1 ? 0.14 : 0.1));
   const fontFaces = [
     settings.fontFiles?.display && `    @font-face { font-family: "CF Display"; src: url("fonts/${settings.fontFiles.display}"); }`,
     settings.fontFiles?.body && `    @font-face { font-family: "CF Body"; src: url("fonts/${settings.fontFiles.body}"); font-weight: 100 900; }`,
@@ -265,8 +266,12 @@ export function buildComposition({ plan, clips, transcripts, settings, gsapSrc =
   const laid = layoutTimeline(plan);
   const total = laid.total;
   // Captions step aside for CTA end cards so the call to action reads cleanly.
-  const ctas = plan.overlays.filter((o) => o.type === 'cta');
-  const captions = withNarration(buildCaptions(laid, transcripts, settings.captions), settings.narration, total, settings.captions)
+  // Captions step aside for CTA end cards, and for any title/hook/text that sits in the same part of
+  // the frame (middle captions vs centred titles, bottom captions vs bottom text) — never two layers of text.
+  const capZone = settings.captionPos === 'middle' ? 'center' : 'bottom';
+  const ctas = plan.overlays.filter((o) => o.type === 'cta' || (o.type !== 'lower-third' && o.position === capZone));
+  const capOpts = { upperCase: settings.captionCase ? settings.captionCase === 'upper' : undefined };
+  const captions = withNarration(buildCaptions(laid, transcripts, settings.captions, capOpts), settings.narration, total, settings.captions, capOpts)
     .map((c) => {
       for (const o of ctas) {
         if (c.start >= o.start - 0.05 && c.start < o.end) return null;
@@ -277,13 +282,20 @@ export function buildComposition({ plan, clips, transcripts, settings, gsapSrc =
     .filter(Boolean);
 
   const tweens = [];
+  // Motion level: "off", "subtle" (default — what a human editor does: hide jump cuts, gentle pushes)
+  // or "punchy" (adds key-word zooms and beat pulses). `true` from older settings = punchy.
+  const motion = settings.motion === true ? 'punchy' : settings.motion || 'off';
+  const punchy = motion === 'punchy';
+  const jumpZoom = punchy ? 1.12 : 1.08;
+  const push = punchy ? 1.04 : 1.025;
+  let lastEmphasisZoom = -Infinity;
   // Jump cuts (same clip, straight cut, a little further on) alternate between normal and a 112%
   // punch-in so they look intentional — the standard talking-head trick.
   const zoom = [];
   laid.scenes.forEach((s, i) => {
     const p = laid.scenes[i - 1];
-    const jump = settings.motion && p && p.clip === s.clip && s.transition === 'cut' && s.srcStart >= p.srcEnd - 0.05 && s.srcStart - p.srcEnd < 3;
-    zoom[i] = jump ? (zoom[i - 1] > 1 ? 1 : 1.12) : 1;
+    const jump = motion !== 'off' && p && p.clip === s.clip && s.transition === 'cut' && s.srcStart >= p.srcEnd - 0.05 && s.srcStart - p.srcEnd < 3;
+    zoom[i] = jump ? (zoom[i - 1] > 1 ? 1 : jumpZoom) : 1;
   });
   const emphasisKeys = new Set((settings.emphasis || []).map((e) => wordKey(e.word)));
   const sceneHtml = laid.scenes.map((s, i) => {
@@ -326,29 +338,31 @@ export function buildComposition({ plan, clips, transcripts, settings, gsapSrc =
       tweens.push(`tl.fromTo("#${id}i", { scale: ${z} }, { scale: ${round(z * 1.1, 3)}, duration: ${round(dur, 3)}, ease: "none" }, ${s.tlStart});`);
     } else if (s.effect === 'punch-in') {
       tweens.push(`tl.fromTo("#${id}i", { scale: ${round(Math.max(z, 1.15), 3)} }, { scale: ${round(Math.max(z, 1.15) * 1.04, 3)}, duration: ${round(dur, 3)}, ease: "none" }, ${s.tlStart});`);
-    } else if (settings.motion && dur > 3.5) {
-      // Never a dead-still frame: a slow 4% push over long shots.
-      tweens.push(`tl.fromTo("#${id}i", { scale: ${z} }, { scale: ${round(z * 1.04, 3)}, duration: ${round(dur, 3)}, ease: "none" }, ${s.tlStart});`);
+    } else if (motion !== 'off' && dur > 3.5) {
+      // Never a dead-still frame: a slow push over long shots.
+      tweens.push(`tl.fromTo("#${id}i", { scale: ${z} }, { scale: ${round(z * push, 3)}, duration: ${round(dur, 3)}, ease: "none" }, ${s.tlStart});`);
     } else if (z !== 1) {
       tweens.push(`tl.set("#${id}i", { scale: ${z} }, ${s.tlStart});`);
     }
     // On the beat: B-roll / POV scenes get a small 3% pulse on every downbeat of the music.
     const sceneWords = (transcripts[s.clip]?.words || []).filter((w) => w.end > s.srcStart && w.start < s.srcEnd);
-    if (settings.motion && settings.downbeats?.length && sceneWords.length < 3) {
+    if (punchy && settings.downbeats?.length && sceneWords.length < 3) {
       for (const b of settings.downbeats) {
         if (b <= s.tlStart + 0.15 || b >= end - 0.3) continue;
         tweens.push(`tl.fromTo("#${id}p", { scale: 1 }, { scale: 1.03, duration: 0.06, ease: "power2.out", yoyo: true, repeat: 1, repeatDelay: 0.04 }, ${round(b - 0.02, 3)});`);
       }
     }
     // Emphasis zoom: a quick 7% punch on the first key word of a talking scene.
-    if (settings.motion && emphasisKeys.size && transcripts[s.clip]?.words?.length) {
+    // Subtle: at most one key-word zoom every ~8 s; punchy: one per talking scene.
+    if (motion !== 'off' && emphasisKeys.size && transcripts[s.clip]?.words?.length) {
       const hit = transcripts[s.clip].words.find((w) => {
         if (!emphasisKeys.has(wordKey(w.word)) || w.start < s.srcStart || w.start >= s.srcEnd) return false;
         const at = s.tlStart + (w.start - s.srcStart) / s.speed;
-        return at > s.tlStart + 0.5 && at < end - 0.8;
+        return at > s.tlStart + 0.5 && at < end - 0.8 && at - lastEmphasisZoom >= (punchy ? 0 : 8);
       });
       if (hit) {
         const at = round(s.tlStart + (hit.start - s.srcStart) / s.speed, 3);
+        lastEmphasisZoom = at;
         tweens.push(`tl.fromTo("#${id}p", { scale: 1 }, { scale: 1.07, duration: 0.14, ease: "power2.out" }, ${at});`);
       }
     }
@@ -484,7 +498,7 @@ export function buildComposition({ plan, clips, transcripts, settings, gsapSrc =
   // Captions: karaoke-style active-word highlight, keyword colour + emoji from the planner's
   // "emphasis" list, pop-in entrances. Highlight colour: the brand accent, or caption yellow.
   const style = settings.captions;
-  const highlight = accent.toLowerCase() === '#7c5cff' ? '#ffe14d' : accent;
+  const highlight = /^#[0-9a-f]{6}$/i.test(settings.captionColor || '') ? settings.captionColor : accent.toLowerCase() === '#7c5cff' ? '#ffe14d' : accent;
   const emphasis = new Map((settings.emphasis || []).map((e) => [wordKey(e.word), e.emoji || '']));
   let lastEmoji = -Infinity;
   const emojiTimes = [];
@@ -540,7 +554,7 @@ export function buildComposition({ plan, clips, transcripts, settings, gsapSrc =
   // Sound effects: whooshes into transitions, impacts on titles, pops on hooks/emoji, a riser into the CTA.
   const sfx = [];
   if (settings.sfxFiles) {
-    sfxCues({ timeline: laid, overlays, emojiTimes }).forEach((c, k) => {
+    sfxCues({ timeline: laid, overlays, emojiTimes, level: settings.sfxLevel || 'full' }).forEach((c, k) => {
       if (!settings.sfxFiles[c.name] || c.start >= total - 0.05) return;
       const d = round(Math.min(SFX_LENGTH[c.name], total - c.start), 3);
       sfx.push(`    <audio id="fx${k}" src="media/${escapeHtml(settings.sfxFiles[c.name])}" data-start="${c.start}" data-duration="${d}" data-track-index="${60 + (k % 4)}" data-volume="${SFX_VOLUME[c.name]}"></audio>`);

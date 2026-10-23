@@ -127,6 +127,7 @@ export function createLibrary({ dir, onChange = () => {}, onReady = () => {}, is
       quality: a.quality || null,
       sounds: a.sounds || null,
       embedded: a.embedded || null,
+      styleRef: Boolean(a.styleRef),
       shrunk: a.shrunk && a.shrunk !== 'failed' ? a.shrunk.from : null,
       thumbnail: `/api/library/${a.id}/thumb?v=${v}`,
       sprite: a.preview.sprite ? { url: `/api/library/${a.id}/sprite?v=${v}`, ...a.preview.sprite } : null,

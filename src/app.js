@@ -33,6 +33,7 @@ import { reviewVideo } from './review.js';
 import { VOICES, VOICEOVER_MODES, synthesize, scheduleLines, estimateWords, mixNarration } from './tts.js';
 import { createMl } from './ml.js';
 import { ensureYunet } from './reframe.js';
+import { createStyles, styleGuideText } from './style.js';
 import { Server as TusServer } from '@tus/server';
 import { FileStore } from '@tus/file-store';
 
@@ -312,7 +313,7 @@ const MUSIC_LEVEL = { low: 0.5, medium: 0.8, high: 1.1 };
  * clips the user added by hand stay.
  */
 async function findFootage(job, prompt, settings, { signal, ws, notes }) {
-  const videos = library.list().filter((a) => a.kind === 'video' && a.status === 'ready');
+  const videos = library.list().filter((a) => a.kind === 'video' && a.status === 'ready' && !a.styleRef);
   const unscanned = videos.filter((a) => a.ai.status !== 'done');
   if (unscanned.length) {
     setStep(job, 'find', 'active', `Claude is looking through ${unscanned.length} unscanned video${unscanned.length > 1 ? 's' : ''}…`, 0.01);
@@ -473,6 +474,7 @@ async function runPipeline(job, { prompt, clipIds, settings, reusePlan }) {
       brand: settings.brand,
       music: mus.byKey.size ? mus.options : null,
       voiceover: settings.voiceover === 'off' ? null : { mode: settings.voiceover, voiceLabel: VOICES[settings.voice] },
+      style: settings.style && styles.get(settings.style) ? styleGuideText(styles.get(settings.style)) : null,
       model: settings.plannerModel,
     };
     // Library clips come with Claude's earlier look at them, plus their frame grid to look at again.
@@ -508,10 +510,11 @@ async function runPipeline(job, { prompt, clipIds, settings, reusePlan }) {
     );
   }
   // Auto-tighten: cut pauses and "um"s inside talking scenes (B-roll and POV stay as planned).
-  if (settings.tighten) {
+  if (settings.tighten !== 'off') {
     let removed = 0;
     planned.versions = planned.versions.map((v) => {
-      const t = tightenPlan(v.plan, transcripts);
+      // natural keeps short breaths (more human); tight removes every pause.
+      const t = tightenPlan(v.plan, transcripts, { maxGap: settings.tighten === 'tight' ? 0.4 : 0.62 });
       removed += t.removed;
       return { ...v, plan: { ...t.plan, title: v.plan.title } };
     });
@@ -581,7 +584,7 @@ async function runPipeline(job, { prompt, clipIds, settings, reusePlan }) {
       const [from, to] = pictureWindows[c.id];
       setStep(job, 'render', 'active', `Polishing the picture of clip ${k + 1}/${clips.length} (colour, exposure, stabilisation)…`, 0.38);
       try {
-        const r = await preparePicture(c.path, cache(c, 'picture', `-${from}-${to}-v1.mp4`), { start: from, end: to, signal });
+        const r = await preparePicture(c.path, cache(c, 'picture', `-${from}-${to}-${settings.look}-v1.mp4`), { start: from, end: to, look: settings.look, signal });
         renderPaths[c.id] = r.path;
         videoOffsets[c.id] = r.offset;
         if (r.applied.some((a) => a.startsWith('stabilised'))) notes.push(`Stabilised the shaky footage in ${c.name}.`);
@@ -695,7 +698,11 @@ async function runPipeline(job, { prompt, clipIds, settings, reusePlan }) {
         motion: settings.motion,
         downbeats: v.downbeats || null,
         narration: v.narration || null,
-        sfxDir: settings.sfx ? await ensureSfx(TOOLS_DIR).catch(() => null) : null,
+        sfxDir: settings.sfx !== 'off' ? await ensureSfx(TOOLS_DIR).catch(() => null) : null,
+        sfxLevel: settings.sfx,
+        captionCase: settings.captionCase,
+        captionPos: settings.captionPos,
+        captionColor: settings.captionColor,
         emphasis: planned.emphasis || [],
       },
     });
@@ -899,6 +906,15 @@ async function renderAutopilotIdea(idea, { prompt, settings, signal, onJob, onPr
   };
 }
 
+const styles = createStyles({
+  dir: path.join(DIRS.library, '.styles'),
+  library,
+  toolsDir: TOOLS_DIR,
+  transcribeAsset: async (a) =>
+    transcribe(library.sourcePath(a.id), { model: 'small', engine: 'auto', tools: await detectTools(), label: a.name, outDir: path.join(library.cacheDir(a.id), 'transcripts') }),
+  onChange: broadcast,
+});
+
 const autopilot = createAutopilot({
   dir: path.join(DIRS.output, '_autopilot'),
   library,
@@ -906,6 +922,7 @@ const autopilot = createAutopilot({
   renderIdea: renderAutopilotIdea,
   otherWork: () => ([...jobs.values()].some((j) => j.state === 'running') && 'another video render') || false,
   onChange: broadcast,
+  styleGuide: (id) => (id && styles.get(id) ? styleGuideText(styles.get(id)) : null),
 });
 
 // ---------------------------------------------------------------------------
@@ -1377,37 +1394,46 @@ const cleanText = (s, max) => String(s ?? '').replace(/\s+/g, ' ').trim().slice(
 
 /** Validate render settings from the client (or Autopilot); anything unknown falls back to a default. */
 function editSettings(s = {}, autoFind = false) {
+  // A copied style decides the look & feel (captions, effects, colour, pacing); the switches can still
+  // turn an effect off. Without a style the defaults are deliberately restrained — like a human editor.
+  const prof = s.style ? styles.get(s.style) : null;
+  const level = (on, fromStyle, d) => (on === false ? 'off' : fromStyle || d);
   return {
+    style: prof ? s.style : null,
+    look: prof?.look || 'natural',
+    captionCase: prof?.captions.case || null,
+    captionPos: prof?.captions.position || 'bottom',
+    captionColor: prof?.captions.highlight || null,
     whisperModel: WHISPER_MODELS.includes(s.whisperModel) ? s.whisperModel : 'small',
     engine: ENGINES.includes(s.engine) ? s.engine : 'auto',
     silence: s.silence !== false,
     shots: s.shots !== false,
     cleanVoice: s.cleanVoice === true,
     proAudio: s.proAudio !== false,
-    tighten: s.tighten !== false,
+    tighten: level(s.tighten, prof?.tighten, 'natural'),
     polish: s.polish !== false,
     beatSync: s.beatSync !== false,
-    sfx: s.sfx !== false,
-    voiceover: VOICEOVER_MODES.includes(s.voiceover) ? s.voiceover : 'auto',
+    sfx: level(s.sfx, prof?.sfx, 'subtle'),
+    voiceover: prof ? prof.voiceover : VOICEOVER_MODES.includes(s.voiceover) ? s.voiceover : 'auto',
     voice: VOICES[s.voice] ? s.voice : 'am_michael',
     selfReview: s.selfReview !== false,
     autoFix: s.autoFix !== false,
-    motion: s.motion !== false,
+    motion: level(s.motion, prof?.motion, 'subtle'),
     useLogo: s.useLogo !== false,
     watermark: s.watermark === true,
     plannerModel: PLANNER_MODELS.includes(s.plannerModel) ? s.plannerModel : 'sonnet',
     goal: GOALS.includes(s.goal) ? s.goal : 'social',
     formats: pick(Object.keys(FORMATS), s.formats, ['9x16']),
     lengths: pick(LENGTHS, s.lengths, ['30']),
-    captions: CAPTION_STYLES.includes(s.captions) ? s.captions : 'bold',
+    captions: prof ? prof.captions.style : CAPTION_STYLES.includes(s.captions) ? s.captions : 'bold',
     framing: FRAMINGS.includes(s.framing) ? s.framing : 'smart',
     size: SIZE_PRESETS[s.size] ? s.size : 'balanced',
     accent: /^#[0-9a-f]{6}$/i.test(s.accent || '') ? s.accent : '#7c5cff',
     brand: cleanText(s.brand, 60),
     cta: cleanText(s.cta, 60),
     autoFind,
-    music: s.music === 'auto' || (library.get(s.music)?.kind === 'audio') ? s.music : 'off',
-    musicLevel: MUSIC_LEVEL[s.musicLevel] ? s.musicLevel : 'medium',
+    music: prof?.music === 'off' ? 'off' : s.music === 'auto' || (library.get(s.music)?.kind === 'audio') ? s.music : 'off',
+    musicLevel: prof && MUSIC_LEVEL[prof.music] ? prof.music : MUSIC_LEVEL[s.musicLevel] ? s.musicLevel : 'medium',
   };
 }
 
@@ -1522,6 +1548,26 @@ app.delete('/api/jobs/:jobId', async (req, res) => {
 });
 
 
+// ---- styles ("copy a style" from reference reels) --------------------------------
+
+app.get('/api/styles', (_req, res) => res.json({ styles: styles.list() }));
+app.post('/api/styles', (req, res, next) => {
+  try {
+    const { name, urls, assetIds } = req.body || {};
+    res.status(202).json({ style: styles.create({ name, urls: Array.isArray(urls) ? urls : String(urls || '').split(/\s+/), assetIds: Array.isArray(assetIds) ? assetIds : [] }) });
+  } catch (err) {
+    next(err);
+  }
+});
+app.delete('/api/styles/:id', async (req, res, next) => {
+  try {
+    if (!(await styles.remove(req.params.id))) return res.status(404).json({ error: 'Unknown style.' });
+    res.json({ styles: styles.list() });
+  } catch (err) {
+    next(err);
+  }
+});
+
 // ---- autopilot -------------------------------------------------------------------
 
 app.get('/api/autopilot', (_req, res) => res.json(autopilot.status()));
@@ -1585,6 +1631,7 @@ const updater = createUpdater({
     (Date.now() - lastUploadAt < 2 * 60_000 && 'an upload') ||
     (cloud.jobs().some((j) => j.state === 'running') && 'a Google Drive import') ||
     (autopilot.busy() && 'Autopilot') ||
+    (styles.busy() && 'a style analysis') ||
     false,
   beforeRestart: async () => {
     cloud.shutdown();

@@ -287,6 +287,8 @@
                   <button type="button" data-v="medium" aria-pressed="true">Medium</button>
                   <button type="button" data-v="high">Loud</button>
                 </div>
+                <label class="tg" style="align-items:center;width:100%"><input type="checkbox" id="aiMusic" checked /><span>AI music when nothing fits
+                  <small>No track in your library that fits the vibe? ClipForge composes one on this machine (MusicGen, free for non-commercial use) and saves it to your music.</small></span></label>
                 <label class="tg" style="align-items:center;width:100%"><input type="checkbox" id="trendingSound" /><span>I'll add a trending sound in TikTok/Instagram
                   <small>Exports without background music (trending sounds are licensed inside the apps). Cuts are paced to a beat — pick one of your tracks above to cut to its exact rhythm.</small></span></label>
                 <small class="hint-line" id="musicHint"></small>
@@ -354,6 +356,15 @@
                 <div class="logo-row"><label class="tg" style="align-items:center"><input type="checkbox" id="watermark" /> Show logo as a corner watermark</label></div>
                 <div class="logo-row" id="logoNote" aria-live="polite"></div>
               </div>
+            </div>
+
+            <div class="opt"><span class="lbl">Edit intensity</span>
+              <div class="seg" data-name="intensity" data-single role="group" aria-label="Edit intensity">
+                <button type="button" data-v="clean">Clean</button>
+                <button type="button" data-v="creator" aria-pressed="true">Creator</button>
+                <button type="button" data-v="max">Max</button>
+              </div>
+              <small class="hint-line">Clean: straight cuts. Creator: styled transitions on the beat (punch, whip, zoom-through, flash, light leaks), punch-ins and a hit on the drop. Max: hype edit — styled cuts on most beats, shakes, speed ramps.</small>
             </div>
 
             <div class="opt"><span class="lbl">Pro finishing</span>

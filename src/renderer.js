@@ -21,7 +21,7 @@ export const CAPTION_STYLES = ['off', 'clean', 'bold', 'pop'];
 export const FRAMINGS = ['smart', 'blur', 'face', 'crop', 'fit'];
 
 // Transitions where the incoming scene overlaps the tail of the previous one.
-const OVERLAP_TRANSITIONS = new Set(['crossfade', 'slide-left', 'slide-up', 'zoom', 'wipe']);
+const OVERLAP_TRANSITIONS = new Set(['crossfade', 'slide-left', 'slide-up', 'zoom', 'wipe', 'zoom-through', 'whip', 'spin', 'light-leak']);
 const FPS = 30;
 
 /**
@@ -198,7 +198,9 @@ export async function prepareMusic(srcPath, outPath, { start = 0, duration, sign
   const fadeOut = Math.min(2.5, duration / 3);
   const res = await run('ffmpeg', [
     '-v', 'error', '-y', '-stream_loop', '-1', '-ss', String(start), '-i', srcPath, '-t', String(duration), '-vn',
-    '-af', `loudnorm=I=-16:TP=-1.5:LRA=11,afade=t=in:st=0:d=${Math.min(1.2, duration / 4).toFixed(2)},afade=t=out:st=${Math.max(0, duration - fadeOut).toFixed(2)}:d=${fadeOut.toFixed(2)}`,
+    // Starting mid-track (on a loud part or so the drop hits the peak) the music must hit with the
+    // hook — a click-free 80 ms fade; from the top of a track a gentle fade-in.
+    '-af', `loudnorm=I=-16:TP=-1.5:LRA=11,afade=t=in:st=0:d=${start > 1 ? 0.08 : Math.min(0.6, duration / 4).toFixed(2)},afade=t=out:st=${Math.max(0, duration - fadeOut).toFixed(2)}:d=${fadeOut.toFixed(2)}`,
     '-ac', '2', '-ar', '48000', '-c:a', 'aac', '-b:a', '192k', outPath,
   ], { signal });
   if (res.code !== 0) throw new PipelineError('Could not prepare the music track.', { detail: tail(res.stderr) });
@@ -243,6 +245,32 @@ export function coverPositionFor(face, clip, W, H) {
  * clips: [{ id, file, hasAudio, width, height, blurFile? }], transcripts: { [clipId]: transcript }
  * settings: { width, height, captions, framing, accent }
  */
+/**
+ * Styled two-shot transitions (GSAP tween strings): the outgoing shot `prevId` exits while the incoming
+ * `id` lands, over the transition overlap `d` starting at `at`. Blur sizes scale with the frame (`u`).
+ */
+const STYLED = {
+  'zoom-through': ({ id, prevId, d, at, u }) => [
+    `tl.to("#${prevId}", { scale: 1.6, filter: "blur(${Math.round(16 * u)}px)", duration: ${d}, ease: "power3.in" }, ${at});`,
+    `tl.fromTo("#${id}", { scale: 1.6, filter: "blur(${Math.round(16 * u)}px)" }, { scale: 1, filter: "blur(0px)", duration: ${d}, ease: "power3.out" }, ${at});`,
+    `tl.fromTo("#${id}", { opacity: 0 }, { opacity: 1, duration: ${round(d * 0.45, 3)}, ease: "none" }, ${round(at + d * 0.25, 3)});`,
+  ],
+  whip: ({ id, prevId, d, at, i }) => [
+    `tl.to("#${prevId}", { xPercent: -45, duration: ${d}, ease: "power2.in" }, ${at});`,
+    `tl.to("#mb${i - 1}g", { attr: { stdDeviation: "70 0" }, duration: ${d}, ease: "power2.in" }, ${at});`,
+    `tl.fromTo("#${id}", { xPercent: 45, opacity: 0 }, { xPercent: 0, opacity: 1, duration: ${d}, ease: "power3.out" }, ${at});`,
+    `tl.fromTo("#mb${i}g", { attr: { stdDeviation: "70 0" } }, { attr: { stdDeviation: "0 0" }, duration: ${d}, ease: "power3.out" }, ${at});`,
+  ],
+  spin: ({ id, prevId, d, at, u }) => [
+    `tl.to("#${prevId}", { rotation: -28, scale: 1.5, filter: "blur(${Math.round(10 * u)}px)", duration: ${d}, ease: "power2.in" }, ${at});`,
+    `tl.fromTo("#${id}", { rotation: 28, scale: 1.5, filter: "blur(${Math.round(10 * u)}px)" }, { rotation: 0, scale: 1, filter: "blur(0px)", duration: ${d}, ease: "power3.out" }, ${at});`,
+    `tl.fromTo("#${id}", { opacity: 0 }, { opacity: 1, duration: ${round(d * 0.4, 3)}, ease: "none" }, ${round(at + d * 0.2, 3)});`,
+  ],
+  'light-leak': ({ id, d, at }) => [
+    `tl.fromTo("#${id}", { opacity: 0 }, { opacity: 1, duration: ${d}, ease: "sine.inOut" }, ${at});`,
+  ],
+};
+
 export function buildComposition({ plan, clips, transcripts, settings, gsapSrc = 'gsap.min.js' }) {
   const { width: W, height: H } = settings;
   const u = Math.min(W, H) / 1080; // type scale relative to a 1080px short edge
@@ -294,10 +322,16 @@ export function buildComposition({ plan, clips, transcripts, settings, gsapSrc =
   const zoom = [];
   laid.scenes.forEach((s, i) => {
     const p = laid.scenes[i - 1];
-    const jump = motion !== 'off' && p && p.clip === s.clip && s.transition === 'cut' && s.srcStart >= p.srcEnd - 0.05 && s.srcStart - p.srcEnd < 3;
+    const jump = motion !== 'off' && p && !s.ramp && p.clip === s.clip && s.transition === 'cut' && s.srcStart >= p.srcEnd - 0.05 && s.srcStart - p.srcEnd < 3;
     zoom[i] = jump ? (zoom[i - 1] > 1 ? 1 : jumpZoom) : 1;
   });
   const emphasisKeys = new Set((settings.emphasis || []).map((e) => wordKey(e.word)));
+  // Scenes on either side of a whip pan get a horizontal motion-blur filter.
+  const whip = new Set();
+  laid.scenes.forEach((sc, i) => sc.transition === 'whip' && sc.overlapIn > 0 && whip.add(i).add(i - 1));
+  const leaks = [];
+  const flashes = [];
+  const glitches = [];
   const sceneHtml = laid.scenes.map((s, i) => {
     const clip = clipById.get(s.clip);
     const id = `s${i}`;
@@ -306,7 +340,13 @@ export function buildComposition({ plan, clips, transcripts, settings, gsapSrc =
     const ease = 'power2.inOut';
 
     // Visual entrance
-    if (s.overlapIn > 0) {
+    const prevId = `s${i - 1}`;
+    if (s.overlapIn > 0 && STYLED[s.transition]) {
+      // Styled transitions animate both shots: the outgoing one exits, the incoming one lands.
+      const d = round(s.overlapIn, 3);
+      for (const t of STYLED[s.transition]({ id, prevId, d, at: s.tlStart, i, u })) tweens.push(t);
+      if (s.transition === 'light-leak') leaks.push({ at: s.tlStart, d, i });
+    } else if (s.overlapIn > 0) {
       const d = round(s.overlapIn, 3);
       const from = {
         crossfade: '{ opacity: 0 }',
@@ -326,6 +366,18 @@ export function buildComposition({ plan, clips, transcripts, settings, gsapSrc =
     } else if (s.fadeIn > 0) {
       tweens.push(`tl.fromTo("#${id}", { opacity: 0 }, { opacity: 1, duration: ${round(s.fadeIn, 3)}, ease: "none" }, ${s.tlStart});`);
     }
+    // Cut-like styled transitions: the cut stays on time, the incoming shot does the move.
+    if (i > 0 && s.transition === 'punch') {
+      tweens.push(`tl.fromTo("#${id}", { scale: 1.32, filter: "blur(${Math.round(12 * u)}px)" }, { scale: 1, filter: "blur(0px)", duration: 0.32, ease: "expo.out" }, ${s.tlStart});`);
+    } else if (i > 0 && s.transition === 'flash') {
+      flashes.push(s.tlStart);
+      tweens.push(`tl.fromTo("#${id}", { scale: 1.08 }, { scale: 1, duration: 0.35, ease: "power2.out" }, ${s.tlStart});`);
+    } else if (i > 0 && s.transition === 'glitch') {
+      const g = Math.round(40 * u);
+      tweens.push(`tl.set("#${id}", { x: ${-g}, filter: "hue-rotate(80deg) saturate(2.4) contrast(1.4)" }, ${s.tlStart});`);
+      tweens.push(`tl.to("#${id}", { keyframes: [{ x: ${g}, duration: 0.05 }, { x: ${-Math.round(g / 2)}, duration: 0.05 }, { x: ${Math.round(g / 3)}, filter: "hue-rotate(-40deg) saturate(1.8) contrast(1.2)", duration: 0.05 }, { x: 0, filter: "hue-rotate(0deg) saturate(1) contrast(1)", duration: 0.07 }] }, ${s.tlStart});`);
+      glitches.push(s.tlStart);
+    }
     // Visual exit (fade to black before a fadeblack transition)
     if (s.fadeOut > 0) {
       tweens.push(
@@ -343,6 +395,12 @@ export function buildComposition({ plan, clips, transcripts, settings, gsapSrc =
       tweens.push(`tl.fromTo("#${id}i", { scale: ${z} }, { scale: ${round(z * push, 3)}, duration: ${round(dur, 3)}, ease: "none" }, ${s.tlStart});`);
     } else if (z !== 1) {
       tweens.push(`tl.set("#${id}i", { scale: ${z} }, ${s.tlStart});`);
+    }
+    if (s.effect === 'shake') {
+      // Impact: a 0.35 s handheld jolt (slight zoom so the frame edges never show).
+      const a = Math.round(26 * u);
+      tweens.push(`tl.fromTo("#${id}p", { scale: 1.06 }, { scale: 1, duration: 0.5, ease: "power2.out" }, ${s.tlStart});`);
+      tweens.push(`tl.to("#${id}i", { keyframes: [{ x: ${a}, y: ${-a}, duration: 0.04 }, { x: ${-a}, y: ${Math.round(a * 0.7)}, duration: 0.05 }, { x: ${Math.round(a * 0.6)}, y: ${Math.round(a * 0.4)}, duration: 0.05 }, { x: ${-Math.round(a * 0.4)}, y: ${-Math.round(a * 0.3)}, duration: 0.06 }, { x: 0, y: 0, duration: 0.08 }] }, ${s.tlStart});`);
     }
     // On the beat: B-roll / POV scenes get a small 3% pulse on every downbeat of the music.
     const sceneWords = (transcripts[s.clip]?.words || []).filter((w) => w.end > s.srcStart && w.start < s.srcEnd);
@@ -442,7 +500,7 @@ export function buildComposition({ plan, clips, transcripts, settings, gsapSrc =
       ? `\n      <audio id="a${i}" src="media/${escapeHtml(clip.voiceFile)}" ${voiceTiming} data-track-index="${30 + (i % 2)}" ${volumeAttrs}></audio>`
       : '';
     return `    <div id="${id}" class="scene">${bg}
-      <div id="${id}i" class="inner" style="transform-origin: ${origin}"><div id="${id}p" class="inner" style="transform-origin: ${origin}">
+      <div id="${id}i" class="inner" style="transform-origin: ${origin}${whip.has(i) ? `; filter: url(#mb${i})` : ''}"><div id="${id}p" class="inner" style="transform-origin: ${origin}">
         <video id="v${i}" src="media/${escapeHtml(clip.file)}" ${videoTiming} data-track-index="${i % 2}" playsinline ${videoAudioAttrs} style="object-fit: ${fit}; object-position: ${position}"></video>
       </div></div>${voice}
     </div>`;
@@ -566,6 +624,27 @@ export function buildComposition({ plan, clips, transcripts, settings, gsapSrc =
       ? [`    <div id="wm" class="clip wm" data-start="0" data-duration="${total}" data-track-index="40"><img src="media/${escapeHtml(settings.logoFile)}" alt="" /></div>`]
       : [];
 
+  // Transition light: white flashes, film light leaks, glitch bars — above the picture, below text.
+  const fxHtml = [];
+  if (whip.size) {
+    fxHtml.push(`    <svg width="0" height="0" style="position:absolute"><defs>${[...whip].filter((k) => k >= 0).map((k) => `<filter id="mb${k}" x="-25%" y="0" width="150%" height="100%"><feGaussianBlur id="mb${k}g" stdDeviation="0 0" /></filter>`).join('')}</defs></svg>`);
+  }
+  if (flashes.length) {
+    fxHtml.push('    <div id="flash" class="fx fx-flash"></div>');
+    for (const t of flashes) tweens.push(`tl.fromTo("#flash", { opacity: 0.92 }, { opacity: 0, duration: 0.28, ease: "power2.out", immediateRender: false }, ${round(t, 3)});`);
+  }
+  if (glitches.length) {
+    fxHtml.push('    <div id="glitch" class="fx fx-glitch"></div>');
+    for (const t of glitches) {
+      tweens.push(`tl.fromTo("#glitch", { opacity: 0.85, yPercent: 0 }, { keyframes: [{ opacity: 0.2, yPercent: 7, duration: 0.05 }, { opacity: 0.7, yPercent: -4, duration: 0.05 }, { opacity: 0, yPercent: 0, duration: 0.08 }], immediateRender: false }, ${round(t, 3)});`);
+    }
+  }
+  leaks.forEach((l, k) => {
+    fxHtml.push(`    <div id="lk${k}" class="fx fx-leak${k % 2 ? ' alt' : ''}"></div>`);
+    const span = round(Math.max(0.9, l.d * 2.2), 3);
+    tweens.push(`tl.fromTo("#lk${k}", { opacity: 0, xPercent: ${k % 2 ? 25 : -25} }, { keyframes: [{ opacity: 0.9, xPercent: 0, duration: ${round(span / 2, 3)}, ease: "sine.out" }, { opacity: 0, xPercent: ${k % 2 ? -25 : 25}, duration: ${round(span / 2, 3)}, ease: "sine.in" }], immediateRender: false }, ${round(Math.max(0, l.at + l.d / 2 - span / 2), 3)});`);
+  });
+
   const html = `<!doctype html>
 <html lang="en">
 <head>
@@ -580,6 +659,17 @@ ${fontFaces}
       font-family: system-ui, -apple-system, "Segoe UI", Roboto, Helvetica, Arial, sans-serif; color: #fff; }
     .scene, .inner { position: absolute; inset: 0; }
     .scene video { position: absolute; left: 0; top: 0; width: 100%; height: 100%; }
+    .fx { position: absolute; inset: 0; pointer-events: none; opacity: 0; }
+    .fx-flash { background: #fff; }
+    .fx-leak { inset: -20%; mix-blend-mode: screen; background:
+      radial-gradient(ellipse 45% 60% at 30% 40%, rgba(255,150,60,.95), rgba(255,90,40,.45) 45%, rgba(255,60,90,0) 75%),
+      radial-gradient(ellipse 35% 50% at 75% 65%, rgba(255,210,120,.8), rgba(255,120,80,0) 70%); }
+    .fx-leak.alt { background:
+      radial-gradient(ellipse 50% 55% at 70% 35%, rgba(255,120,170,.9), rgba(255,140,60,.4) 50%, rgba(255,80,80,0) 75%),
+      radial-gradient(ellipse 30% 45% at 25% 70%, rgba(255,230,150,.75), rgba(255,170,90,0) 70%); }
+    .fx-glitch { mix-blend-mode: screen; background:
+      repeating-linear-gradient(0deg, rgba(255,0,80,.55) 0 ${px(6)}, rgba(0,0,0,0) ${px(6)} ${px(26)}),
+      linear-gradient(90deg, rgba(0,255,230,.35), rgba(0,0,0,0) 30%, rgba(0,0,0,0) 70%, rgba(255,0,200,.35)); }
     .scene video.bg { object-fit: cover; transform: scale(1.08); filter: brightness(0.7) saturate(1.2); }
 
     /* Overlay clips are full-frame boxes; HyperFrames only auto-sizes clips with no size of their own. */
@@ -641,7 +731,7 @@ ${fontFaces}
 </head>
 <body>
   <div id="root" data-composition-id="main" data-start="0" data-width="${W}" data-height="${H}" data-duration="${total}" data-fps="${FPS}">
-${[...sceneHtml, ...music, ...sfx, ...layerHtml(0), ...captionHtml, ...watermark, ...layerHtml(1), ...layerHtml(2)].join('\n')}
+${[...sceneHtml, ...fxHtml, ...music, ...sfx, ...layerHtml(0), ...captionHtml, ...watermark, ...layerHtml(1), ...layerHtml(2)].join('\n')}
   </div>
   <script>
     const tl = gsap.timeline({ paused: true });

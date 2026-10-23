@@ -6,8 +6,14 @@ import { run, tail, round, clamp, PipelineError } from './util.js';
 const CLAUDE_BIN = process.env.CLAUDE_BIN || 'claude';
 const CLAUDE_TIMEOUT_MS = Number(process.env.CLAUDE_TIMEOUT_MS || 10 * 60 * 1000);
 
-export const TRANSITIONS = ['cut', 'crossfade', 'fadeblack', 'slide-left', 'slide-up', 'zoom', 'wipe'];
-export const SCENE_EFFECTS = ['none', 'kenburns', 'punch-in'];
+export const TRANSITIONS = [
+  'cut', 'crossfade', 'fadeblack', 'slide-left', 'slide-up', 'zoom', 'wipe',
+  'zoom-through', 'whip', 'spin', 'light-leak', 'punch', 'flash', 'glitch',
+];
+/** Transitions that keep a hard cut in time (no overlap): the effect plays on the incoming shot. */
+export const CUT_LIKE = new Set(['cut', 'fadeblack', 'punch', 'flash', 'glitch']);
+export const SCENE_EFFECTS = ['none', 'kenburns', 'punch-in', 'shake'];
+export const INTENSITIES = ['clean', 'creator', 'max'];
 export const OVERLAY_TYPES = ['hook', 'title', 'lower-third', 'text', 'caption', 'cta'];
 export const POSITIONS = ['top', 'center', 'bottom'];
 export const GOALS = ['social', 'ad', 'both'];
@@ -18,7 +24,7 @@ const GOAL_GUIDE = {
 - The first 1.5 seconds decide everything: open on the most surprising, emotional or useful moment — not on "hi everyone". Pull a strong moment forward if needed.
 - One short "hook" overlay (2-6 words) over the opening ~2 seconds that teases the payoff. Keep other on-screen text rare and purposeful — not a title on every shot.
 - Keep it moving but human: cut out dead air and retakes, yet keep the natural rhythm of speech and the odd real reaction or breath. Vary shot lengths (some 1 s, some 3-4 s) — never a mechanical every-N-seconds pattern.
-- Mostly straight cuts. Use a transition only where the story changes place or time. Effects ("kenburns"/"punch-in") sparingly, where they help.
+- Transitions and effects: follow the "Edit intensity" section below.
 - Let real sound live: natural sounds (a saw starting, laughter, wind) are part of the story.
 - End on a payoff or a loop-able line. No slow outros.`,
   ad: `ADVERTISEMENT (paid social / pre-roll):
@@ -80,11 +86,26 @@ const PLAN_SCHEMA = `{
     "bpm": 90,
     "part": "which part of the sound to use (e.g. start on the drop)",
     "why": "one line: why it fits the vibe",
+    "prompt": "a vivid prompt for an AI music generator: genre, instruments, mood, tempo — e.g. warm lo-fi hip hop beat, soft rhodes chords, vinyl crackle, 85 bpm",
     "options": [{ "search": "…", "style": "…" }]
   }
 }`;
 
 /** What separates a top-tier short-form edit from a template one. */
+/** How much styling the edit gets. Exported for tests. */
+export const INTENSITY_GUIDE = {
+  clean: `Clean — a documentary / talking-head feel: straight cuts; a transition only where place or time changes ("crossfade", "fadeblack", "light-leak"). Effects ("kenburns", "punch-in") sparingly.`,
+  creator: `Creator — edit like a top creator; styled but never random:
+- 3-6 styled transitions per 30 s, placed where the energy shifts or on a beat between B-roll / montage shots (never inside a sentence): "punch" (zoom-in cut, most versatile), "whip" (fast pan between related shots), "zoom-through" (into a new place), "flash" (on a drop or a reveal), "glitch" (tech / gaming / hype), "spin" (playful, rare), "light-leak" (warm, nostalgic, lifestyle). Match them to the vibe — calm videos get light-leak / crossfade / punch, hype videos get punch / whip / flash / glitch.
+- Talking: straight cuts or "punch" between sentences; "punch-in" effect on the key line.
+- "shake" effect on 1-2 impact moments (a hit, a slam, a reveal, the drop).
+- Slow motion ("speed" 0.5) on the peak moment of motion footage.`,
+  max: `Max — high-energy edit (sport, gaming, hype, transformations):
+- A styled transition or punch on MOST B-roll / montage cuts, landing on the beat: rotate "punch", "whip", "zoom-through", "flash" (on the drop), "glitch". Never the same one three times in a row.
+- "shake" on every impact; slow motion ("speed" 0.4-0.6) into the peak, fast ("speed" 1.5-2.5) through filler.
+- Short shots (0.4-1.5 s) in the build-up; hold the payoff.`,
+};
+
 const CRAFT = `
 ## Editing craft (top-tier editors do this; the user's words and the creator style still win)
 - Hook (first 1.5 s): picture, text and sound hit together. Open mid-action or on a teaser of the result — never on setup. The hook overlay says what the picture can't.
@@ -177,9 +198,13 @@ NO background music is mixed into this video — the creator adds a trending sou
 ${SOUND_RULES}
 `;
   }
+  const composed = options.aiMusic && !options.music
+    ? `
+The user has no music in their library: ClipForge composes the background music for this video with a local AI model from "sound.prompt" — make it vivid and specific (genre, 2-3 instruments, mood, bpm). Pace the cut for that tempo; music plays under the whole video.`
+    : '';
   return `
 ## Sound idea for posting
-Also fill "sound": the kind of trending sound that would suit this video if the creator swaps or adds one in the app.
+Also fill "sound": the kind of trending sound that would suit this video if the creator swaps or adds one in the app.${composed}
 ${SOUND_RULES}
 `;
 }
@@ -201,6 +226,7 @@ export function normalizeSound(raw) {
     style: t(raw.style, 120),
     part: t(raw.part, 120),
     why: t(raw.why, 200),
+    prompt: t(raw.prompt, 200),
     bpm: Number.isFinite(bpm) ? Math.round(clamp(bpm, 60, 180)) : null,
     options,
   };
@@ -284,7 +310,7 @@ ${vo.mode === 'on'
 ## Music
 ${music.mode === 'fixed'
     ? `The user chose track ${music.fixed} (listed below). Set "music": { "track": "${music.fixed}", "start": <seconds into the track where the best part begins> }.`
-    : `Pick ONE background track from the user's music library and set "music": { "track": "<id>", "start": <seconds into the track to begin> }.${heard ? '' : ' Choose from the names/tags; if none fits, still pick the closest.'}`}
+    : `Pick ONE background track from the user's music library and set "music": { "track": "<id>", "start": <seconds into the track to begin> }.${options.aiMusic ? ' If NO track fits the vibe, set "music": { "track": "ai" } instead — ClipForge then composes a fresh track from "sound.prompt".' : heard ? '' : ' Choose from the names/tags; if none fits, still pick the closest.'}`}
 ${heard ? `ClipForge listened to the tracks: tempo, energy, genre and mood, the drop (where the track lifts hardest), its loud parts and an energy curve.
 ${music.mode === 'fixed' ? '' : `- Match the VIBE first: the mood of the track must be the mood of the video (calm satisfying craft → calm lo-fi / acoustic / ambient; hype, sport, glow-up, transformation → energetic drill / phonk / trap / EDM; emotional story → sad piano / cinematic; epic reveal → cinematic or slowed phonk; funny → quirky / meme). Then match energy and tempo to the pacing you cut. Never put a sad track on a happy video or a hype track on a calm one. Say which track you chose and why in "checklist".
 `}- Cut to the tempo: one beat = 60 / BPM seconds. Make B-roll / montage shots last whole numbers of beats (1, 2 or 4) — ClipForge snaps the cuts onto the beat afterwards.
@@ -319,6 +345,9 @@ ${options.style}
 Generic advice (only where the style above says nothing):
 ` : ''}${GOAL_GUIDE[options.goal]}
 ${CRAFT}
+## Edit intensity
+${INTENSITY_GUIDE[options.intensity] || INTENSITY_GUIDE.creator}
+Transition reference: "cut"/"punch"/"flash"/"glitch" keep the cut on time; "crossfade", "light-leak", "zoom-through", "whip", "spin" blend the shots over "transitionDuration" (whip 0.2-0.3, zoom-through/spin 0.3-0.4, light-leak 0.5-0.8).
 ${musicSection}${voiceoverSection}${soundSection(options)}
 ## Clip catalog
 ${catalog}
@@ -547,8 +576,9 @@ export function normalizeResponse(raw, clips, options) {
     if (track) {
       const start = Number(raw.music?.start);
       music = { track: track.id, start: Number.isFinite(start) ? clamp(start, 0, Math.max(0, track.duration - 5)) : 0 };
-    } else {
-      warnings.push('Claude did not choose a music track — the video has no music.');
+    } else if (!(options.aiMusic && want === 'ai')) {
+      // With AI music on, "no track" means: compose one for the vibe.
+      if (!options.aiMusic) warnings.push('Claude did not choose a music track — the video has no music.');
     }
   }
 
@@ -571,7 +601,7 @@ export function planLength(plan) {
   let total = 0;
   plan.scenes.forEach((s, i) => {
     const d = (s.end - s.start) / s.speed;
-    const overlap = i > 0 && !['cut', 'fadeblack'].includes(s.transition) ? Math.min(s.transitionDuration, d / 2) : 0;
+    const overlap = i > 0 && !CUT_LIKE.has(s.transition) ? Math.min(s.transitionDuration, d / 2) : 0;
     total += d - overlap;
   });
   return total;
@@ -628,7 +658,7 @@ export function normalizePlan(raw, clips) {
   if (scenes.length === 0) throw new Error('no scene referenced a valid clip/time range');
 
   // The very first scene has nothing to transition from; only a fade from black makes sense.
-  if (!['cut', 'fadeblack'].includes(scenes[0].transition)) scenes[0].transition = 'fadeblack';
+  if (!['cut', 'fadeblack', 'punch', 'flash', 'glitch'].includes(scenes[0].transition)) scenes[0].transition = 'fadeblack';
 
   const overlays = (Array.isArray(raw.overlays) ? raw.overlays : [])
     .map((o) => {

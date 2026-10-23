@@ -1434,10 +1434,12 @@ function readSettings() {
     autoFind: $('#autoFind').checked,
     music: $('#music').value || 'auto',
     trendingSound: $('#trendingSound').checked,
+    aiMusic: $('#aiMusic').checked,
     voiceover: $('#voiceover').value,
     voice: $('#voice').value,
     style: $('#style').value || null,
     musicLevel: segValue('musicLevel')[0],
+    intensity: segValue('intensity')[0] || 'creator',
   };
 }
 /** "Pro finishing" switches (all on by default); each maps 1:1 to a server setting. */
@@ -1445,7 +1447,7 @@ const PRO_TOGGLES = $$('#proToggles input[type=checkbox]').map((el) => el.id);
 function applySaved(saved) {
   $('#prompt').value = saved.prompt || '';
   const s = saved.settings || {};
-  for (const k of ['goal', 'formats', 'lengths', 'captions', 'framing', 'size', 'musicLevel']) if (s[k]) setSeg(k, s[k]);
+  for (const k of ['goal', 'formats', 'lengths', 'captions', 'framing', 'size', 'musicLevel', 'intensity']) if (s[k]) setSeg(k, s[k]);
   $('#autoFind').checked = s.autoFind === true;
   state.musicWanted = s.music || 'auto';
   renderMusicSelect();
@@ -1453,6 +1455,7 @@ function applySaved(saved) {
   state.styleWanted = s.style || '';
   renderStyleSelects();
   $('#trendingSound').checked = s.trendingSound === true;
+  $('#aiMusic').checked = s.aiMusic !== false;
   for (const k of ['silence', 'shots', 'cleanVoice', 'watermark', ...PRO_TOGGLES]) {
     const el = $('#' + k);
     if (typeof s[k] === 'boolean' && !el.disabled) el.checked = s[k];
@@ -1479,6 +1482,7 @@ function onOptionsChange() {
   .forEach((sel) => $(sel).addEventListener('input', remember));
 $('#autoFind').addEventListener('change', () => { updateGo(); remember(); });
 $('#trendingSound').addEventListener('change', remember);
+$('#aiMusic').addEventListener('change', () => { renderMusicSelect(); remember(); });
 $('#music').addEventListener('change', () => { state.musicWanted = $('#music').value; renderMusicSelect(); remember(); });
 $('#style').addEventListener('change', () => {
   if ($('#style').value === '__new') { $('#style').value = state.styleWanted || ''; openStyleDialog(); return; }
@@ -1497,7 +1501,7 @@ function renderMusicSelect() {
     (tracks.length ? `<optgroup label="Use this track">${tracks.map((a) => `<option value="${a.id}">${esc(assetTitle(a))}${a.tags.artist ? ` — ${esc(a.tags.artist)}` : ''} (${fmtTime(a.duration)}${a.music?.bpm ? ` · ${a.music.bpm} BPM` : ''}${a.musicTags?.moods?.[0] ? ` · ${esc(a.musicTags.moods[0])}` : ''})</option>`).join('')}</optgroup>` : '');
   sel.value = [...sel.options].some((o) => o.value === want) ? want : 'auto';
   $('#musicHint').textContent = sel.value === 'auto' && !tracks.length
-    ? 'Your library has no music yet — drop MP3/WAV files on the Library page (or import a Drive folder with music).'
+    ? ($('#aiMusic')?.checked ? 'No music in your library yet — ClipForge will compose a track for each video (or drop MP3/WAV files on the Library page).' : 'Your library has no music yet — drop MP3/WAV files on the Library page (or import a Drive folder with music).')
     : sel.value !== 'off' ? 'Music is lowered automatically whenever someone speaks.' : '';
 }
 

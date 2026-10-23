@@ -1,0 +1,70 @@
+import fs from 'node:fs/promises';
+import path from 'node:path';
+import { run, tail, round, exists, PipelineError } from './util.js';
+
+/**
+ * Pro slow motion. Phone footage is usually 30 fps, so a 0.5× scene shows every frame twice and
+ * stutters. ClipForge renders the slowed part with motion-compensated frame interpolation (FFmpeg
+ * minterpolate) so it plays back at a smooth 30 fps, and ramps into the slow motion (0.85× → 0.65× →
+ * slow) instead of snapping to it — the way editors speed-ramp into a peak.
+ */
+
+export const SLOW = 0.8; // scenes at or below this speed get interpolated frames
+const RAMP = [0.85, 0.65]; // ramp-in steps, 0.15 s of source each
+
+/** Frame rate of a video's first stream. */
+export async function sourceFps(file) {
+  const r = await run('ffprobe', ['-v', 'error', '-select_streams', 'v:0', '-show_entries', 'stream=avg_frame_rate', '-of', 'csv=p=0', file]);
+  const [n, d] = r.stdout.trim().split('/').map(Number);
+  return n && d ? n / d : 30;
+}
+
+/**
+ * Interpolated copy of [start, end) (source seconds; the file starts at `offset`) dense enough to play
+ * at `speed` at 30 fps. Returns the path, or null when the source already has enough frames.
+ */
+export async function smoothSlowMo(src, out, { start, end, speed, offset = 0, signal }) {
+  if (await exists(out)) return out;
+  const target = Math.min(120, Math.ceil(30 / speed));
+  if ((await sourceFps(src)) >= target * 0.95) return null;
+  await fs.mkdir(path.dirname(out), { recursive: true });
+  const tmp = `${out}.part.mp4`;
+  const r = await run('ffmpeg', [
+    '-v', 'error', '-y', '-ss', String(round(Math.max(0, start - offset), 3)), '-t', String(round(end - start, 3)), '-i', src,
+    '-map', '0:v:0', '-map', '0:a:0?',
+    '-vf', `minterpolate=fps=${target}:mi_mode=mci:mc_mode=aobmc:me_mode=bidir:vsbmc=1,format=yuv420p`,
+    '-c:v', 'libx264', '-preset', 'veryfast', '-crf', '17', '-g', String(target),
+    '-c:a', 'aac', '-b:a', '192k', '-movflags', '+faststart', tmp,
+  ], { signal, timeoutMs: 30 * 60_000 });
+  if (r.code !== 0) throw new PipelineError('Could not interpolate the slow motion.', { detail: tail(r.stderr) });
+  await fs.rename(tmp, out);
+  return out;
+}
+
+/**
+ * Ramp into every slow non-talking scene: its first 0.3 s of source plays at 0.85× then 0.65× before
+ * settling into the slow speed. The scene's out-point moves so its output length — and every cut
+ * after it — stays where beat sync put it. Exported for tests.
+ */
+export function rampSlowMo(plan, { talking, clipDuration }) {
+  const scenes = [];
+  let ramps = 0;
+  for (const s of plan.scenes) {
+    const lead = RAMP.length * 0.15;
+    if (s.speed > SLOW || s.speed < 0.2 || talking(s) || s.end - s.start < lead + 0.4) {
+      scenes.push(s);
+      continue;
+    }
+    // Output time the ramp saves vs playing those 0.3 s fully slowed — add it back at the end.
+    const saved = lead / s.speed - RAMP.reduce((n, r) => n + 0.15 / r, 0);
+    const end = Math.min(clipDuration(s.clip), round(s.end + saved * s.speed, 3));
+    let at = s.start;
+    RAMP.forEach((r, k) => {
+      scenes.push({ ...s, start: round(at, 3), end: round(at + 0.15, 3), speed: r, effect: k === 0 ? s.effect : 'none', ramp: k > 0, peak: k === 0 && s.peak, ...(k > 0 ? { transition: 'cut', transitionDuration: 0 } : {}) });
+      at += 0.15;
+    });
+    scenes.push({ ...s, start: round(at, 3), end, effect: 'none', ramp: true, peak: false, transition: 'cut', transitionDuration: 0 });
+    ramps++;
+  }
+  return { plan: { ...plan, scenes }, ramps };
+}

@@ -24,16 +24,18 @@ if [ -z "${CLIPFORGE_PASSWORD:-}" ] || [ -z "${CLAUDE_CODE_OAUTH_TOKEN:-}" ]; th
   echo "Add them at https://github.com/settings/codespaces, then restart the codespace."
   exit 0
 fi
-# Stop a previous copy (e.g. after a restart), then launch detached so it outlives this script.
+# Stop a previous copy (e.g. after a restart) — the whole process group, supervisor included.
 if [ -f workspace/server.pid ] && kill -0 "$(cat workspace/server.pid)" 2>/dev/null; then
-  kill "$(cat workspace/server.pid)" 2>/dev/null || true
+  kill -- -"$(cat workspace/server.pid)" 2>/dev/null || kill "$(cat workspace/server.pid)" 2>/dev/null || true
   sleep 1
 fi
-setsid nohup /usr/local/bin/clipforge-entrypoint node src/server.js --lan > workspace/server.log 2>&1 < /dev/null &
+# Keep the last log for troubleshooting, then launch under the supervisor (restarts after a crash).
+[ -f workspace/server.log ] && mv -f workspace/server.log workspace/server.prev.log
+setsid nohup bash deploy/run-server.sh > workspace/server.log 2>&1 < /dev/null &
 echo $! > workspace/server.pid
 PID=$(cat workspace/server.pid)
-for _ in $(seq 1 90); do
-  # Our own process must still be alive — otherwise something else is answering on port 3000.
+for _ in $(seq 1 120); do
+  # The supervisor must still be alive — otherwise something else is answering on port 3000.
   if ! kill -0 "$PID" 2>/dev/null; then
     echo "ClipForge failed to start — see workspace/server.log:"
     tail -5 workspace/server.log

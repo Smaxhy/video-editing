@@ -37,6 +37,14 @@ import { createStyles, styleGuideText } from './style.js';
 import { Server as TusServer } from '@tus/server';
 import { FileStore } from '@tus/file-store';
 
+// Never die silently on a stray error in background work: log it and keep serving. A truly broken
+// state (uncaught exception) exits so the supervisor (deploy/run-server.sh) restarts ClipForge cleanly.
+process.on('unhandledRejection', (err) => console.error('[unhandled]', err?.stack || err));
+process.on('uncaughtException', (err) => {
+  console.error('[crash]', err?.stack || err);
+  setTimeout(() => process.exit(1), 200).unref();
+});
+
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const TOOLS_DIR = path.join(ROOT, '.tools');
 const DIRS = {
@@ -90,7 +98,12 @@ await library.load();
 ml = createMl({
   toolsDir: TOOLS_DIR,
   library,
-  isBusy: () => [...jobs.values()].some((j) => j.state === 'running'),
+  isBusy: () =>
+    [...jobs.values()].some((j) => j.state === 'running') ||
+    Date.now() - lastUploadAt < 2 * 60_000 ||
+    cloud.jobs().some((j) => j.state === 'running') ||
+    autopilot.busy() ||
+    styles.busy(),
   onChange: broadcast,
 });
 scanner = createScanner({ library, dir: DIRS.library, onChange: broadcast, rank: (brief) => ml.search(brief, { limit: 150 }) });
@@ -1645,7 +1658,8 @@ const updater = createUpdater({
 });
 await updater.start();
 autopilot.start();
-ml.start().catch((err) => console.error('  AI index:', err.message));
+// Local AI indexing starts 3 minutes after boot, so a restart is never slowed down by it.
+setTimeout(() => ml.start().catch((err) => console.error('  AI index:', err.message)), 3 * 60_000).unref();
 
 const server = app.listen(PORT, HOST, () => {
   console.log(`\n  ClipForge running at http://${LOOPBACK ? 'localhost' : '127.0.0.1'}:${PORT}`);

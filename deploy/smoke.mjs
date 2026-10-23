@@ -10,6 +10,12 @@ import { transcribe } from '../src/transcriber.js';
 import { analyzeClip } from '../src/analysis.js';
 import { writeProject, renderProject } from '../src/renderer.js';
 import { compressVideo } from '../src/compress.js';
+import { polishAudio, ensureDeepFilter } from '../src/audio.js';
+import { preparePicture } from '../src/picture.js';
+import { measureQuality } from '../src/quality.js';
+import { ensureYunet } from '../src/reframe.js';
+import { ensureFonts } from '../src/fonts.js';
+import { ensureSfx } from '../src/sfx.js';
 
 const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'clipforge-smoke-'));
 const step = (name) => console.log(`\n== ${name}`);
@@ -44,10 +50,18 @@ if (process.env.SMOKE_SKIP_TRANSCRIBE !== '1') {
 step('analyze');
 const a = await analyzeClip(
   { id: 'clip1', name: 'clip1.mp4', path: clipPath, hasAudio: true },
-  { cacheFile: path.join(dir, 'analysis.json'), features: { silence: true, shots: true, faces: true }, tools },
+  { cacheFile: path.join(dir, 'analysis.json'), features: { silence: true, shots: true, faces: true, track: true, yunet: await ensureYunet(path.join(dir, 'tools')) }, tools },
 );
-console.log({ silences: a.silences, shots: a.shots, faces: a.faces?.length, notes: a.notes });
+console.log({ silences: a.silences, shots: a.shots, faces: a.faces?.length, track: a.track?.length, notes: a.notes });
 if (a.notes.length) fail(`analysis errors: ${a.notes.join('; ')}`);
+if (!a.track?.length) fail('subject tracking returned nothing');
+
+step('studio sound + picture polish + quality');
+const deepFilter = await ensureDeepFilter(path.join(dir, 'tools'));
+const voice = await polishAudio(clipPath, path.join(dir, 'voice.m4a'), { start: 0, end: 3.5, speech: true, deepFilter }).catch((err) => fail(`studio sound: ${err.message}\n${err.detail || ''}`));
+const pic = await preparePicture(clipPath, path.join(dir, 'pic.mp4'), { start: 0, end: 3.5, look: 'warm' }).catch((err) => fail(`picture polish: ${err.message}\n${err.detail || ''}`));
+const q = await measureQuality(clipPath, { hasAudio: true, work: path.join(dir, 'q') });
+console.log({ deepFilter: Boolean(deepFilter), voice, picture: pic.applied, quality: q.score });
 
 step('render 9:16 with captions + overlays');
 const plan = {
@@ -60,9 +74,12 @@ const projectDir = path.join(dir, 'project');
 await writeProject({
   projectDir,
   plan,
-  clips: [{ id: 'clip1', file: 'clip1.mp4', path: clipPath, hasAudio: true, width: 1280, height: 720 }],
+  clips: [{ id: 'clip1', file: 'clip1.mp4', path: pic.path, videoOffset: pic.offset, voicePath: voice, voiceOffset: 0, hasAudio: true, width: 1280, height: 720, track: a.track }],
   transcripts: { clip1: { words: [{ word: 'hello', start: 0.2, end: 0.6 }] } },
-  settings: { width: 1080, height: 1920, captions: 'bold', framing: 'crop', accent: '#7c5cff' },
+  settings: {
+    width: 1080, height: 1920, captions: 'bold', framing: 'smart', accent: '#7c5cff', motion: 'subtle',
+    fontPaths: await ensureFonts(path.join(dir, 'tools')), sfxDir: await ensureSfx(path.join(dir, 'tools')), sfxLevel: 'subtle',
+  },
 });
 const raw = path.join(dir, 'raw.mp4');
 await renderProject({ projectDir, outputPath: raw, quality: 'draft', logPath: path.join(dir, 'render.log') }).catch(async (err) => {

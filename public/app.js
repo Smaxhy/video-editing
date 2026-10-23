@@ -316,6 +316,25 @@ $('#autoScan').addEventListener('change', async () => {
   try { state.scanner = await api('/api/scanner', { method: 'PATCH', body: { autoScan: $('#autoScan').checked } }); renderScanBar(); }
   catch (err) { toast(err.message, 'error'); }
 });
+$('#extractAudio').addEventListener('change', async () => {
+  try {
+    await api('/api/library/settings', { method: 'PATCH', body: { extractAudio: $('#extractAudio').checked } });
+    if ($('#extractAudio').checked) toast('New videos will also add their sound to your music. For videos already here, select them and tap "Extract audio".', 'ok');
+  } catch (err) { toast(err.message, 'error'); }
+});
+
+/** Save the sound of library videos as music tracks. */
+async function extractAudioOf(ids) {
+  const vids = ids.map((id) => state.assets.find((a) => a.id === id)).filter((a) => a && a.kind === 'video');
+  if (!vids.length) { toast('Pick videos to take the sound from.', 'error'); return; }
+  toast(`Extracting the sound of ${plural(vids.length, 'video')}…`);
+  const { results } = await api('/api/library/extract-audio', { method: 'POST', body: { assetIds: vids.map((a) => a.id) } });
+  const ok = results.filter((r) => r.asset);
+  const bad = results.filter((r) => r.error);
+  if (ok.length) toast(`Added ${plural(ok.length, 'music track')} to your library — find them under "Music".`, 'ok');
+  if (bad.length) toast(bad.map((r) => r.error).join(' '), 'error');
+}
+
 $('#shrinkLarge').addEventListener('change', async () => {
   try { await api('/api/library/settings', { method: 'PATCH', body: { shrinkLarge: $('#shrinkLarge').checked } }); }
   catch (err) { toast(err.message, 'error'); }
@@ -561,6 +580,13 @@ $('#selAdd').addEventListener('click', async () => {
     renderLibrary();
     toast(`Added ${plural(ids.length, 'video')} to the project.`, 'ok');
     location.hash = `#/project/${projectId}`;
+  } catch (err) { toast(err.message, 'error'); }
+});
+$('#selExtract').addEventListener('click', async () => {
+  try {
+    await extractAudioOf([...state.selected]);
+    state.selected.clear();
+    renderLibrary();
   } catch (err) { toast(err.message, 'error'); }
 });
 $('#selDelete').addEventListener('click', async () => {
@@ -999,6 +1025,7 @@ function renderViewerActions(a) {
     <span class="spacer"></span>
     ${a && a.kind !== 'audio' && !inProject ? `<label class="sr-only" for="vProject">Project</label><select class="field" id="vProject">${projectOptions(state.jobId || store.get('clipforge:last'))}</select>
       <button class="btn sm" type="button" data-v="add">Add to project</button>` : ''}
+    ${a && a.kind !== 'audio' && a.hasAudio && !inProject ? `<button class="btn sm ghost" type="button" data-v="extract" title="Save this video's sound as a music track in your library">Extract audio → Music</button>` : ''}
     ${a ? `<a class="btn sm ghost" href="${esc(a.downloadUrl)}" download>Download original</a>` : ''}
     ${inProject ? `<button class="btn sm danger" type="button" data-v="unclip">Remove from project</button>` : ''}
     ${a && !inProject ? `<button class="btn sm danger" type="button" data-v="delete">Delete</button>` : ''}`;
@@ -1032,6 +1059,8 @@ $('#vActions').addEventListener('click', async (e) => {
       renderLibrary();
       loadProjects();
       announce('Deleted.');
+    } else if (act === 'extract') {
+      await extractAudioOf([a.id]);
     } else if (act === 'unclip') {
       dlg.close();
       await removeClip(viewer.clip.id);
@@ -2136,7 +2165,7 @@ async function init() {
   loadStyles();
   pollActivity();
   api('/api/scanner').then((sc) => { state.scanner = sc; renderScanBar(); }).catch(() => {});
-  api('/api/library/settings').then((ls) => { $('#shrinkLarge').checked = ls.shrinkLarge; }).catch(() => {});
+  api('/api/library/settings').then((ls) => { $('#shrinkLarge').checked = ls.shrinkLarge; $('#extractAudio').checked = ls.extractAudio === true; }).catch(() => {});
   await Promise.all([loadLibrary().catch((err) => toast(err.message, 'error')), loadProjects()]);
   if (!booted) { listenLibrary(); booted = true; }
   showInterrupted();

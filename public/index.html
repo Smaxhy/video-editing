@@ -162,6 +162,18 @@
           <label>Account / brand name<input class="field" id="autoBrand" maxlength="60" autocomplete="off" /></label>
           <label>Call to action<input class="field" id="autoCta" maxlength="60" placeholder="Follow for more" autocomplete="off" /></label>
         </div>
+        <div class="autogrid">
+          <label>Voiceover
+            <select class="field" id="autoVoiceover">
+              <option value="auto">Auto — when footage has no talking</option>
+              <option value="on">Always</option>
+              <option value="off">Never</option>
+            </select>
+          </label>
+          <label>Voice
+            <select class="field" id="autoVoice"></select>
+          </label>
+        </div>
         <p class="hint-line" id="autoNext" aria-live="polite"></p>
       </form>
 
@@ -262,6 +274,30 @@
                   <button type="button" data-v="high">Loud</button>
                 </div>
                 <small class="hint-line" id="musicHint"></small>
+              </div>
+            </div>
+
+            <div class="opt"><label class="lbl" for="voiceover">Voiceover</label>
+              <div class="music-row">
+                <select id="voiceover">
+                  <option value="auto">Auto — narrate footage that has no talking</option>
+                  <option value="on">Always add a voiceover</option>
+                  <option value="off">No voiceover</option>
+                </select>
+                <label class="sr-only" for="voice">Voice</label>
+                <select id="voice">
+                  <option value="am_michael">Michael — US male, warm</option>
+                  <option value="am_fenrir">Fenrir — US male, deep</option>
+                  <option value="am_puck">Puck — US male, energetic</option>
+                  <option value="am_onyx">Onyx — US male, low &amp; calm</option>
+                  <option value="bm_george">George — UK male, documentary</option>
+                  <option value="bm_fable">Fable — UK male, storyteller</option>
+                  <option value="af_heart">Heart — US female, warm</option>
+                  <option value="af_bella">Bella — US female, bright</option>
+                  <option value="af_nicole">Nicole — US female, soft</option>
+                  <option value="bf_emma">Emma — UK female, clear</option>
+                </select>
+                <small class="hint-line">Claude writes the script, a free AI voice (Kokoro, runs on your codespace) reads it — captions follow the voice. First use downloads the voice engine once.</small>
               </div>
             </div>
 

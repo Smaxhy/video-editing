@@ -56,7 +56,10 @@ const PLAN_SCHEMA = `{
           "position": "top"       // ${POSITIONS.join(' | ')}
         }
       ],
-      "audio": { "fadeIn": 0, "fadeOut": 0.4 }
+      "audio": { "fadeIn": 0, "fadeOut": 0.4 },
+      "narration": [              // ONLY when a Voiceover section is given below; else []
+        { "text": "One spoken sentence.", "start": 0.3 }   // start = OUTPUT seconds
+      ]
     }
   ],
   "music": { "track": "m1", "start": 0 },  // ONLY when a music section is given below; omit otherwise
@@ -117,6 +120,17 @@ export function buildPrompt({ clips, userPrompt, options }) {
     : clips.some((c) => c.visual)
       ? 'You cannot watch the footage, but you have the clip catalog, Whisper transcripts and AI descriptions of what is on screen.'
       : 'You cannot see the footage; you have the clip catalog and Whisper transcripts below.';
+  const vo = options.voiceover;
+  const voiceoverSection = !vo || vo.mode === 'off' ? '' : `
+## Voiceover
+${vo.mode === 'on'
+    ? 'Write a spoken voiceover ("narration") for every version.'
+    : 'If the footage has little or no speech and a narrator would make the video better (story, how-to, documentary, motivational, explainer), write a spoken voiceover ("narration") for every version. If people already talk on camera, or the vibe is a pure music montage, leave "narration" empty.'}
+- A natural AI voice (${vo.voiceLabel}) reads each line. Write how people talk, not how they write: short sentences (max ~16 words), contractions, concrete words. The first line is the hook and starts at ~0.3 s.
+- Leave room to breathe: about 2.5 words per second, total speech at most ~70% of the version's length, lines in order and never overlapping.
+- Never narrate over moments where someone on camera is talking. Under narration set those scenes' "volume" to 0.15-0.35 so the natural sound stays as texture.
+- Narration is turned into captions automatically — do not add text overlays repeating it.
+`;
   const music = options.music;
   const musicSection = !music || music.mode === 'off' ? '' : `
 ## Music
@@ -146,7 +160,7 @@ Captions: ${options.captions === 'off' ? 'OFF' : `burned in automatically from t
 ${brandLines.length ? `${brandLines.join('\n')}\n` : ''}
 ## Style guide (only where the user is silent)
 ${GOAL_GUIDE[options.goal]}
-${musicSection}
+${musicSection}${voiceoverSection}
 ## Clip catalog
 ${catalog}
 
@@ -405,11 +419,18 @@ export function normalizePlan(raw, clips) {
     })
     .filter(Boolean);
 
+  const narration = (Array.isArray(raw.narration) ? raw.narration : [])
+    .map((l) => ({ text: String(l?.text ?? '').replace(/\s+/g, ' ').trim().slice(0, 300), start: round(Math.max(0, num(l?.start, 0)), 3) }))
+    .filter((l) => l.text)
+    .sort((a, b) => a.start - b.start)
+    .slice(0, 24);
+
   return {
     plan: {
       summary: String(raw.summary || ''),
       scenes,
       overlays,
+      narration,
       audio: {
         fadeIn: clamp(num(raw.audio?.fadeIn, 0), 0, 5),
         fadeOut: clamp(num(raw.audio?.fadeOut, 0.4), 0, 5),

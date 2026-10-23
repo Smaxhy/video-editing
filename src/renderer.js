@@ -137,6 +137,15 @@ export function buildCaptions(timeline, transcripts, style) {
     .map((c) => ({ ...c, start: round(c.start, 3), end: round(c.end, 3) }));
 }
 
+/** Captions for an AI voiceover (words on the output timeline), merged in; narration wins overlaps. */
+export function withNarration(cues, narration, total, style) {
+  if (!narration?.words?.length || style === 'off') return cues;
+  const scene = { clip: '__narration', srcStart: 0, srcEnd: total, tlStart: 0, duration: total, speed: 1 };
+  const narr = buildCaptions({ scenes: [scene] }, { __narration: { words: narration.words } }, style);
+  const free = cues.filter((c) => !narr.some((n) => c.start < n.end && c.end > n.start));
+  return [...free, ...narr].sort((a, b) => a.start - b.start);
+}
+
 /** SubRip subtitles (sentence-sized cues) for uploading as closed captions. */
 export function toSrt(cues) {
   const ts = (t) => {
@@ -256,7 +265,7 @@ export function buildComposition({ plan, clips, transcripts, settings, gsapSrc =
   const total = laid.total;
   // Captions step aside for CTA end cards so the call to action reads cleanly.
   const ctas = plan.overlays.filter((o) => o.type === 'cta');
-  const captions = buildCaptions(laid, transcripts, settings.captions)
+  const captions = withNarration(buildCaptions(laid, transcripts, settings.captions), settings.narration, total, settings.captions)
     .map((c) => {
       for (const o of ctas) {
         if (c.start >= o.start - 0.05 && c.start < o.end) return null;
@@ -503,10 +512,14 @@ export function buildComposition({ plan, clips, transcripts, settings, gsapSrc =
   const music = [];
   if (settings.musicFile) {
     const audibleScenes = laid.scenes.filter((sc) => sc.volume > 0 && clipById.get(sc.clip)?.hasAudio);
-    const speech = buildCaptions({ scenes: audibleScenes }, transcripts, 'clean');
+    const speech = [...buildCaptions({ scenes: audibleScenes }, transcripts, 'clean'), ...(settings.narration?.segments || [])];
     const base = clamp(Number(settings.musicVolume) || 0.8, 0, 1.5);
     const automation = JSON.stringify({ version: 1, lanes: [{ target: 'volume', points: musicAutomation(speech, total, base, round(base * 0.22, 3)) }] });
     music.push(`    <audio id="music" src="media/${escapeHtml(settings.musicFile)}" data-start="0" data-duration="${total}" data-track-index="50" data-volume="1" data-automation='${automation}'></audio>`);
+  }
+  // AI voiceover: one mixed narration track under everything (already level-matched).
+  if (settings.narrationFile) {
+    music.push(`    <audio id="narration" src="media/${escapeHtml(settings.narrationFile)}" data-start="0" data-duration="${total}" data-track-index="45" data-volume="1"></audio>`);
   }
   // Sound effects: whooshes into transitions, impacts on titles, pops on hooks/emoji, a riser into the CTA.
   const sfx = [];
@@ -716,6 +729,11 @@ export async function writeProject({ projectDir, plan, clips, transcripts, setti
     logoFile = `logo${path.extname(settings.logoPath)}`;
     await linkOrCopy(settings.logoPath, path.join(projectDir, 'media', logoFile));
   }
+  let narrationFile = null;
+  if (settings.narration?.path) {
+    narrationFile = `narration${path.extname(settings.narration.path)}`;
+    await linkOrCopy(settings.narration.path, path.join(projectDir, 'media', narrationFile));
+  }
   let musicFile = null;
   if (settings.musicPath) {
     musicFile = `music${path.extname(settings.musicPath)}`;
@@ -743,10 +761,10 @@ export async function writeProject({ projectDir, plan, clips, transcripts, setti
     await linkOrCopy(src, path.join(projectDir, 'fonts', fontFiles[key]));
   }
 
-  const result = buildComposition({ plan, clips: projectClips, transcripts, settings: { ...settings, logoFile, musicFile, fontFiles, sfxFiles }, gsapSrc });
+  const result = buildComposition({ plan, clips: projectClips, transcripts, settings: { ...settings, logoFile, musicFile, fontFiles, sfxFiles, narrationFile }, gsapSrc });
   await fs.writeFile(path.join(projectDir, 'index.html'), result.html);
   // Closed-caption sidecar (sentence-sized cues) for uploading to the platform.
-  const srt = toSrt(buildCaptions(result.timeline, transcripts, 'srt'));
+  const srt = toSrt(withNarration(buildCaptions(result.timeline, transcripts, 'srt'), settings.narration, result.total, 'srt'));
   return { ...result, srt };
 }
 

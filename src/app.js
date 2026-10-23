@@ -723,12 +723,12 @@ let healthCache = null;
 // GET /api/version — which commit is running; the page reloads itself when this changes.
 app.get('/api/version', (_req, res) => res.json(updater.state()));
 
-// GET /api/activity — what the server is busy with right now (the "Working on…" line in the sidebar).
-app.get('/api/activity', (_req, res) => {
+// What the server is busy with right now: the sidebar "Working" panel and the keep-awake terminal.
+function activity() {
   const lib = library.activity();
   const sc = scanner.status();
   const renders = [...jobs.values()].filter((j) => j.state === 'running').map((j) => ({ id: j.id, name: projectName(j), progress: j.progress, message: j.message }));
-  res.json({
+  return {
     ...lib,
     scanning: sc.scanning + sc.queued,
     renders,
@@ -736,8 +736,31 @@ app.get('/api/activity', (_req, res) => {
     autopilot: autopilot.status().message || (autopilot.busy() ? 'working' : null),
     cpus: os.cpus().length,
     load: os.loadavg()[0],
-  });
-});
+  };
+}
+
+/** One line for the keep-awake terminal, or null when there's nothing a sleep would interrupt. */
+function busySummary(a = activity()) {
+  const parts = [
+    ...a.renders.map((r) => `rendering "${r.name}" ${Math.round((r.progress || 0) * 100)}%`),
+    a.autopilot && `Autopilot: ${a.autopilot}`,
+    a.imports && 'importing from Google Drive',
+    a.previews && `previews for ${a.previews} video(s)`,
+    a.scanning && `AI scan of ${a.scanning} video(s)`,
+    a.heavy && `shrinking / preview copies for ${a.heavy} video(s)`,
+    Date.now() - lastUploadAt < 2 * 60_000 && 'receiving an upload',
+  ].filter(Boolean);
+  return parts.length ? parts.join(' · ') : null;
+}
+
+// workspace/activity.json is read by deploy/keep-awake.js, which runs in a codespace terminal and
+// prints while ClipForge is busy — terminal output is what keeps a codespace from going to sleep.
+const activityFile = path.join(DIRS.workspace, 'activity.json');
+setInterval(() => {
+  fs.writeFile(activityFile, JSON.stringify({ at: Date.now(), busy: busySummary() })).catch(() => {});
+}, 20_000).unref();
+
+app.get('/api/activity', (_req, res) => res.json(activity()));
 // POST /api/update — check GitHub now instead of waiting for the next round.
 app.post('/api/update', async (_req, res) => res.json(await updater.check()));
 

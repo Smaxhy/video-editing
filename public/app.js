@@ -1626,8 +1626,11 @@ async function showResult(r) {
   const snd = r.sound;
   $('#soundTip').classList.toggle('hidden', !snd);
   if (snd) {
-    $('#soundTip').innerHTML = `<div><strong>🎵 ${r.trendingSound ? 'Add this sound when you post' : 'Sound idea for posting'}</strong>${snd.style ? ` — ${esc(snd.style)}` : ''}${snd.bpm ? ` · ~${snd.bpm} BPM` : ''}</div>
+    const alts = (snd.options || []).filter((o) => !snd.search.includes(o.search));
+    $('#soundTip').innerHTML = `<div><strong>🎵 ${r.trendingSound ? 'Add this sound when you post' : 'Sound idea for posting'}</strong>${snd.vibe ? ` — fits the <em>${esc(snd.vibe)}</em> vibe${snd.energy ? ` (${esc(snd.energy)} energy)` : ''}` : ''}</div>
+      <div class="hint-line">${[snd.style, snd.bpm ? `~${snd.bpm} BPM` : ''].filter(Boolean).map(esc).join(' · ')}</div>
       ${snd.search.length ? `<div class="chips">Search in the app: ${snd.search.map((q) => `<button type="button" class="chip" data-copy-sound="${esc(q)}" title="Copy">${esc(q)}</button>`).join('')}</div>` : ''}
+      ${alts.length ? `<div class="chips">Other options: ${alts.map((o) => `<button type="button" class="chip" data-copy-sound="${esc(o.search)}" title="${esc(o.style || 'Copy')}">${esc(o.search)}</button>`).join('')}</div>` : ''}
       ${snd.part || snd.why ? `<div class="hint-line">${esc([snd.part, snd.why].filter(Boolean).join(' — '))}</div>` : ''}`;
   }
   const rv = r.review;

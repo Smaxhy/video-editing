@@ -169,7 +169,10 @@ export function ideaPrompt(idea, settings) {
 export const captionText = (idea) =>
   [
     idea.title, '', idea.caption, '', idea.hashtags.join(' '),
-    ...(idea.sound ? ['', `Sound to add: ${[idea.sound.search.join(' / '), idea.sound.style].filter(Boolean).join(' — ')}${idea.sound.part ? ` (${idea.sound.part})` : ''}`] : []),
+    ...(idea.sound
+      ? ['', `Sound to add${idea.sound.vibe ? ` (${idea.sound.vibe} vibe)` : ''}: ${[idea.sound.search.join(' / '), idea.sound.style].filter(Boolean).join(' — ')}${idea.sound.part ? ` (${idea.sound.part})` : ''}`,
+        ...(idea.sound.options?.length ? [`Other options: ${idea.sound.options.map((o) => o.search).join(' / ')}`] : [])]
+      : []),
   ].join('\n').trim() + '\n';
 
 async function linkOrCopy(from, to) {

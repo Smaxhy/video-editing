@@ -1,3 +1,5 @@
+import fs from 'node:fs/promises';
+import path from 'node:path';
 import { run, tail, round, clamp, PipelineError } from './util.js';
 
 const CLAUDE_BIN = process.env.CLAUDE_BIN || 'claude';
@@ -69,11 +71,14 @@ const PLAN_SCHEMA = `{
     { "word": "timber", "emoji": "🌲" }    // a single spoken word; emoji optional (null) — at most 1 in 3 gets one
   ],
   "sound": {                               // the trending-style sound to add in TikTok/Instagram when posting
+    "vibe": "the video's vibe in 2-4 words, e.g. calm satisfying craft",
+    "energy": "low | medium | high",
     "search": ["what to type in the app's sound search", "an alternative"],
-    "style": "e.g. slowed phonk, upbeat sped-up pop, cinematic ambient",
-    "bpm": 120,
+    "style": "the music style that carries that vibe, e.g. soft acoustic lo-fi",
+    "bpm": 90,
     "part": "which part of the sound to use (e.g. start on the drop)",
-    "why": "one line: why it fits"
+    "why": "one line: why it fits the vibe",
+    "options": [{ "search": "…", "style": "…" }]
   }
 }`;
 
@@ -138,6 +143,14 @@ export function normalizeSettingChanges(raw) {
 }
 
 /** "Sound for posting" section: the creator attaches a trending sound in TikTok/Instagram themselves. */
+/** How to choose the sound: from the video's vibe, never from what is literally on screen. */
+const SOUND_RULES = `How to choose it — match the VIBE of this edit, not the objects in it:
+- First decide the video's vibe: its mood (e.g. calm, satisfying, epic, funny, motivational, nostalgic, tense, cosy) and energy (low / medium / high), from the brief, the footage, the pacing you planned and the creator's style.
+- Then pick music that carries that feeling, the way a top creator in this niche would — e.g. calm & satisfying → soft lo-fi or acoustic; epic / powerful → cinematic build or slowed phonk; hype → fast drill / sped-up pop; funny → quirky or meme sounds; emotional → piano or slowed vocals.
+- "search" = what to type in the TikTok/Instagram sound search to find trending sounds of that kind (genre + mood words, or a well-known trending sound name if one clearly fits). Never literal sound effects of the footage ("chainsaw sound", "wood chopping") unless the vibe is ASMR / satisfying-sounds.
+- "options": 2-3 alternatives at different energies (a safe popular pick, a more niche one).
+- "bpm" must suit the vibe (calm 70-95, medium 95-125, hype 125-160).`;
+
 function soundSection(options) {
   if (options.trendingSound) {
     return `
@@ -146,11 +159,13 @@ NO background music is mixed into this video — the creator adds a trending sou
 - Keep the clips' natural sound (scene "volume" ~0.6-1) unless it is ugly; talking stays at full volume.
 - Pace it like a video made for a trending track: pick a tempo for the vibe ("sound.bpm", usually 90-150) and cut B-roll/montage on every 2nd or 4th beat of it (ClipForge snaps the cuts to that grid). Put the biggest visual moment where a drop would land (~1/3 in).
 - Fill "sound" with what to search for in the app's sound picker.
+${SOUND_RULES}
 `;
   }
   return `
 ## Sound idea for posting
 Also fill "sound": the kind of trending sound that would suit this video if the creator swaps or adds one in the app.
+${SOUND_RULES}
 `;
 }
 
@@ -160,7 +175,20 @@ export function normalizeSound(raw) {
   const t = (v, n) => String(v ?? '').replace(/\s+/g, ' ').trim().slice(0, n);
   const search = (Array.isArray(raw.search) ? raw.search : String(raw.search || '').split(/[;,|]/)).map((s) => t(s, 60)).filter(Boolean).slice(0, 4);
   const bpm = Number(raw.bpm);
-  const out = { search, style: t(raw.style, 120), part: t(raw.part, 120), why: t(raw.why, 200), bpm: Number.isFinite(bpm) ? Math.round(clamp(bpm, 60, 180)) : null };
+  const options = (Array.isArray(raw.options) ? raw.options : [])
+    .map((o) => ({ search: t(o?.search, 60), style: t(o?.style, 100) }))
+    .filter((o) => o.search)
+    .slice(0, 3);
+  const out = {
+    vibe: t(raw.vibe, 60),
+    energy: ['low', 'medium', 'high'].includes(raw.energy) ? raw.energy : null,
+    search,
+    style: t(raw.style, 120),
+    part: t(raw.part, 120),
+    why: t(raw.why, 200),
+    bpm: Number.isFinite(bpm) ? Math.round(clamp(bpm, 60, 180)) : null,
+    options,
+  };
   return out.search.length || out.style ? out : null;
 }
 
@@ -315,6 +343,8 @@ export async function generateEditPlans({ clips, userPrompt, options, cwd, onSta
       return { ...result, prompt, raw };
     } catch (err) {
       lastError = err;
+      // Keep the unreadable answer next to the prompt, for troubleshooting.
+      if (cwd) await fs.writeFile(path.join(cwd, `claude-response-invalid-${attempt}.txt`), raw).catch(() => {});
     }
   }
   throw new PipelineError('Claude did not return a usable edit plan.', {
@@ -383,7 +413,10 @@ export function extractJson(text) {
   candidates.push(text);
   for (const c of candidates) {
     // Second variant strips trailing // comments in case the model echoed the schema's style.
-    for (const variant of [c, c.replace(/\/\/[^\n"]*$/gm, '')]) {
+    const noComments = c.replace(/\/\/[^\n"]*$/gm, '');
+    // Last resort: common slips — trailing commas, curly quotes around keys/values.
+    const repaired = noComments.replace(/,\s*([}\]])/g, '$1').replace(/[\u201c\u201d]/g, '"');
+    for (const variant of [c, noComments, repaired]) {
       try {
         const v = JSON.parse(variant);
         if (v && typeof v === 'object' && !Array.isArray(v)) return v;

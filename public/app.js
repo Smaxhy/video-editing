@@ -1342,6 +1342,7 @@ function readSettings() {
     silence: $('#silence').checked,
     shots: $('#shots').checked,
     cleanVoice: $('#cleanVoice').checked,
+    ...Object.fromEntries(PRO_TOGGLES.map((k) => [k, $('#' + k).checked])),
     watermark: $('#watermark').checked,
     useLogo: true,
     autoFind: $('#autoFind').checked,
@@ -1349,6 +1350,8 @@ function readSettings() {
     musicLevel: segValue('musicLevel')[0],
   };
 }
+/** "Pro finishing" switches (all on by default); each maps 1:1 to a server setting. */
+const PRO_TOGGLES = $$('#proToggles input[type=checkbox]').map((el) => el.id);
 function applySaved(saved) {
   $('#prompt').value = saved.prompt || '';
   const s = saved.settings || {};
@@ -1357,7 +1360,7 @@ function applySaved(saved) {
   state.musicWanted = s.music || 'auto';
   renderMusicSelect();
   for (const k of ['brand', 'cta', 'accent', 'whisperModel', 'engine', 'plannerModel']) if (s[k]) $('#' + k).value = s[k];
-  for (const k of ['silence', 'shots', 'cleanVoice', 'watermark']) {
+  for (const k of ['silence', 'shots', 'cleanVoice', 'watermark', ...PRO_TOGGLES]) {
     const el = $('#' + k);
     if (typeof s[k] === 'boolean' && !el.disabled) el.checked = s[k];
   }
@@ -1379,7 +1382,7 @@ function onOptionsChange() {
   updateGo();
   remember();
 }
-['#brand', '#cta', '#accent', '#whisperModel', '#engine', '#plannerModel', '#silence', '#shots', '#cleanVoice', '#watermark', '#logoCutout']
+['#brand', '#cta', '#accent', '#whisperModel', '#engine', '#plannerModel', '#silence', '#shots', '#cleanVoice', '#watermark', '#logoCutout', ...PRO_TOGGLES.map((k) => '#' + k)]
   .forEach((sel) => $(sel).addEventListener('input', remember));
 $('#autoFind').addEventListener('change', () => { updateGo(); remember(); });
 $('#music').addEventListener('change', () => { state.musicWanted = $('#music').value; renderMusicSelect(); remember(); });

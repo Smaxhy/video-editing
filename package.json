@@ -21,7 +21,7 @@
     "@tus/server": "^2.4.6",
     "express": "^4.22.3",
     "gsap": "^3.15.0",
-    "hyperframes": "^0.8.154",
+    "hyperframes": "^0.8.186",
     "multer": "^2.4.0",
     "qrcode": "^1.5.4",
     "tus-js-client": "^4.3.1"

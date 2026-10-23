@@ -302,14 +302,21 @@
               </div>
             </div>
 
+            <div class="opt"><span class="lbl">Pro finishing</span>
+              <div class="toggles" id="proToggles">
+                <label class="tg"><input type="checkbox" id="proAudio" checked /><span>Studio sound
+                  <small>Removes background noise from voices (DeepFilterNet), adds broadcast EQ &amp; compression and evens out the volume between clips</small></span></label>
+              </div>
+            </div>
+
             <div class="opt"><span class="lbl">Smart tools</span>
               <div class="toggles">
                 <label class="tg" data-tool="autoEditor"><input type="checkbox" id="silence" checked /><span>Precise dead-air removal
                   <small>Measures silences from the audio (auto-editor, or FFmpeg's built-in detector)</small></span></label>
                 <label class="tg" data-tool="sceneDetect"><input type="checkbox" id="shots" checked /><span>Shot detection
                   <small>Tells Claude where the camera cuts are — better B-roll &amp; montage edits (PySceneDetect)</small></span></label>
-                <label class="tg" data-tool="demucs"><input type="checkbox" id="cleanVoice" /><span>Clean voice
-                  <small>Strips music &amp; background noise from speech (Demucs — slow without a GPU)</small></span></label>
+                <label class="tg" data-tool="demucs"><input type="checkbox" id="cleanVoice" /><span>Remove music behind voices
+                  <small>Only for clips with music playing under someone talking (Demucs — slow without a GPU)</small></span></label>
               </div>
             </div>
 

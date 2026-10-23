@@ -19,5 +19,7 @@
     "3000": { "label": "ClipForge", "onAutoForward": "openBrowser" }
   },
   "postCreateCommand": "npm ci",
-  "postStartCommand": "bash deploy/codespace-start.sh"
+  "postStartCommand": "bash deploy/codespace-start.sh",
+  // Start the keep-awake terminal by itself (.vscode/tasks.json) — keeps the codespace on while ClipForge works.
+  "customizations": { "vscode": { "settings": { "task.allowAutomaticTasks": "on" } } }
 }

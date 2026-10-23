@@ -1,0 +1,16 @@
+{
+  // Opens a "ClipForge keep-awake" terminal when the codespace opens. It prints while ClipForge is
+  // busy, which keeps the codespace from going to sleep in the middle of a render or import.
+  "version": "2.0.0",
+  "tasks": [
+    {
+      "label": "ClipForge keep-awake",
+      "type": "shell",
+      "command": "node deploy/keep-awake.js",
+      "isBackground": true,
+      "problemMatcher": [],
+      "presentation": { "reveal": "always", "panel": "dedicated", "focus": false, "echo": false },
+      "runOptions": { "runOn": "folderOpen" }
+    }
+  ]
+}

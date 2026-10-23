@@ -1,0 +1,4 @@
+{
+  // Lets the keep-awake terminal (.vscode/tasks.json) start by itself when the codespace opens.
+  "task.allowAutomaticTasks": "on"
+}

@@ -4,6 +4,7 @@ import fsSync from 'node:fs';
 import path from 'node:path';
 
 import { run, probe, exists, tail, PipelineError } from './util.js';
+import { measureQuality } from './quality.js';
 
 /**
  * Media library: every uploaded video (or music track) lives here once and can be used by any
@@ -123,6 +124,9 @@ export function createLibrary({ dir, onChange = () => {}, onReady = () => {}, is
       tags: a.tags || {},
       source: a.source || null,
       ai: a.ai || { status: 'none' },
+      quality: a.quality || null,
+      sounds: a.sounds || null,
+      embedded: a.embedded || null,
       shrunk: a.shrunk && a.shrunk !== 'failed' ? a.shrunk.from : null,
       thumbnail: `/api/library/${a.id}/thumb?v=${v}`,
       sprite: a.preview.sprite ? { url: `/api/library/${a.id}/sprite?v=${v}`, ...a.preview.sprite } : null,
@@ -182,7 +186,8 @@ export function createLibrary({ dir, onChange = () => {}, onReady = () => {}, is
   const needsHeavy = (a) =>
     a.kind !== 'audio' &&
     ((settings.shrinkLarge && !a.shrunk && shouldShrink(a, a.size)) ||
-      (a.preview.proxyReason && !['ready', 'failed'].includes(a.preview.proxy)));
+      (a.preview.proxyReason && !['ready', 'failed'].includes(a.preview.proxy)) ||
+      !a.quality);
 
   async function makePreviews(a) {
     const src = file(a.id, a.file);
@@ -214,6 +219,15 @@ export function createLibrary({ dir, onChange = () => {}, onReady = () => {}, is
         changed(a);
       });
       await update(a, { preview: { ...a.preview, proxy: ok ? 'ready' : 'failed', progress: ok ? 1 : 0 } });
+    }
+    // Quality score (sharpness, exposure, shake, sound level) — so bad clips are never picked.
+    if (!a.quality && assets.has(a.id)) {
+      try {
+        const quality = await measureQuality(file(a.id, a.file), { hasAudio: a.hasAudio, work: file(a.id, '.quality') });
+        await update(a, { quality });
+      } catch (err) {
+        await update(a, { quality: { score: null, flags: [], error: err.message, measuredAt: Date.now() } });
+      }
     }
   }
 
@@ -376,6 +390,12 @@ export function createLibrary({ dir, onChange = () => {}, onReady = () => {}, is
       const a = assets.get(id);
       if (a) await update(a, { ai });
     },
+    /** Store extra analysis fields (sound tags, embedding marker…). */
+    async setFields(id, patch) {
+      const a = assets.get(id);
+      if (a) await update(a, patch);
+    },
+    assetDir,
     /** Already imported? Matches the cloud file id, else path + size. */
     findBySource(src) {
       return [...assets.values()].find((a) =>

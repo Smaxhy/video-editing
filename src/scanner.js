@@ -27,12 +27,20 @@ const MAX_INDEX = 400;
  * Keep the prompt a sensible size on big libraries: rank clips by how many words of the brief
  * appear in their description/tags/name and keep the top MAX_INDEX.
  */
-export function shortlist(assets, brief, max = MAX_INDEX) {
+/**
+ * The clips worth showing Claude for a brief when the library is too big for one prompt: keyword
+ * matches on the AI descriptions/sound tags, boosted by "search by meaning" (CLIP) when available,
+ * with clearly unusable footage (measured quality under 35) pushed to the back.
+ */
+export function shortlist(assets, brief, max = MAX_INDEX, semantic = []) {
   if (assets.length <= max) return assets;
   const words = [...new Set(String(brief).toLowerCase().match(/[a-z0-9]{3,}/g) || [])];
+  const sem = new Map(semantic.map((r, i) => [r.id, 1 - i / Math.max(1, semantic.length)]));
   const score = (a) => {
-    const text = [a.name, a.ai?.summary, ...(a.ai?.tags || [])].join(' ').toLowerCase();
-    return words.reduce((n, w) => n + (text.includes(w) ? 1 : 0), 0);
+    const text = [a.name, a.ai?.summary, ...(a.ai?.tags || []), ...(a.sounds || [])].join(' ').toLowerCase();
+    const kw = words.reduce((n, w) => n + (text.includes(w) ? 1 : 0), 0);
+    const bad = a.quality?.score != null && a.quality.score < 35 ? 2 : 0;
+    return kw + 3 * (sem.get(a.id) || 0) - bad;
   };
   return assets.map((a) => ({ a, s: score(a) })).sort((x, y) => y.s - x.s).slice(0, max).map((x) => x.a);
 }
@@ -88,9 +96,11 @@ export function normalizeScan(raw, duration) {
 export function indexLine(a) {
   const ai = a.ai || {};
   const moments = (ai.moments || []).map((m) => `${m.start}-${m.end}s ${m.what}`).join('; ');
-  return `- ${a.id} · ${q(a.name)} · ${fmtT(a.duration)} · ${a.width}x${a.height}${a.hasAudio ? '' : ' · silent'} · ${ai.shot || '?'} · quality: ${ai.quality || '?'}
+  const measured = a.quality?.score != null ? ` · measured ${a.quality.score}/100${a.quality.flags?.length ? ` (${a.quality.flags.join(', ')})` : ''}` : '';
+  const sounds = a.sounds?.length ? `\n  sounds: ${a.sounds.join(', ')}` : '';
+  return `- ${a.id} · ${q(a.name)} · ${fmtT(a.duration)} · ${a.width}x${a.height}${a.hasAudio ? '' : ' · silent'} · ${ai.shot || '?'} · quality: ${ai.quality || '?'}${measured}
   ${ai.summary || '(not scanned)'}
-  tags: ${(ai.tags || []).join(', ')}${moments ? `\n  moments: ${moments}` : ''}`;
+  tags: ${(ai.tags || []).join(', ')}${moments ? `\n  moments: ${moments}` : ''}${sounds}`;
 }
 
 export function buildFindPrompt({ brief, assets, maxClips, targetSeconds }) {
@@ -115,7 +125,7 @@ ONE JSON object, nothing else:
 {"picks":[{"id":"<clip id>","why":"short reason"}],"note":"one sentence on what you found or what's missing"}`;
 }
 
-export function createScanner({ library, dir, onChange = () => {} }) {
+export function createScanner({ library, dir, onChange = () => {}, rank = null }) {
   const work = path.join(dir, '.scan');
   const settingsFile = path.join(dir, '.scanner.json');
   let settings = { autoScan: true };
@@ -281,7 +291,8 @@ export function createScanner({ library, dir, onChange = () => {} }) {
       if (!assets.length) {
         throw new PipelineError('No scanned videos in your library yet.', { hint: 'Upload or import videos first — Claude scans them so it can pick footage.' });
       }
-      const raw = extractJson(await callClaude(buildFindPrompt({ brief, assets: shortlist(assets, brief), maxClips, targetSeconds }), { cwd, signal }));
+      const semantic = rank && assets.length > MAX_INDEX ? await rank(brief).catch(() => []) : [];
+      const raw = extractJson(await callClaude(buildFindPrompt({ brief, assets: shortlist(assets, brief, MAX_INDEX, semantic), maxClips, targetSeconds }), { cwd, signal }));
       const known = new Set(assets.map((a) => a.id));
       const seen = new Set();
       const picks = (Array.isArray(raw.picks) ? raw.picks : [])

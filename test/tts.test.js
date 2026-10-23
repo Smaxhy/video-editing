@@ -1,4 +1,8 @@
 import { test } from 'node:test';
+import { spawnSync } from 'node:child_process';
+
+// The CI host runs unit tests before the Docker image (which has FFmpeg) is built.
+const HAS_FFMPEG = spawnSync('ffmpeg', ['-version']).status === 0;
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import os from 'node:os';
@@ -27,7 +31,7 @@ test('narration captions replace overlapping clip captions', () => {
   assert.deepEqual(out.map((c) => c.text), ['HELLO THERE', 'LATER']);
 });
 
-test('narration lines are mixed into one level-matched track', async () => {
+test('narration lines are mixed into one level-matched track', { skip: !HAS_FFMPEG && 'needs FFmpeg (runs inside the Docker image)' }, async () => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'vo-'));
   const mk = (n) => {
     const f = path.join(dir, `l${n}.wav`);

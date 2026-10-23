@@ -1,4 +1,8 @@
 import { test } from 'node:test';
+import { spawnSync } from 'node:child_process';
+
+// The CI host runs unit tests before the Docker image (which has FFmpeg) is built.
+const HAS_FFMPEG = spawnSync('ffmpeg', ['-version']).status === 0;
 import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
 
@@ -35,7 +39,7 @@ test('subtle sound effects skip ticks and caption pops', () => {
   assert.deepEqual(names, ['pop', 'whoosh', 'riser', 'pop']);
 });
 
-test('every colour look is a valid FFmpeg filter chain', () => {
+test('every colour look is a valid FFmpeg filter chain', { skip: !HAS_FFMPEG && 'needs FFmpeg (runs inside the Docker image)' }, () => {
   for (const [name, f] of Object.entries(LOOKS)) {
     if (!f.length) continue;
     execFileSync('ffmpeg', ['-v', 'error', '-f', 'lavfi', '-i', 'testsrc2=s=320x180:d=0.2', '-vf', f.join(','), '-f', 'null', '-'], { stdio: 'pipe' });

@@ -80,6 +80,8 @@ export function createUpdater({ root, isBusy, beforeRestart, branch = 'main', in
 
   /** Start a fresh copy of this server (same command, same environment) and exit. */
   function restart() {
+    // Under the supervisor (deploy/run-server.sh) just exit — it starts the new version.
+    if (process.env.CLIPFORGE_SUPERVISED === '1') process.exit(0);
     const logFile = path.join(root, 'workspace', 'server.log');
     fs.mkdirSync(path.dirname(logFile), { recursive: true });
     const out = fs.openSync(logFile, 'a');

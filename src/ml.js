@@ -4,6 +4,7 @@ import path from 'node:path';
 import readline from 'node:readline';
 import { spawn } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
+import os from 'node:os';
 import { run, tail, PipelineError } from './util.js';
 
 /**
@@ -70,7 +71,8 @@ export function createMl({ toolsDir, library, isBusy = () => false, onChange = (
   let nextId = 1;
   const pending = new Map();
   let idleTimer = null;
-  let state = { status: 'idle', error: null }; // idle | installing | ready | error
+  let state = { status: 'idle', error: null }; // idle | installing | ready | error | off
+  let started = false;
 
   async function worker() {
     if (proc) return proc;
@@ -86,6 +88,9 @@ export function createMl({ toolsDir, library, isBusy = () => false, onChange = (
     });
     let stderr = '';
     p.stderr.on('data', (d) => (stderr = (stderr + d).slice(-4000)));
+    // If the worker dies (e.g. the system runs out of memory), writing to it must not crash ClipForge.
+    p.stdin.on('error', () => {});
+    p.on('error', (err) => console.error('  AI worker could not start:', err.message));
     readline.createInterface({ input: p.stdout }).on('line', (line) => {
       let msg;
       try {
@@ -115,6 +120,7 @@ export function createMl({ toolsDir, library, isBusy = () => false, onChange = (
     const id = nextId++;
     const result = await new Promise((resolve, reject) => {
       pending.set(id, { resolve, reject });
+      if (!p.stdin.writable) return reject(new Error('AI worker stopped.'));
       p.stdin.write(`${JSON.stringify({ id, method, params })}\n`);
     });
     // Free the models' memory after 3 idle minutes.
@@ -182,7 +188,9 @@ export function createMl({ toolsDir, library, isBusy = () => false, onChange = (
     working = true;
     try {
       while (queue.length) {
-        while (isBusy()) await new Promise((r) => setTimeout(r, 15_000)); // renders first
+        // Background work only: wait while anything else runs, and when memory is tight (the models
+        // need ~1.5 GB) — never compete with a render or starve the codespace.
+        while (isBusy() || os.freemem() < 1.8 * 1024 ** 3) await new Promise((r) => setTimeout(r, 20_000));
         const a = library.get(queue.shift());
         if (!a || a.kind === 'audio' || a.status !== 'ready') continue;
         try {
@@ -209,11 +217,17 @@ export function createMl({ toolsDir, library, isBusy = () => false, onChange = (
     status,
     /** Index everything that isn't yet (after startup and whenever a clip becomes ready). */
     async start() {
+      // Machines with little memory (under 6 GB) skip local models entirely; search falls back to keywords.
+      if (os.totalmem() < 6 * 1024 ** 3) {
+        state = { status: 'off', error: 'Not enough memory for the local AI models on this machine.' };
+        return;
+      }
+      started = true;
       await loadEmbeddings();
       enqueue(library.list().filter((a) => a.kind === 'video' && a.status === 'ready' && (a.embedded !== EMBED_VERSION || !Array.isArray(a.sounds))).map((a) => a.id));
     },
     onReady(a) {
-      if (a.kind !== 'audio') enqueue([a.id]);
+      if (started && a.kind !== 'audio' && state.status !== 'off') enqueue([a.id]);
     },
     forget(id) {
       delete embeddings[id];

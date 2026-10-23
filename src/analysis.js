@@ -64,15 +64,23 @@ export async function analyzeClip(clip, { cacheFile, features, tools, signal }) 
 
   const wantShots = features.shots && tools.sceneDetect && !out.shots;
   const wantFaces = features.faces && tools.faces && !out.faces;
-  if (wantShots || wantFaces) {
+  // "track" = subject path for smart reframing (YuNet faces, else the action). Re-run when YuNet
+  // becomes available after a Haar-only pass.
+  const wantTrack = features.track && tools.faces && (!out.track || (features.yunet && out.trackEngine !== 'yunet'));
+  if (wantShots || wantFaces || wantTrack) {
     const args = [ANALYZE_PY, clip.path];
     if (wantShots) args.push('--shots');
     if (wantFaces) args.push('--faces');
+    if (wantTrack) args.push('--track', ...(features.yunet ? ['--yunet', features.yunet] : []));
     const res = await run(PYTHON, args, { signal, timeoutMs: 30 * 60_000 });
     try {
       const data = JSON.parse(res.stdout);
       if (data.shots) out.shots = data.shots;
       if (data.faces) out.faces = data.faces;
+      if (data.track) {
+        out.track = data.track;
+        out.trackEngine = features.yunet ? 'yunet' : 'haar';
+      }
       for (const [k, v] of Object.entries(data.errors || {})) notes.push(`${clip.name}: ${k} analysis failed (${v})`);
     } catch {
       notes.push(`${clip.name}: footage analysis failed — ${tail(res.stderr, 3)}`);

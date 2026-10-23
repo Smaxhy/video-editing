@@ -109,3 +109,21 @@ import { extractJson } from '../src/editor.js';
 test('planner replies with trailing commas or curly quotes are still read', () => {
   assert.deepEqual(extractJson('Here you go: {"a": [1, 2,], "b": {"c": “x”,},}'), { a: [1, 2], b: { c: 'x' } });
 });
+
+import { wasTruncated } from '../src/editor.js';
+
+test('planner replies with unescaped quotes are repaired; cut-off replies are flagged', () => {
+  assert.deepEqual(extractJson('{"note":"he says "Black Widow" then","n":1}'), { note: 'he says "Black Widow" then', n: 1 });
+  const cut = extractJson('{"versions":[{"id":"30","scenes":[{"clip":"a","start":2,"end":6},{"clip":"b","start":5,"note":"sawdust');
+  assert.equal(wasTruncated(cut), true);
+  assert.equal(cut.versions[0].scenes.length, 2);
+  assert.equal(wasTruncated(extractJson('{"a":1}')), false);
+});
+
+import { normalizePlan } from '../src/editor.js';
+
+test('a scene without an end (from a cut-off reply) is dropped, not stretched to the clip end', () => {
+  const r = normalizePlan({ scenes: [{ clip: 'a', start: 1, end: 3 }, { clip: 'a', start: 5 }] }, [{ id: 'a', duration: 60 }]);
+  assert.equal(r.plan.scenes.length, 1);
+  assert.match(r.warnings.join(' '), /no start\/end/);
+});

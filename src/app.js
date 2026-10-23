@@ -10,7 +10,7 @@ import { fileURLToPath } from 'node:url';
 import { transcribe, WHISPER_MODELS, ENGINES } from './transcriber.js';
 import { analyzeClip, isolateVoice, cutoutImage } from './analysis.js';
 import { detectTools, onPath, OPTIONAL_TOOLS } from './tools.js';
-import { generateEditPlans, GOALS, LENGTHS, PLANNER_MODELS, REVISABLE } from './editor.js';
+import { generateEditPlans, GOALS, LENGTHS, PLANNER_MODELS, REVISABLE, beatGrid } from './editor.js';
 import {
   writeProject, renderProject, makeBlurBackground, aspectMismatch, ensureSeekable, layoutTimeline, prepareMusic,
   FORMATS, CAPTION_STYLES, FRAMINGS,
@@ -472,12 +472,13 @@ async function runPipeline(job, { prompt, clipIds, settings, reusePlan, revise =
     else if (settings.music !== 'off' && library.get(settings.music)) {
       music = { assetId: settings.music, start: saved.music?.assetId === settings.music ? saved.music.start : 0 };
     }
-    planned = { ...saved, versions, warnings: [], music, emphasis: saved.emphasis || [] };
+    planned = { ...saved, versions, warnings: [], music: settings.trendingSound ? null : music, emphasis: saved.emphasis || [], sound: saved.sound || null };
     setStep(job, 'plan', 'done', 'Reused the saved plan — no Claude call.', 0.38);
   } else {
     setStep(job, 'plan', 'active', 'Claude is planning the edit…', 0.32);
-    const mus = musicOptions(settings.music);
-    if (settings.music === 'auto' && !mus.byKey.size) notes.push('No music in your library — drop MP3/WAV files into the Library to get background music.');
+    // Trending-sound mode: nothing is mixed — the creator adds the sound in the app when posting.
+    const mus = musicOptions(settings.trendingSound ? 'off' : settings.music);
+    if (!settings.trendingSound && settings.music === 'auto' && !mus.byKey.size) notes.push('No music in your library — drop MP3/WAV files into the Library to get background music.');
     const options = {
       goal: settings.goal,
       versions: settings.lengths,
@@ -489,6 +490,7 @@ async function runPipeline(job, { prompt, clipIds, settings, reusePlan, revise =
       voiceover: settings.voiceover === 'off' ? null : { mode: settings.voiceover, voiceLabel: VOICES[settings.voice] },
       style: settings.style && styles.get(settings.style) ? styleGuideText(styles.get(settings.style)) : null,
       model: settings.plannerModel,
+      trendingSound: settings.trendingSound,
     };
     // Revision: the user watched the last render and said what to fix — Claude edits that plan.
     if (revise) {
@@ -530,7 +532,7 @@ async function runPipeline(job, { prompt, clipIds, settings, reusePlan, revise =
     planned.music = pick ? { assetId: pick.id, start: planned.music.start } : null;
     await fs.writeFile(
       planFile,
-      JSON.stringify({ title: planned.title, checklist: planned.checklist, versions: planned.versions, music: planned.music, emphasis: planned.emphasis }, null, 2),
+      JSON.stringify({ title: planned.title, checklist: planned.checklist, versions: planned.versions, music: planned.music, emphasis: planned.emphasis, sound: planned.sound }, null, 2),
     );
   }
   // Setting changes from a revision ("the colours look green" → picture polish off, …).
@@ -551,25 +553,32 @@ async function runPipeline(job, { prompt, clipIds, settings, reusePlan, revise =
     });
     if (removed >= 0.3) notes.push(`Auto-tighten removed ${removed.toFixed(1)} s of pauses and filler words.`);
   }
+  if (settings.trendingSound) planned.music = null;
   const musicAsset = planned.music && library.get(planned.music.assetId);
-  // Beat sync: B-roll/POV cuts land on the music's downbeats; montage shots pulse on the beat.
-  if (settings.beatSync && musicAsset) {
-    setStep(job, 'plan', 'active', 'Finding the beat of the music…', 0.37);
+  // Beat sync: B-roll/POV cuts land on the music's downbeats; montage shots pulse on the beat. In
+  // trending-sound mode the grid comes from a sound the creator saved (timing only, not mixed) or
+  // from the tempo Claude chose for the sound to add in the app.
+  const timingAsset = settings.trendingSound && library.get(settings.music)?.kind === 'audio' ? library.get(settings.music) : null;
+  if (settings.beatSync && (musicAsset || settings.trendingSound)) {
+    setStep(job, 'plan', 'active', 'Finding the beat…', 0.37);
     try {
-      const beats = await beatsFor(library.sourcePath(musicAsset.id), path.join(library.cacheDir(musicAsset.id), 'beats-v1.json'));
-      const shift = (list) => list.map((b) => round(b - planned.music.start, 3)).filter((b) => b > 0.1);
-      const out = { beats: shift(beats.beats), downbeats: shift(beats.downbeats) };
       const talking = (sc) => (transcripts[sc.clip]?.words || []).filter((w) => w.end > sc.start && w.start < sc.end).length >= 3;
       const clipDuration = (id) => clips.find((c) => c.id === id)?.duration || 0;
+      const ref = musicAsset || timingAsset;
+      const beats = ref ? await beatsFor(library.sourcePath(ref.id), path.join(library.cacheDir(ref.id), 'beats-v1.json')) : null;
+      const offset = musicAsset ? planned.music.start : 0;
+      const shift = (list) => list.map((b) => round(b - offset, 3)).filter((b) => b > 0.1);
       let moved = 0;
       planned.versions = planned.versions.map((v) => {
+        const out = beats ? { beats: shift(beats.beats), downbeats: shift(beats.downbeats) } : beatGrid(planned.sound?.bpm || 120, layoutTimeline(v.plan).total + 5);
         const r = snapCutsToBeats(v.plan, out, { talking, clipDuration, layout: layoutTimeline });
         moved += r.moved;
         return { ...v, plan: r.plan, downbeats: out.downbeats };
       });
-      if (moved) notes.push(`Synced ${moved} cut${moved > 1 ? 's' : ''} to the beat of "${musicAsset.name}" (${beats.bpm} BPM).`);
+      const what = ref ? `"${ref.name}" (${beats.bpm} BPM)` : `${planned.sound?.bpm || 120} BPM for the sound you'll add`;
+      if (moved) notes.push(`Synced ${moved} cut${moved > 1 ? 's' : ''} to the beat of ${what}.`);
     } catch (err) {
-      notes.push(`Could not find the beat of the music (${err.message}) — cuts left as planned.`);
+      notes.push(`Could not find the beat (${err.message}) — cuts left as planned.`);
     }
   }
   // AI voiceover: Kokoro reads the planner's narration lines; they become one mixed track + captions.
@@ -820,6 +829,8 @@ async function runPipeline(job, { prompt, clipIds, settings, reusePlan, revise =
     music: musicAsset ? { name: musicAsset.name, start: planned.music.start } : null,
     review,
     revision: revise || null,
+    sound: planned.sound || null,
+    trendingSound: Boolean(settings.trendingSound),
     clipIds: clips.map((c) => c.id),
     settings,
   };
@@ -936,6 +947,7 @@ async function renderAutopilotIdea(idea, { prompt, settings, signal, onJob, onPr
     width: v.width,
     height: v.height,
     review: job.result.review || null,
+    sound: job.result.sound || null,
   };
 }
 
@@ -1443,6 +1455,7 @@ function editSettings(s = {}, autoFind = false) {
     shots: s.shots !== false,
     cleanVoice: s.cleanVoice === true,
     proAudio: s.proAudio !== false,
+    trendingSound: s.trendingSound === true,
     tighten: level(s.tighten, prof?.tighten, 'natural'),
     polish: s.polish !== false,
     beatSync: s.beatSync !== false,

@@ -1384,6 +1384,7 @@ function readSettings() {
     useLogo: true,
     autoFind: $('#autoFind').checked,
     music: $('#music').value || 'auto',
+    trendingSound: $('#trendingSound').checked,
     voiceover: $('#voiceover').value,
     voice: $('#voice').value,
     style: $('#style').value || null,
@@ -1402,6 +1403,7 @@ function applySaved(saved) {
   for (const k of ['brand', 'cta', 'accent', 'whisperModel', 'engine', 'plannerModel', 'voiceover', 'voice']) if (s[k]) $('#' + k).value = s[k];
   state.styleWanted = s.style || '';
   renderStyleSelects();
+  $('#trendingSound').checked = s.trendingSound === true;
   for (const k of ['silence', 'shots', 'cleanVoice', 'watermark', ...PRO_TOGGLES]) {
     const el = $('#' + k);
     if (typeof s[k] === 'boolean' && !el.disabled) el.checked = s[k];
@@ -1427,6 +1429,7 @@ function onOptionsChange() {
 ['#brand', '#cta', '#accent', '#whisperModel', '#engine', '#plannerModel', '#voiceover', '#voice', '#silence', '#shots', '#cleanVoice', '#watermark', '#logoCutout', ...PRO_TOGGLES.map((k) => '#' + k)]
   .forEach((sel) => $(sel).addEventListener('input', remember));
 $('#autoFind').addEventListener('change', () => { updateGo(); remember(); });
+$('#trendingSound').addEventListener('change', remember);
 $('#music').addEventListener('change', () => { state.musicWanted = $('#music').value; renderMusicSelect(); remember(); });
 $('#style').addEventListener('change', () => {
   if ($('#style').value === '__new') { $('#style').value = state.styleWanted || ''; openStyleDialog(); return; }
@@ -1495,6 +1498,13 @@ async function start(reusePlan) {
 $('#go').addEventListener('click', () => start(false));
 
 // ---- "Tell Claude what to fix" after a render --------------------------------------
+$('#soundTip').addEventListener('click', async (e) => {
+  const b = e.target.closest('[data-copy-sound]');
+  if (!b) return;
+  try { await navigator.clipboard.writeText(b.dataset.copySound); toast('Copied — paste it into the sound search in TikTok or Instagram.', 'ok'); }
+  catch { toast(b.dataset.copySound); }
+});
+
 $('#fixForm').addEventListener('submit', async (e) => {
   e.preventDefault();
   const remarks = $('#fixText').value.trim();
@@ -1613,6 +1623,13 @@ async function showResult(r) {
   }).join('');
   $('#warns').innerHTML = (r.warnings || []).map((w) => `⚠ ${esc(w)}`).join('<br>');
   syncChangedSettings(r);
+  const snd = r.sound;
+  $('#soundTip').classList.toggle('hidden', !snd);
+  if (snd) {
+    $('#soundTip').innerHTML = `<div><strong>🎵 ${r.trendingSound ? 'Add this sound when you post' : 'Sound idea for posting'}</strong>${snd.style ? ` — ${esc(snd.style)}` : ''}${snd.bpm ? ` · ~${snd.bpm} BPM` : ''}</div>
+      ${snd.search.length ? `<div class="chips">Search in the app: ${snd.search.map((q) => `<button type="button" class="chip" data-copy-sound="${esc(q)}" title="Copy">${esc(q)}</button>`).join('')}</div>` : ''}
+      ${snd.part || snd.why ? `<div class="hint-line">${esc([snd.part, snd.why].filter(Boolean).join(' — '))}</div>` : ''}`;
+  }
   const rv = r.review;
   $('#review').classList.toggle('hidden', !rv);
   if (rv) {
@@ -1841,6 +1858,7 @@ function fillAutoForm(s) {
   if (document.activeElement !== $('#autoCta')) $('#autoCta').value = s.cta;
   if (!$('#autoVoice').options.length) $('#autoVoice').innerHTML = $('#voice').innerHTML;
   $('#autoVoiceover').value = s.voiceover || 'auto';
+  $('#autoTrending').checked = s.trendingSound === true;
   state.autoStyleWanted = s.style || '';
   renderStyleSelects();
   $('#autoVoice').value = s.voice || 'am_michael';
@@ -1904,6 +1922,7 @@ function ideaHtml(b, i) {
   return `<article class="variant idea" aria-label="${esc(i.title)}">
     ${media}
     <div class="vm"><div><div class="vl">${esc(i.title)}${i.review ? `<span class="stars" title="${esc(i.review.summary)}">★ ${i.review.score}/10</span>` : ''}</div><div class="vs">${label}${i.size ? ` · ${fmtSize(i.size)}` : ''}${i.vibe ? ` · <span class="vibe">${esc(i.vibe)}</span>` : ''}</div></div></div>
+    ${i.sound ? `<div class="cap snd-line">🎵 ${esc(i.sound.search[0] || i.sound.style)}${i.sound.style && i.sound.search[0] ? ` <span class="hint-line">(${esc(i.sound.style)})</span>` : ''}</div>` : ''}
     <div class="cap">${esc(i.caption)}${i.hashtags.length ? `\n<span class="tags">${esc(i.hashtags.join(' '))}</span>` : ''}</div>
     <div class="acts">
       <button class="btn sm ghost" type="button" data-copy="${esc(i.captionText)}">Copy caption</button>
@@ -1959,6 +1978,7 @@ async function saveAutopilot() {
         voiceover: $('#autoVoiceover').value,
         voice: $('#autoVoice').value,
         style: $('#autoStyle').value || null,
+        trendingSound: $('#autoTrending').checked,
       },
     }));
   } catch (err) { toast(err.message, 'error'); }

@@ -463,3 +463,9 @@ dialog::backdrop { background: rgba(4, 5, 8, .78); backdrop-filter: blur(3px); }
 .fixbox textarea { min-height: 64px; }
 .fixrow { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; }
 .fixrow .grow { flex: 1; min-width: 180px; }
+
+/* ---- sound to add when posting ---- */
+.sound-tip { margin-top: 12px; padding: 12px 14px; border: 1px solid rgba(147, 197, 253, .35); border-radius: 12px; background: var(--panel-2); font-size: 13.5px; display: grid; gap: 6px; }
+.sound-tip .chips { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; color: var(--muted); }
+.sound-tip .chip { border: 1px solid var(--line); background: var(--panel-3); color: var(--text); border-radius: 999px; padding: 3px 10px; font-size: 12.5px; cursor: pointer; }
+.idea .snd-line { color: #93c5fd; padding-bottom: 0; }

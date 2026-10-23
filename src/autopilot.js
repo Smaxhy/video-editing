@@ -33,6 +33,7 @@ export const DEFAULT_SETTINGS = {
   voiceover: 'auto',
   voice: 'am_michael',
   style: null,
+  trendingSound: false,
 };
 const VOICE_IDS = ['am_michael', 'am_fenrir', 'am_puck', 'am_onyx', 'bm_george', 'bm_fable', 'af_heart', 'af_bella', 'af_nicole', 'bf_emma'];
 
@@ -52,6 +53,7 @@ export function normalizeSettings(s = {}, prev = DEFAULT_SETTINGS) {
     plannerModel: PLANNER_MODELS.includes(s.plannerModel) ? s.plannerModel : prev.plannerModel,
     voiceover: ['off', 'auto', 'on'].includes(s.voiceover) ? s.voiceover : prev.voiceover || 'auto',
     voice: VOICE_IDS.includes(s.voice) ? s.voice : prev.voice || 'am_michael',
+    trendingSound: typeof s.trendingSound === 'boolean' ? s.trendingSound : prev.trendingSound ?? false,
     style: s.style === undefined ? prev.style ?? null : /^[a-z0-9-]{1,40}$/i.test(s.style || '') ? s.style : null,
   };
 }
@@ -164,7 +166,11 @@ export function ideaPrompt(idea, settings) {
     .join('\n');
 }
 
-export const captionText = (idea) => [idea.title, '', idea.caption, '', idea.hashtags.join(' ')].join('\n').trim() + '\n';
+export const captionText = (idea) =>
+  [
+    idea.title, '', idea.caption, '', idea.hashtags.join(' '),
+    ...(idea.sound ? ['', `Sound to add: ${[idea.sound.search.join(' / '), idea.sound.style].filter(Boolean).join(' — ')}${idea.sound.part ? ` (${idea.sound.part})` : ''}`] : []),
+  ].join('\n').trim() + '\n';
 
 async function linkOrCopy(from, to) {
   await fs.rm(to, { force: true });
@@ -222,6 +228,7 @@ export function createAutopilot({ dir, library, scanner, renderIdea, otherWork =
     clips: i.assetIds.length,
     score: i.score || null,
     review: i.review || null,
+    sound: i.sound || null,
     status: i.status,
     message: i.message || '',
     progress: i.progress || 0,
@@ -335,6 +342,7 @@ export function createAutopilot({ dir, library, scanner, renderIdea, otherWork =
           voiceover: data.settings.voiceover,
           voice: data.settings.voice,
           style: data.settings.style,
+          trendingSound: data.settings.trendingSound,
         };
         let last = 0;
         const r = await renderIdea(idea, {
@@ -370,6 +378,7 @@ export function createAutopilot({ dir, library, scanner, renderIdea, otherWork =
           height: r.height,
           jobId: r.jobId,
           review: r.review ? { score: r.review.score, summary: r.review.summary } : null,
+          sound: r.sound || null,
           progress: 1,
           message: '',
           error: null,

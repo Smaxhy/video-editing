@@ -1,6 +1,6 @@
 // ClipForge service worker: makes the app installable and opens instantly.
 // Only the app shell is cached — API calls, uploads and videos always go to the server.
-const CACHE = 'clipforge-shell-v5';
+const CACHE = 'clipforge-shell-v6';
 const SHELL = ['/', '/app.css', '/app.js', '/vendor/tus/tus.min.js', '/manifest.webmanifest', '/icons/icon-192.png', '/icons/icon-512.png'];
 
 self.addEventListener('install', (e) => {

@@ -94,7 +94,7 @@ export async function probe(file) {
       '-show_format',
       '-show_streams',
       file,
-    ]);
+    ], { timeoutMs: 2 * 60_000 });
   } catch (err) {
     if (err.code === 'ENOENT') {
       throw new PipelineError('ffprobe not found — FFmpeg is required.', {

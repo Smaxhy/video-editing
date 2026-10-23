@@ -123,6 +123,8 @@ document.addEventListener('pointerout', (e) => {
 // ---------------------------------------------------------------------------
 function assetStatus(a) {
   if (a.status === 'ready') {
+    if (a.preview.step === 'shrinking') return `Saving space ${Math.round((a.preview.progress || 0) * 100)}%`;
+    if (a.preview.proxy === 'encoding') return `Preparing preview ${Math.round((a.preview.progress || 0) * 100)}%`;
     if (a.ai.status === 'scanning') return 'Claude is looking…';
     if (a.ai.status === 'queued') return 'Waiting for AI scan';
     return a.preview.proxy === 'failed' ? 'No browser preview' : '';
@@ -231,6 +233,7 @@ function listenLibrary() {
   const es = new EventSource('/api/library/events');
   es.onmessage = (e) => {
     const evt = JSON.parse(e.data);
+    if ($('#activity').classList.contains('hidden')) kickActivity(); // idle → show new work right away
     if (evt.type === 'asset') {
       const i = state.assets.findIndex((a) => a.id === evt.asset.id);
       if (i >= 0) state.assets[i] = evt.asset;
@@ -1873,6 +1876,41 @@ $('#autoCancel').addEventListener('click', async () => {
   try { await api('/api/autopilot/cancel', { method: 'POST' }); } catch (err) { toast(err.message, 'error'); }
 });
 
+// ---------------------------------------------------------------------------
+// "Working on…" — what the server is busy with, so slow ≠ stuck
+// ---------------------------------------------------------------------------
+let activityTimer;
+let activityKicked = false;
+const kickActivity = () => {
+  if (activityKicked) return;
+  activityKicked = true;
+  clearTimeout(activityTimer);
+  activityTimer = setTimeout(pollActivity, 400);
+};
+async function pollActivity() {
+  clearTimeout(activityTimer);
+  activityKicked = false;
+  let a;
+  try { a = await api('/api/activity'); } catch { a = null; }
+  const el = $('#activity');
+  const lines = [];
+  if (a) {
+    for (const r of a.renders) lines.push(`Rendering “${esc(r.name)}” — ${Math.round((r.progress || 0) * 100)}%${r.message ? `<br><span>${esc(r.message)}</span>` : ''}`);
+    if (a.autopilot && !a.renders.length) lines.push(`Autopilot: ${esc(a.autopilot)}`);
+    if (a.previews) lines.push(`Making previews: ${plural(a.previews, 'video')} left`);
+    if (a.scanning) lines.push(`AI scan: ${plural(a.scanning, 'video')} left`);
+    if (a.imports) lines.push(`Importing from Google Drive (${a.imports})`);
+    if (a.heavy) lines.push(`Shrinking / preview copies: ${a.heavy} left${a.paused ? ' (paused while rendering)' : ''}`);
+  }
+  el.classList.toggle('hidden', !lines.length);
+  if (lines.length) {
+    const maxed = a.load > a.cpus * 1.5;
+    el.innerHTML = `<strong>Working</strong>${lines.map((l) => `<div>${l}</div>`).join('')}${maxed
+      ? `<div class="warn">This codespace's ${a.cpus} CPUs are maxed out, so things are slow, not stuck. A bigger machine (github.com/codespaces → ⋯ → Change machine type) is faster.</div>` : ''}`;
+  }
+  activityTimer = setTimeout(pollActivity, document.hidden ? 20_000 : lines.length ? 3000 : 15_000);
+}
+
 async function init() {
   const a = await nativeFetch('/api/auth').then((r) => r.json()).catch(() => ({}));
   if (a.enabled && !a.authed) { $('#login').classList.remove('hidden'); $('#pw').focus(); return; }
@@ -1882,6 +1920,7 @@ async function init() {
   loadCloud();
   checkVersion();
   loadAutopilot();
+  pollActivity();
   api('/api/scanner').then((sc) => { state.scanner = sc; renderScanBar(); }).catch(() => {});
   api('/api/library/settings').then((ls) => { $('#shrinkLarge').checked = ls.shrinkLarge; }).catch(() => {});
   await Promise.all([loadLibrary().catch((err) => toast(err.message, 'error')), loadProjects()]);

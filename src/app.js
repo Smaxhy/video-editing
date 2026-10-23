@@ -62,7 +62,14 @@ const broadcast = (evt) => {
   for (const res of libraryListeners) res.write(data);
 };
 let scanner = null;
-const library = createLibrary({ dir: DIRS.library, onChange: broadcast, onReady: (a) => scanner?.onReady(a) });
+const jobs = new Map(); // project id → job (see the job store below)
+const library = createLibrary({
+  dir: DIRS.library,
+  onChange: broadcast,
+  onReady: (a) => scanner?.onReady(a),
+  // Heavy re-encodes (4K shrink, preview copies) wait while a video renders.
+  isRendering: () => [...jobs.values()].some((j) => j.state === 'running'),
+});
 await library.load();
 scanner = createScanner({ library, dir: DIRS.library, onChange: broadcast });
 scanner.load();
@@ -87,7 +94,6 @@ for (const out of subdirs(DIRS.output)) {
 // Clip manifests and results live on disk so a project survives a server restart.
 // ---------------------------------------------------------------------------
 
-const jobs = new Map();
 const isId = (s) => typeof s === 'string' && /^[a-z0-9-]{1,64}$/i.test(s);
 const resultFile = (id) => path.join(DIRS.output, id, 'result.json');
 
@@ -716,6 +722,22 @@ app.use('/api', auth.guard);
 let healthCache = null;
 // GET /api/version — which commit is running; the page reloads itself when this changes.
 app.get('/api/version', (_req, res) => res.json(updater.state()));
+
+// GET /api/activity — what the server is busy with right now (the "Working on…" line in the sidebar).
+app.get('/api/activity', (_req, res) => {
+  const lib = library.activity();
+  const sc = scanner.status();
+  const renders = [...jobs.values()].filter((j) => j.state === 'running').map((j) => ({ id: j.id, name: projectName(j), progress: j.progress, message: j.message }));
+  res.json({
+    ...lib,
+    scanning: sc.scanning + sc.queued,
+    renders,
+    imports: cloud.jobs().filter((j) => j.state === 'running').length,
+    autopilot: autopilot.status().message || (autopilot.busy() ? 'working' : null),
+    cpus: os.cpus().length,
+    load: os.loadavg()[0],
+  });
+});
 // POST /api/update — check GitHub now instead of waiting for the next round.
 app.post('/api/update', async (_req, res) => res.json(await updater.check()));
 

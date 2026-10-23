@@ -15,6 +15,7 @@ import { PipelineError, round } from './util.js';
  * every new video is scanned once its previews are ready.
  */
 
+const PARALLEL = Math.max(1, Number(process.env.CLIPFORGE_SCAN_PARALLEL) || 3);
 const BATCH = 6;
 const SHOTS = ['pov', 'handheld', 'gimbal', 'static', 'drone', 'talking-head', 'screen-recording', 'timelapse', 'slow-motion', 'other'];
 const fmtT = (t) => `${round(t, 1)}s`;
@@ -152,19 +153,23 @@ export function createScanner({ library, dir, onChange = () => {} }) {
     working = true;
     // Let a burst of uploads settle so they share one Claude call.
     await new Promise((r) => setTimeout(r, 2000));
-    while (queue.length) {
-      const ids = queue.splice(0, BATCH);
-      try {
-        await scanBatch(ids);
-      } catch (err) {
-        lastError = err.message;
-        // Out of usage / not logged in: stop instead of failing every remaining clip.
-        if (/limit|log ?in|auth|not installed/i.test(`${err.message} ${err.hint || ''}`)) {
-          for (const id of queue.splice(0)) library.setAI(id, { status: 'none' });
+    // Claude calls wait on the network, not this machine, so a few run side by side.
+    const worker = async () => {
+      while (queue.length) {
+        const ids = queue.splice(0, BATCH);
+        try {
+          await scanBatch(ids);
+        } catch (err) {
+          lastError = err.message;
+          // Out of usage / not logged in: stop instead of failing every remaining clip.
+          if (/limit|log ?in|auth|not installed/i.test(`${err.message} ${err.hint || ''}`)) {
+            for (const id of queue.splice(0)) library.setAI(id, { status: 'none' });
+          }
         }
+        emit();
       }
-      emit();
-    }
+    };
+    await Promise.all(Array.from({ length: PARALLEL }, worker));
     working = false;
     emit();
   }
@@ -249,13 +254,18 @@ export function createScanner({ library, dir, onChange = () => {} }) {
       const mine = todo.filter((id) => !scanning.has(id));
       let done = 0;
       onProgress?.(0, todo.length);
-      for (let i = 0; i < mine.length; i += BATCH) {
-        if (signal?.aborted) throw new PipelineError('Cancelled.');
-        const batch = mine.slice(i, i + BATCH);
-        await scanBatch(batch, { signal });
-        done += batch.length;
-        onProgress?.(done, todo.length);
-      }
+      const batches = [];
+      for (let i = 0; i < mine.length; i += BATCH) batches.push(mine.slice(i, i + BATCH));
+      const worker = async () => {
+        while (batches.length) {
+          if (signal?.aborted) throw new PipelineError('Cancelled.');
+          const batch = batches.shift();
+          await scanBatch(batch, { signal });
+          done += batch.length;
+          onProgress?.(done, todo.length);
+        }
+      };
+      await Promise.all(Array.from({ length: PARALLEL }, worker));
       while (todo.some((id) => scanning.has(id))) {
         if (signal?.aborted) throw new PipelineError('Cancelled.');
         await new Promise((r) => setTimeout(r, 1000));

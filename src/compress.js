@@ -13,8 +13,8 @@ import { run, tail, PipelineError } from './util.js';
  */
 const LOUDNORM = 'loudnorm=I=-14:TP=-1.5:LRA=11';
 export const SIZE_PRESETS = {
-  small: { label: 'Small', crf: 28, preset: 'slow', audio: '96k', maxrate: '3M' },
-  balanced: { label: 'Balanced', crf: 23, preset: 'slow', audio: '128k', maxrate: '8M' },
+  small: { label: 'Small', crf: 28, preset: 'medium', audio: '96k', maxrate: '3M' },
+  balanced: { label: 'Balanced', crf: 23, preset: 'medium', audio: '128k', maxrate: '8M' },
   max: { label: 'Max quality', crf: null, audio: '192k' },
 };
 

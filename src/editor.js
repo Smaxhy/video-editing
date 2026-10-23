@@ -48,6 +48,7 @@ const PLAN_SCHEMA = `{
           "speed": 1,             // 0.25-4
           "volume": 1,            // 0-2, 0 mutes this scene's original audio
           "effect": "none",       // ${SCENE_EFFECTS.join(' | ')}
+          "peak": false,          // true on the ONE scene where the video's biggest moment starts (only with a music section)
           "note": "why this scene is here"
         }
       ],
@@ -82,6 +83,19 @@ const PLAN_SCHEMA = `{
     "options": [{ "search": "…", "style": "…" }]
   }
 }`;
+
+/** What separates a top-tier short-form edit from a template one. */
+const CRAFT = `
+## Editing craft (top-tier editors do this; the user's words and the creator style still win)
+- Hook (first 1.5 s): picture, text and sound hit together. Open mid-action or on a teaser of the result — never on setup. The hook overlay says what the picture can't.
+- Shape: hook → quick context → escalation (every scene raises the stakes: closer, faster, more detail) → PEAK (the best shot) → payoff → an ending that loops back into the opening or lands the strongest image. No flat middle.
+- Pattern interrupt every 2-4 s: a new angle, shot size (wide → close → detail), direction of motion, a text beat or a sound. Never two near-identical shots back to back.
+- Cut on action: leave a shot while it still moves and enter the next one already moving; drop the first frames where a camera is still settling and the tail after an action has finished.
+- Speed with purpose: "speed" 0.5-0.7 on the 1-3 s peak moment of motion footage without speech (slow motion makes it land; set that scene's "volume" to 0-0.3); 1.5-2.5 for slow process parts of a montage (never on speech). Most scenes stay at 1.
+- Rhythm: shots get shorter as energy builds; hold one longer shot at the payoff so it breathes.
+- Talking: keep every word that matters, cut breath gaps, repeats and retakes; keep real reactions (a laugh, a look) that add personality.
+- Organic social ends on a cut, an action or a loopable line — no slow fade-out.
+`;
 
 /** Settings a revision may change (e.g. "no green filter" → polish off), with their allowed values. */
 export const REVISABLE = {
@@ -265,13 +279,19 @@ ${vo.mode === 'on'
 - Narration is turned into captions automatically — do not add text overlays repeating it.
 `;
   const music = options.music;
+  const heard = music?.tracks?.some((t) => t.sound);
   const musicSection = !music || music.mode === 'off' ? '' : `
 ## Music
 ${music.mode === 'fixed'
     ? `The user chose track ${music.fixed} (listed below). Set "music": { "track": "${music.fixed}", "start": <seconds into the track where the best part begins> }.`
-    : `Pick ONE background track from the user's music library that fits the mood and pacing, and set "music": { "track": "<id>", "start": <seconds into the track to begin> }. Choose from the names/tags; if none fits, still pick the closest.`}
-Music plays under the whole video and is automatically lowered while someone speaks. When the music leads (montage, POV, no talking), set scene "volume" to 0.2-0.5 so natural sound stays as texture — unless the user wants the original sound up front.
-${music.tracks.map((t) => `- ${t.id}: "${t.name}" · ${round(t.duration)}s${t.tags ? ` · ${t.tags}` : ''}`).join('\n')}
+    : `Pick ONE background track from the user's music library and set "music": { "track": "<id>", "start": <seconds into the track to begin> }.${heard ? '' : ' Choose from the names/tags; if none fits, still pick the closest.'}`}
+${heard ? `ClipForge listened to the tracks: tempo, energy, genre and mood, the drop (where the track lifts hardest), its loud parts and an energy curve.
+${music.mode === 'fixed' ? '' : `- Match the VIBE first: the mood of the track must be the mood of the video (calm satisfying craft → calm lo-fi / acoustic / ambient; hype, sport, glow-up, transformation → energetic drill / phonk / trap / EDM; emotional story → sad piano / cinematic; epic reveal → cinematic or slowed phonk; funny → quirky / meme). Then match energy and tempo to the pacing you cut. Never put a sad track on a happy video or a hype track on a calm one. Say which track you chose and why in "checklist".
+`}- Cut to the tempo: one beat = 60 / BPM seconds. Make B-roll / montage shots last whole numbers of beats (1, 2 or 4) — ClipForge snaps the cuts onto the beat afterwards.
+- Mark the scene where the video's biggest moment starts with "peak": true (one per version). When the track has a drop, ClipForge starts the music so the drop hits exactly that cut. Build toward it: shorter, faster shots before the peak, the best shot on it.
+- "start": where the music should begin when it cannot be aligned — usually the start of a loud part, so the video never opens in a quiet intro (unless the vibe is calm).
+` : ''}Music plays under the whole video and is automatically lowered while someone speaks. When the music leads (montage, POV, no talking), set scene "volume" to 0.2-0.5 so natural sound stays as texture — unless the user wants the original sound up front.
+${music.tracks.map((t) => `- ${t.id}: "${t.name}" · ${round(t.duration)}s${t.tags ? ` · ${t.tags}` : ''}${t.sound ? `\n    heard: ${t.sound}` : ''}`).join('\n')}
 `;
 
   return `You are ClipForge's edit planner — a senior short-form video editor. ${seeing} Produce precise edit decision lists.
@@ -298,6 +318,7 @@ ${options.style}
 
 Generic advice (only where the style above says nothing):
 ` : ''}${GOAL_GUIDE[options.goal]}
+${CRAFT}
 ${musicSection}${voiceoverSection}${soundSection(options)}
 ## Clip catalog
 ${catalog}
@@ -599,6 +620,7 @@ export function normalizePlan(raw, clips) {
       speed: clamp(num(s.speed, 1), 0.25, 4),
       volume: clamp(num(s.volume, 1), 0, 2),
       effect: SCENE_EFFECTS.includes(s.effect) ? s.effect : 'none',
+      ...(s.peak === true && !scenes.some((x) => x.peak) ? { peak: true } : {}),
       note: typeof s.note === 'string' ? s.note : '',
     });
   });

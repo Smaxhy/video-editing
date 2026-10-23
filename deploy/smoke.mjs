@@ -16,6 +16,7 @@ import { measureQuality } from '../src/quality.js';
 import { ensureYunet } from '../src/reframe.js';
 import { ensureFonts } from '../src/fonts.js';
 import { ensureSfx } from '../src/sfx.js';
+import { scanMusic } from '../src/musicscan.js';
 
 const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'clipforge-smoke-'));
 const step = (name) => console.log(`\n== ${name}`);
@@ -94,5 +95,12 @@ const outMeta = await probe(out);
 console.log({ size, ...outMeta });
 if (outMeta.width !== 1080 || outMeta.height !== 1920) fail('wrong output size');
 if (Math.abs(outMeta.duration - 3) > 0.2) fail(`wrong duration ${outMeta.duration}`);
+
+step('music scan (tempo, energy, drop)');
+const song = path.join(dir, 'song.mp3');
+await run('ffmpeg', ['-v', 'error', '-y', '-f', 'lavfi', '-i', "aevalsrc='if(lt(t,10),0.05,0.6)*sin(2*PI*55*t)*exp(-20*mod(t,0.5))':s=44100:d=30", song]);
+const heard = await scanMusic(song);
+console.log(heard);
+if (!heard || Math.abs(heard.bpm - 120) > 3 || heard.drop == null || Math.abs(heard.drop - 10) > 1.5) fail('music scan');
 
 console.log('\nSMOKE TEST PASSED');

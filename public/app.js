@@ -258,6 +258,8 @@ function listenLibrary() {
         toast(`Import finished: ${plural(evt.job.done - evt.job.failed.length, 'file')} added${evt.job.failed.length ? `, ${evt.job.failed.length} failed` : ''}.`, evt.job.failed.length ? 'error' : 'ok');
         refreshStorageSoon();
       }
+    } else if (evt.type === 'autopilot') {
+      onAutopilot(evt.autopilot);
     } else if (evt.type === 'connect') {
       state.cloud.connect = evt.connect;
       if (evt.connect.status === 'done') loadCloud().then(() => toast('Google Drive connected.', 'ok'));
@@ -1092,8 +1094,11 @@ function setView(view) {
   state.view = view;
   $('#libraryView').classList.toggle('hidden', view !== 'library');
   $('#projectView').classList.toggle('hidden', view !== 'project');
-  if (view === 'library') $('#navLibrary').setAttribute('aria-current', 'page');
-  else $('#navLibrary').removeAttribute('aria-current');
+  $('#autoView').classList.toggle('hidden', view !== 'autopilot');
+  for (const [id, v] of [['#navLibrary', 'library'], ['#navAuto', 'autopilot']]) {
+    if (view === v) $(id).setAttribute('aria-current', 'page');
+    else $(id).removeAttribute('aria-current');
+  }
   document.body.classList.remove('nav-open');
   $('#menuBtn').setAttribute('aria-expanded', 'false');
   renderProjects();
@@ -1104,6 +1109,13 @@ async function route() {
   const m = location.hash.match(/^#\/project\/([\w-]+)$/);
   if (m) {
     await openProject(m[1]);
+  } else if (location.hash === '#/autopilot') {
+    state.es?.close();
+    state.jobId = null;
+    setView('autopilot');
+    document.title = 'Autopilot · ClipForge';
+    store.set('clipforge:route', 'autopilot');
+    loadAutopilot();
   } else {
     state.es?.close();
     state.jobId = null;
@@ -1687,6 +1699,180 @@ function migrate() {
 }
 
 let booted = false;
+// ---------------------------------------------------------------------------
+// Autopilot: batches of ready-to-post videos, planned and made every few days
+// ---------------------------------------------------------------------------
+const auto = { data: null, editing: false, shownKey: null };
+
+async function loadAutopilot() {
+  try { onAutopilot(await api('/api/autopilot')); } catch {}
+}
+
+function onAutopilot(d) {
+  const prev = auto.data;
+  auto.data = d;
+  // A video that just finished → tell the user once.
+  if (prev) {
+    const before = new Map(prev.batches.flatMap((b) => b.ideas).map((i) => [i.id, i.status]));
+    for (const i of d.batches.flatMap((b) => b.ideas)) {
+      if (i.status === 'done' && before.has(i.id) && before.get(i.id) !== 'done') toast(`Autopilot made “${i.title}”.`, 'ok');
+    }
+  }
+  const working = d.batches.some((b) => b.status === 'running');
+  $('#autoBadge').textContent = working ? '●' : '';
+  if (!auto.editing) fillAutoForm(d.settings);
+  renderAutopilot();
+}
+
+function fillAutoForm(s) {
+  $('#autoOn').checked = s.enabled;
+  $('#autoEvery').value = String(s.everyDays);
+  if (!$('#autoEvery').value) {
+    $('#autoEvery').append(new Option(`${s.everyDays} days`, String(s.everyDays)));
+    $('#autoEvery').value = String(s.everyDays);
+  }
+  $('#autoPer').value = String(s.perBatch);
+  for (const c of $$('[name=autoLen]')) c.checked = s.lengths.includes(c.value);
+  if (document.activeElement !== $('#autoDir')) $('#autoDir').value = s.direction;
+  if (document.activeElement !== $('#autoBrand')) $('#autoBrand').value = s.brand;
+  if (document.activeElement !== $('#autoCta')) $('#autoCta').value = s.cta;
+}
+
+const whenText = (t) => {
+  const d = new Date(t);
+  const days = Math.round((new Date(d).setHours(0, 0, 0, 0) - new Date().setHours(0, 0, 0, 0)) / 864e5);
+  const time = d.toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' });
+  return days === 0 ? `today ${time}` : days === 1 ? `tomorrow ${time}` : days === -1 ? `yesterday ${time}` : d.toLocaleDateString([], { weekday: 'short', month: 'short', day: 'numeric' }) + ` ${time}`;
+};
+
+function renderAutopilot() {
+  const d = auto.data;
+  if (!d) return;
+  const s = d.settings;
+  $('#autoRun').disabled = d.running;
+  $('#autoCancel').classList.toggle('hidden', !d.running);
+  $('#autoNext').textContent = d.running ? 'Making a batch right now — you can leave this page.'
+    : !s.enabled ? 'Autopilot is off — use “Make a batch now”, or switch it on to get new videos every few days.'
+      : d.nextRun ? `Next batch: ${d.nextRun <= Date.now() ? 'as soon as possible' : whenText(d.nextRun)}. It only runs while this codespace is switched on — if it was asleep, the batch starts as soon as it wakes up.`
+        : 'First batch starts in a moment.';
+  $('#autoProgress').classList.toggle('hidden', !d.running);
+  if (d.running) {
+    const ideas = d.batches.find((b) => b.status === 'running')?.ideas || [];
+    const r = ideas.find((i) => i.status === 'rendering');
+    const done = ideas.filter((i) => i.status === 'done' || i.status === 'error').length;
+    const pct = ideas.length ? (done + (r?.progress || 0)) / ideas.length : 0.03;
+    $('#autoProgress').innerHTML = `<strong>${esc(d.message || 'Working…')}</strong>
+      ${r?.message ? `<div class="hint-line">${esc(r.message)}</div>` : ''}
+      <div class="bar" role="progressbar" aria-label="Autopilot progress" aria-valuemin="0" aria-valuemax="100" aria-valuenow="${Math.round(pct * 100)}"><div style="width:${Math.max(3, pct * 100)}%"></div></div>`;
+  }
+  $('#autoEmpty').classList.toggle('hidden', d.batches.length > 0);
+
+  // Re-render the batch list only when something visible changed (keeps playing videos playing).
+  const key = JSON.stringify(d.batches.map((b) => [b.id, b.status, b.plan, b.error, b.ideas.map((i) => [i.id, i.status, i.file, i.error])]));
+  if (key === auto.shownKey) return;
+  auto.shownKey = key;
+  $('#autoBatches').innerHTML = d.batches.map((b) => {
+    const done = b.ideas.filter((i) => i.status === 'done').length;
+    return `<section class="card batch" aria-labelledby="bh-${b.id}">
+      <div class="card-h"><span id="bh-${b.id}">${esc(whenText(b.createdAt))}${b.auto ? '' : ' · made by hand'}</span>
+        <span class="meta">${b.status === 'running' ? 'in progress' : `${plural(done, 'video')}`}</span>
+        ${b.zipUrl ? `<a class="btn xs" href="${b.zipUrl}" download>↓ All (.zip)</a>` : ''}
+        ${b.status !== 'running' ? `<button class="btn xs ghost" type="button" data-del-batch="${b.id}" aria-label="Delete this batch">Delete</button>` : ''}
+      </div>
+      ${b.plan ? `<p class="plan"><strong>Plan:</strong> ${esc(b.plan)}</p>` : ''}
+      ${b.error ? `<p class="err">⚠ ${esc(b.error.message)}${b.error.hint ? ` — ${esc(b.error.hint)}` : ''}</p>` : ''}
+      <div class="variants">${b.ideas.map((i) => ideaHtml(b, i)).join('')}</div>
+    </section>`;
+  }).join('');
+}
+
+function ideaHtml(b, i) {
+  const media = i.videoUrl
+    ? `<div class="frame"><video src="${i.videoUrl}" poster="${i.posterUrl || ''}" controls playsinline preload="none" style="aspect-ratio:${i.width || 9}/${i.height || 16}" aria-label="${esc(i.title)} preview"></video></div>`
+    : `<div class="wait">${i.status === 'rendering' ? 'Making this video…<div class="bar"><div style="width:30%"></div></div>'
+      : i.status === 'queued' ? 'Up next' : i.status === 'cancelled' ? 'Cancelled'
+        : `⚠ ${esc(i.error?.message || 'Failed')}${i.error?.hint ? `<br>${esc(i.error.hint)}` : ''}`}</div>`;
+  const label = `${i.length}s`;
+  return `<article class="variant idea" aria-label="${esc(i.title)}">
+    ${media}
+    <div class="vm"><div><div class="vl">${esc(i.title)}</div><div class="vs">${label}${i.size ? ` · ${fmtSize(i.size)}` : ''}${i.vibe ? ` · <span class="vibe">${esc(i.vibe)}</span>` : ''}</div></div></div>
+    <div class="cap">${esc(i.caption)}${i.hashtags.length ? `\n<span class="tags">${esc(i.hashtags.join(' '))}</span>` : ''}</div>
+    <div class="acts">
+      <button class="btn sm ghost" type="button" data-copy="${esc(i.captionText)}">Copy caption</button>
+      ${i.downloadUrl && canShareFiles ? `<button class="btn sm ghost share" type="button" data-url="${i.downloadUrl}" data-name="${esc(i.file)}">Save / Share</button>` : ''}
+      ${i.downloadUrl ? `<a class="btn sm" href="${i.downloadUrl}" download aria-label="Download ${esc(i.title)}">↓ Download</a>` : ''}
+      ${i.jobId && i.status !== 'rendering' ? `<a class="btn sm ghost" href="#/project/${i.jobId}" aria-label="Edit ${esc(i.title)} as a project">Edit</a>` : ''}
+    </div>
+  </article>`;
+}
+
+$('#autoBatches').addEventListener('click', async (e) => {
+  const copy = e.target.closest('[data-copy]');
+  if (copy) {
+    try { await navigator.clipboard.writeText(copy.dataset.copy); toast('Caption and hashtags copied.', 'ok'); }
+    catch { toast('Could not copy — press and hold the caption to select it.', 'error'); }
+    return;
+  }
+  const share = e.target.closest('.share');
+  if (share) {
+    const old = share.textContent;
+    share.textContent = '…';
+    try {
+      const blob = await (await fetch(share.dataset.url)).blob();
+      await navigator.share({ files: [new File([blob], share.dataset.name, { type: 'video/mp4' })] });
+    } catch (err) {
+      if (err.name !== 'AbortError') toast('Sharing failed — use Download instead.', 'error');
+    } finally { share.textContent = old; }
+    return;
+  }
+  const del = e.target.closest('[data-del-batch]');
+  if (del && confirm('Delete this batch and its video files? (The projects stay.)')) {
+    try { onAutopilot(await api(`/api/autopilot/batches/${del.dataset.delBatch}`, { method: 'DELETE' })); }
+    catch (err) { toast(err.message, 'error'); }
+  }
+});
+
+let autoSaveTimer;
+async function saveAutopilot() {
+  clearTimeout(autoSaveTimer);
+  auto.editing = false;
+  const lengths = $$('[name=autoLen]').filter((c) => c.checked).map((c) => c.value);
+  try {
+    onAutopilot(await api('/api/autopilot', {
+      method: 'PATCH',
+      body: {
+        enabled: $('#autoOn').checked,
+        everyDays: Number($('#autoEvery').value),
+        perBatch: Number($('#autoPer').value),
+        lengths: lengths.length ? lengths : undefined,
+        direction: $('#autoDir').value,
+        brand: $('#autoBrand').value,
+        cta: $('#autoCta').value,
+      },
+    }));
+  } catch (err) { toast(err.message, 'error'); }
+}
+$('#autoForm').addEventListener('submit', (e) => e.preventDefault());
+$('#autoForm').addEventListener('change', (e) => {
+  if (e.target.name === 'autoLen' && !$$('[name=autoLen]').some((c) => c.checked)) e.target.checked = true; // keep at least one
+  if (e.target === $('#autoOn') && e.target.checked) toast('Autopilot is on — the first batch starts now.', 'ok');
+  saveAutopilot();
+});
+$('#autoForm').addEventListener('input', (e) => {
+  if (e.target.tagName !== 'TEXTAREA' && e.target.type !== 'text') return;
+  auto.editing = true;
+  clearTimeout(autoSaveTimer);
+  autoSaveTimer = setTimeout(() => { auto.editing = false; saveAutopilot(); }, 900);
+});
+$('#autoRun').addEventListener('click', async () => {
+  await saveAutopilot();
+  try { onAutopilot(await api('/api/autopilot/run', { method: 'POST' })); announce('Autopilot started a batch.'); }
+  catch (err) { toast(err.message, 'error'); }
+});
+$('#autoCancel').addEventListener('click', async () => {
+  try { await api('/api/autopilot/cancel', { method: 'POST' }); } catch (err) { toast(err.message, 'error'); }
+});
+
 async function init() {
   const a = await nativeFetch('/api/auth').then((r) => r.json()).catch(() => ({}));
   if (a.enabled && !a.authed) { $('#login').classList.remove('hidden'); $('#pw').focus(); return; }
@@ -1695,6 +1881,7 @@ async function init() {
   loadHealth();
   loadCloud();
   checkVersion();
+  loadAutopilot();
   api('/api/scanner').then((sc) => { state.scanner = sc; renderScanBar(); }).catch(() => {});
   api('/api/library/settings').then((ls) => { $('#shrinkLarge').checked = ls.shrinkLarge; }).catch(() => {});
   await Promise.all([loadLibrary().catch((err) => toast(err.message, 'error')), loadProjects()]);
@@ -1702,8 +1889,9 @@ async function init() {
   showInterrupted();
   if (!location.hash) {
     const last = store.get('clipforge:last');
-    const wantProject = store.get('clipforge:route') === 'project' && state.projects.some((p) => p.id === last);
-    history.replaceState(null, '', wantProject ? `#/project/${last}` : '#/library');
+    const saved = store.get('clipforge:route');
+    const wantProject = saved === 'project' && state.projects.some((p) => p.id === last);
+    history.replaceState(null, '', wantProject ? `#/project/${last}` : saved === 'autopilot' ? '#/autopilot' : '#/library');
   }
   route();
 }

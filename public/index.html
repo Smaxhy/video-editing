@@ -31,6 +31,7 @@
   <symbol id="i-cloud" viewBox="0 0 24 24"><path d="M7 18h10a4 4 0 00.6-7.95A6 6 0 006.2 9.5 4.25 4.25 0 007 18zm5-7v5m0-5l-2.2 2.2M12 11l2.2 2.2" stroke="currentColor" stroke-width="1.8" fill="none" stroke-linecap="round" stroke-linejoin="round"/></symbol>
   <symbol id="i-spark" viewBox="0 0 24 24"><path d="M12 3l1.8 5.2L19 10l-5.2 1.8L12 17l-1.8-5.2L5 10l5.2-1.8zM18.5 15.5l.8 2.2 2.2.8-2.2.8-.8 2.2-.8-2.2-2.2-.8 2.2-.8z" fill="currentColor"/></symbol>
   <symbol id="i-music" viewBox="0 0 24 24"><path d="M9 18V5l11-2v13M9 18a3 3 0 11-6 0 3 3 0 016 0zm11-2a3 3 0 11-6 0 3 3 0 016 0z" stroke="currentColor" stroke-width="1.8" fill="none" stroke-linejoin="round"/></symbol>
+  <symbol id="i-auto" viewBox="0 0 24 24"><path d="M12 3a9 9 0 109 9M12 7v5l3 2M17 3h4v4" stroke="currentColor" stroke-width="1.9" fill="none" stroke-linecap="round" stroke-linejoin="round"/></symbol>
   <symbol id="i-plus" viewBox="0 0 24 24"><path d="M12 5v14M5 12h14" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"/></symbol>
 </svg>
 
@@ -47,6 +48,7 @@
 <div class="shell">
   <nav class="sidebar" id="sidebar" aria-label="Library and projects">
     <a class="nav-item" href="#/library" id="navLibrary"><svg aria-hidden="true"><use href="#i-lib"/></svg>Library <span class="count" id="libCount"></span></a>
+    <a class="nav-item" href="#/autopilot" id="navAuto"><svg aria-hidden="true"><use href="#i-auto"/></svg>Autopilot <span class="count" id="autoBadge"></span></a>
     <div class="nav-head"><span id="projHead">Projects</span>
       <button class="btn xs ghost" id="newProject" type="button"><svg width="14" height="14" aria-hidden="true"><use href="#i-plus"/></svg>New</button>
     </div>
@@ -118,6 +120,53 @@
         <button class="btn sm danger" type="button" id="selDelete">Delete</button>
         <button class="btn sm ghost" type="button" id="selClear">Clear selection</button>
       </div>
+    </section>
+
+    <!-- ===================== AUTOPILOT ===================== -->
+    <section class="view hidden" id="autoView" aria-labelledby="autoTitle">
+      <div class="view-head">
+        <div>
+          <h1 id="autoTitle">Autopilot</h1>
+          <p>Every few days Claude looks through your whole library, plans a batch of videos in different vibes and makes them — each with a ready-to-post caption and hashtags. You download them and post them yourself.</p>
+        </div>
+        <div class="toolbar">
+          <button class="btn ghost hidden" type="button" id="autoCancel">Stop</button>
+          <button class="btn" type="button" id="autoRun"><svg width="18" height="18" aria-hidden="true"><use href="#i-spark"/></svg>Make a batch now</button>
+        </div>
+      </div>
+
+      <form class="card autoset" id="autoForm" aria-labelledby="autoSetH">
+        <h2 id="autoSetH" class="sr-only">Autopilot settings</h2>
+        <label class="switch big"><input type="checkbox" id="autoOn" role="switch" /><span>Make new videos automatically</span></label>
+        <div class="autogrid">
+          <label>Every
+            <select class="field" id="autoEvery">
+              <option value="1">day</option><option value="2">2 days</option><option value="3">3 days</option><option value="5">5 days</option><option value="7">week</option>
+            </select>
+          </label>
+          <label>Videos per batch
+            <select class="field" id="autoPer">
+              <option>1</option><option>2</option><option>3</option><option>4</option><option>5</option><option>6</option>
+            </select>
+          </label>
+          <fieldset class="lens"><legend>Lengths</legend>
+            <label><input type="checkbox" name="autoLen" value="15" /> 15s</label>
+            <label><input type="checkbox" name="autoLen" value="30" /> 30s</label>
+            <label><input type="checkbox" name="autoLen" value="60" /> 60s</label>
+          </fieldset>
+        </div>
+        <label for="autoDir">What kind of content? <span class="hint-line">(optional — Claude figures it out from your footage otherwise)</span></label>
+        <textarea class="field" id="autoDir" rows="3" maxlength="1500" placeholder="e.g. POV tree-cutting content — satisfying cuts, the art of tree work, a bit of humour. Account is for an arborist business."></textarea>
+        <div class="autogrid">
+          <label>Account / brand name<input class="field" id="autoBrand" maxlength="60" autocomplete="off" /></label>
+          <label>Call to action<input class="field" id="autoCta" maxlength="60" placeholder="Follow for more" autocomplete="off" /></label>
+        </div>
+        <p class="hint-line" id="autoNext" aria-live="polite"></p>
+      </form>
+
+      <div class="card hidden" id="autoProgress" role="status" aria-live="polite"></div>
+      <div id="autoBatches"></div>
+      <div class="empty hidden" id="autoEmpty"><div class="big" aria-hidden="true">✦</div>No batches yet. Tap “Make a batch now”, or turn Autopilot on.</div>
     </section>
 
     <!-- ===================== PROJECT ===================== -->

@@ -32,6 +32,7 @@ import { ensureSfx } from './sfx.js';
 import { reviewVideo } from './review.js';
 import { VOICES, VOICEOVER_MODES, synthesize, scheduleLines, estimateWords, mixNarration } from './tts.js';
 import { createMl } from './ml.js';
+import { ensureYunet } from './reframe.js';
 import { Server as TusServer } from '@tus/server';
 import { FileStore } from '@tus/file-store';
 
@@ -409,10 +410,20 @@ async function runPipeline(job, { prompt, clipIds, settings, reusePlan }) {
 
   // Footage analysis: silent ranges (auto-editor / FFmpeg), shot changes (PySceneDetect),
   // face positions (OpenCV, only needed for face-tracked framing). Cached per clip.
-  const features = { silence: settings.silence, shots: settings.shots && tools.sceneDetect, faces: settings.framing === 'face' && tools.faces };
+  if (settings.framing === 'smart' && !tools.faces) {
+    notes.push('Smart reframing needs OpenCV (pip install "opencv-python-headless<5") — used blur-fill framing instead.');
+    settings = { ...settings, framing: 'blur' };
+  }
+  const features = {
+    silence: settings.silence,
+    shots: settings.shots && tools.sceneDetect,
+    faces: settings.framing === 'face' && tools.faces,
+    track: settings.framing === 'smart' && tools.faces && clips.some((c) => formats.some((f) => aspectMismatch(c, f.width, f.height))),
+  };
+  if (features.track) features.yunet = await ensureYunet(TOOLS_DIR);
   if (settings.framing === 'face' && !tools.faces) notes.push('Face tracking needs OpenCV (pip install "opencv-python-headless<5") — used centre crop.');
   const analysis = {};
-  if (features.silence || features.shots || features.faces) {
+  if (features.silence || features.shots || features.faces || features.track) {
     for (const [i, c] of clips.entries()) {
       setStep(job, 'transcribe', 'active', `Analyzing footage ${i + 1}/${clips.length} (${c.name})…`, 0.26 + (i / clips.length) * 0.04);
       analysis[c.id] = await analyzeClip(c, { cacheFile: cache(c, 'analysis', '.json'), features, tools, signal });
@@ -667,6 +678,7 @@ async function runPipeline(job, { prompt, clipIds, settings, reusePlan }) {
         voiceOffset: voiceTracks[c.id]?.offset || 0,
         videoOffset: videoOffsets[c.id] || 0,
         faces: analysis[c.id]?.faces || null,
+        track: analysis[c.id]?.track || null,
       })),
       transcripts,
       settings: {
@@ -1388,7 +1400,7 @@ function editSettings(s = {}, autoFind = false) {
     formats: pick(Object.keys(FORMATS), s.formats, ['9x16']),
     lengths: pick(LENGTHS, s.lengths, ['30']),
     captions: CAPTION_STYLES.includes(s.captions) ? s.captions : 'bold',
-    framing: FRAMINGS.includes(s.framing) ? s.framing : 'blur',
+    framing: FRAMINGS.includes(s.framing) ? s.framing : 'smart',
     size: SIZE_PRESETS[s.size] ? s.size : 'balanced',
     accent: /^#[0-9a-f]{6}$/i.test(s.accent || '') ? s.accent : '#7c5cff',
     brand: cleanText(s.brand, 60),

@@ -4,6 +4,7 @@ import os from 'node:os';
 import { fileURLToPath } from 'node:url';
 import { run, tail, exists, linkOrCopy, round, clamp, escapeHtml, PipelineError } from './util.js';
 import { sfxCues, SFX_VOLUME, SFX_LENGTH } from './sfx.js';
+import { cameraPath } from './reframe.js';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const LOCAL_HYPERFRAMES = path.join(ROOT, 'node_modules', '.bin', 'hyperframes');
@@ -17,7 +18,7 @@ export const FORMATS = {
   '16x9': { width: 1920, height: 1080, label: '16:9 Landscape', use: 'YouTube · web · pre-roll' },
 };
 export const CAPTION_STYLES = ['off', 'clean', 'bold', 'pop'];
-export const FRAMINGS = ['blur', 'face', 'crop', 'fit'];
+export const FRAMINGS = ['smart', 'blur', 'face', 'crop', 'fit'];
 
 // Transitions where the incoming scene overlaps the tail of the previous one.
 const OVERLAP_TRANSITIONS = new Set(['crossfade', 'slide-left', 'slide-up', 'zoom', 'wipe']);
@@ -386,12 +387,27 @@ export function buildComposition({ plan, clips, transcripts, settings, gsapSrc =
     // centre crop or letterbox.
     const mismatch = aspectMismatch(clip, W, H);
     const useBlur = mismatch && settings.framing === 'blur' && clip.blurFile;
-    const fit = !mismatch || settings.framing === 'crop' || settings.framing === 'face' ? 'cover' : 'contain';
+    const fit = !mismatch || ['crop', 'face', 'smart'].includes(settings.framing) ? 'cover' : 'contain';
     let position = '50% 50%';
     let origin = '50% 50%';
     if (mismatch && settings.framing === 'face') {
       const face = faceCenter(clip.faces, s.srcStart, s.srcEnd);
       if (face) ({ position, origin } = coverPositionFor(face, clip, W, H));
+    }
+    // Smart reframe: a locked-off crop on the subject, or a smooth tracking camera that follows it.
+    if (mismatch && settings.framing === 'smart') {
+      const cam = cameraPath(clip.track, s, clip, W, H);
+      if (cam?.keys) {
+        position = `${cam.keys[0].x}% ${cam.keys[0].y}%`;
+        for (let k = 1; k < cam.keys.length; k++) {
+          const a = cam.keys[k - 1];
+          const b = cam.keys[k];
+          if (b.t - a.t < 0.05) continue;
+          tweens.push(`tl.to("#v${i}", { objectPosition: "${b.x}% ${b.y}%", duration: ${round(b.t - a.t, 3)}, ease: "sine.inOut" }, ${round(s.tlStart + a.t, 3)});`);
+        }
+      } else if (cam) {
+        position = `${cam.x}% ${cam.y}%`;
+      }
     }
 
     const timing = `data-start="${s.tlStart}" data-duration="${round(dur, 3)}" data-media-start="${round(s.srcStart, 3)}"${

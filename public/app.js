@@ -142,9 +142,13 @@ const assetTitle = (a) => (a.kind === 'audio' && a.tags.title ? a.tags.title : a
 function aiHtml(a) {
   if (a.kind === 'audio') return '<div class="tagrow"><span class="tag kind">Music</span></div>';
   if (a.ai.status === 'error') return '<div class="ai-line" style="color:var(--warn)">AI scan failed — open to retry</div>';
-  if (a.ai.status !== 'done') return '';
+  const q = a.quality?.score != null
+    ? `<span class="tag ${a.quality.score >= 60 ? 'q-good' : a.quality.score >= 35 ? 'q-ok' : 'q-bad'}" title="Measured quality: sharpness, exposure, shake, sound${a.quality.flags.length ? ` — ${esc(a.quality.flags.join(', '))}` : ''}">★ ${a.quality.score}${a.quality.flags.length ? ` · ${esc(a.quality.flags[0])}` : ''}</span>`
+    : '';
+  const sounds = (a.sounds || []).map((x) => `<span class="tag snd" title="Heard in the clip">🔊 ${esc(x)}</span>`).join('');
+  if (a.ai.status !== 'done') return q || sounds ? `<div class="tagrow">${q}${sounds}</div>` : '';
   return `<div class="ai-line" title="${esc(a.ai.summary)}">${esc(a.ai.summary)}</div>
-    <div class="tagrow">${a.ai.tags.slice(0, 4).map((t) => `<span class="tag">${esc(t)}</span>`).join('')}</div>`;
+    <div class="tagrow">${q}${sounds}${a.ai.tags.slice(0, 3).map((t) => `<span class="tag">${esc(t)}</span>`).join('')}</div>`;
 }
 
 function assetCard(a) {
@@ -157,7 +161,7 @@ function assetCard(a) {
 }
 
 /** Search matches the file name, Claude's description and tags, and music metadata — every word must hit. */
-const haystack = (a) => [a.name, a.ai?.summary, ...(a.ai?.tags || []), ...(a.ai?.moments || []).map((m) => m.what), ...Object.values(a.tags || {})]
+const haystack = (a) => [a.name, a.ai?.summary, ...(a.ai?.tags || []), ...(a.ai?.moments || []).map((m) => m.what), ...(a.sounds || []), ...(a.quality?.flags || []), ...Object.values(a.tags || {})]
   .filter(Boolean).join(' ').toLowerCase();
 function visibleAssets(query, sort, filter = 'all') {
   const words = query.trim().toLowerCase().split(/\s+/).filter(Boolean);
@@ -168,6 +172,12 @@ function visibleAssets(query, sort, filter = 'all') {
     unscanned: (a) => a.kind === 'video' && a.ai.status !== 'done',
   }[filter] || (() => true);
   const list = state.assets.filter((a) => keep(a) && words.every((w) => haystack(a).includes(w)));
+  // Search by meaning (local CLIP model): add the best visual matches and put them first.
+  const sem = state.semantic?.q === query.trim() ? state.semantic.rank : null;
+  if (sem) {
+    for (const a of state.assets) if (keep(a) && sem.has(a.id) && !list.includes(a)) list.push(a);
+    return list.sort((x, y) => (sem.has(x.id) ? sem.get(x.id) : 1e9) - (sem.has(y.id) ? sem.get(y.id) : 1e9));
+  }
   const by = {
     new: (x, y) => y.createdAt - x.createdAt,
     old: (x, y) => x.createdAt - y.createdAt,
@@ -485,7 +495,24 @@ $('#imBody').addEventListener('click', async (e) => {
   renderImport();
 });
 
-$('#libSearch').addEventListener('input', renderLibrary);
+$('#libSearch').addEventListener('input', () => {
+  renderLibrary();
+  clearTimeout(state.semanticTimer);
+  const q = $('#libSearch').value.trim();
+  if (q.length < 3) return;
+  state.semanticTimer = setTimeout(async () => {
+    try {
+      const r = await api(`/api/library/search?q=${encodeURIComponent(q)}`);
+      if ($('#libSearch').value.trim() !== q || !r.results.length) return;
+      // Keep the clear matches: the top 24, and nothing far below the best score.
+      const best = r.results[0].score;
+      const top = r.results.filter((x, i) => i < 24 && x.score >= best - 0.06);
+      state.semantic = { q, rank: new Map(top.map((x, i) => [x.id, i])) };
+      renderLibrary();
+      announce(`${top.length} clips match by meaning.`);
+    } catch {}
+  }, 500);
+});
 $('#libFilter').addEventListener('change', renderLibrary);
 $('#libSort').addEventListener('change', () => { store.set('clipforge:sort', $('#libSort').value); renderLibrary(); });
 
@@ -1919,7 +1946,8 @@ async function pollActivity() {
     if (a.previews) lines.push(`Making previews: ${plural(a.previews, 'video')} left`);
     if (a.scanning) lines.push(`AI scan: ${plural(a.scanning, 'video')} left`);
     if (a.imports) lines.push(`Importing from Google Drive (${a.imports})`);
-    if (a.heavy) lines.push(`Shrinking / preview copies: ${a.heavy} left${a.paused ? ' (paused while rendering)' : ''}`);
+    if (a.heavy) lines.push(`Quality check / shrinking / preview copies: ${a.heavy} left${a.paused ? ' (paused while rendering)' : ''}`);
+    if (a.indexing) lines.push(`Search-by-meaning index: ${plural(a.indexing, 'video')} left`);
   }
   el.classList.toggle('hidden', !lines.length);
   if (lines.length) {

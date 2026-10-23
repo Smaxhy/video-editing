@@ -31,6 +31,7 @@ import { beatsFor, snapCutsToBeats } from './beats.js';
 import { ensureSfx } from './sfx.js';
 import { reviewVideo } from './review.js';
 import { VOICES, VOICEOVER_MODES, synthesize, scheduleLines, estimateWords, mixNarration } from './tts.js';
+import { createMl } from './ml.js';
 import { Server as TusServer } from '@tus/server';
 import { FileStore } from '@tus/file-store';
 
@@ -71,16 +72,26 @@ const broadcast = (evt) => {
   for (const res of libraryListeners) res.write(data);
 };
 let scanner = null;
+let ml = null;
 const jobs = new Map(); // project id → job (see the job store below)
 const library = createLibrary({
   dir: DIRS.library,
   onChange: broadcast,
-  onReady: (a) => scanner?.onReady(a),
+  onReady: (a) => {
+    scanner?.onReady(a);
+    ml?.onReady(a);
+  },
   // Heavy re-encodes (4K shrink, preview copies) wait while a video renders.
   isRendering: () => [...jobs.values()].some((j) => j.state === 'running'),
 });
 await library.load();
-scanner = createScanner({ library, dir: DIRS.library, onChange: broadcast });
+ml = createMl({
+  toolsDir: TOOLS_DIR,
+  library,
+  isBusy: () => [...jobs.values()].some((j) => j.state === 'running'),
+  onChange: broadcast,
+});
+scanner = createScanner({ library, dir: DIRS.library, onChange: broadcast, rank: (brief) => ml.search(brief, { limit: 150 }) });
 scanner.load();
 const cloud = createCloud({ library, toolsDir: TOOLS_DIR, onChange: broadcast });
 ensureDeepFilter(TOOLS_DIR); // fetch the denoiser and caption fonts in the background so the first edit doesn't wait
@@ -924,6 +935,7 @@ function activity() {
     scanning: sc.scanning + sc.queued,
     renders,
     imports: cloud.jobs().filter((j) => j.state === 'running').length,
+    indexing: ml.status().status === 'error' ? 0 : ml.status().queued,
     autopilot: autopilot.status().message || (autopilot.busy() ? 'working' : null),
     cpus: os.cpus().length,
     load: os.loadavg()[0],
@@ -938,7 +950,8 @@ function busySummary(a = activity()) {
     a.imports && 'importing from Google Drive',
     a.previews && `previews for ${a.previews} video(s)`,
     a.scanning && `AI scan of ${a.scanning} video(s)`,
-    a.heavy && `shrinking / preview copies for ${a.heavy} video(s)`,
+    a.heavy && `shrinking / preview copies / quality check for ${a.heavy} video(s)`,
+    a.indexing && `search index for ${a.indexing} video(s)`,
     Date.now() - lastUploadAt < 2 * 60_000 && 'receiving an upload',
   ].filter(Boolean);
   return parts.length ? parts.join(' · ') : null;
@@ -1039,6 +1052,17 @@ app.get('/api/library', async (_req, res) => {
 });
 
 app.get('/api/library/settings', (_req, res) => res.json(library.settings()));
+// GET /api/library/search?q=… — clips ranked by meaning (local CLIP model), best first.
+app.get('/api/library/search', async (req, res, next) => {
+  try {
+    const q = cleanText(req.query.q, 200);
+    if (!q) return res.json({ results: [], ml: ml.status() });
+    if (!ml.hasIndex()) return res.json({ results: [], ml: ml.status(), note: 'The library is still being indexed for search by meaning.' });
+    res.json({ results: await ml.search(q), ml: ml.status() });
+  } catch (err) {
+    next(err);
+  }
+});
 app.patch('/api/library/settings', async (req, res) => {
   res.json(await library.setSettings({ shrinkLarge: req.body?.shrinkLarge !== false }));
 });
@@ -1094,6 +1118,7 @@ app.delete('/api/library/:assetId', withAsset(async (_req, res, a) => {
     await saveManifest(job);
   }
   await library.remove(a.id);
+  ml.forget(a.id);
   res.json({ ok: true, removedFrom: using.map((j) => j.id) });
 }));
 
@@ -1552,6 +1577,7 @@ const updater = createUpdater({
   beforeRestart: async () => {
     cloud.shutdown();
     autopilot.stop();
+    ml.stop();
     for (const res of libraryListeners) res.end();
     for (const job of jobs.values()) for (const l of job.listeners) l.end();
     server.closeAllConnections();
@@ -1560,6 +1586,7 @@ const updater = createUpdater({
 });
 await updater.start();
 autopilot.start();
+ml.start().catch((err) => console.error('  AI index:', err.message));
 
 const server = app.listen(PORT, HOST, () => {
   console.log(`\n  ClipForge running at http://${LOOPBACK ? 'localhost' : '127.0.0.1'}:${PORT}`);

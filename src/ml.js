@@ -1,0 +1,232 @@
+import fs from 'node:fs/promises';
+import fsSync from 'node:fs';
+import path from 'node:path';
+import readline from 'node:readline';
+import { spawn } from 'node:child_process';
+import { fileURLToPath } from 'node:url';
+import { run, tail, PipelineError } from './util.js';
+
+/**
+ * Local AI models for the library (no API, no GPU): CLIP embeddings of 4 frames per clip power
+ * "search by meaning", CLAP tags what can be HEARD in a clip (chainsaw, wind, speech…), which Claude
+ * cannot hear from the frames. One shared install in .tools/ml (also used by the Kokoro voiceover),
+ * one background worker process that exits when idle.
+ */
+const PACKAGES = ['@huggingface/transformers@3.8.1', 'kokoro-js@1.2.1'];
+const WORKER = path.join(path.dirname(fileURLToPath(import.meta.url)), 'ml-worker.js');
+export const EMBED_VERSION = 'clip-b32-v1';
+export const SOUND_LABELS = [
+  'speech', 'music', 'chainsaw', 'power tool', 'engine', 'wind', 'rain', 'water', 'birds', 'dog',
+  'crowd', 'laughter', 'applause', 'traffic', 'hammering', 'wood cracking', 'footsteps', 'silence',
+];
+
+let installing = null;
+
+/** Install (once) the shared model runtime; returns its node_modules folder. */
+export function ensureMlPackages(toolsDir) {
+  installing ||= (async () => {
+    const dir = path.join(toolsDir, 'ml');
+    const nm = path.join(dir, 'node_modules');
+    const ok = () => PACKAGES.every((p) => fsSync.existsSync(path.join(nm, p.slice(0, p.lastIndexOf('@')), 'package.json')));
+    if (ok()) return nm;
+    await fs.mkdir(dir, { recursive: true });
+    if (!fsSync.existsSync(path.join(dir, 'package.json'))) {
+      await fs.writeFile(path.join(dir, 'package.json'), JSON.stringify({ name: 'clipforge-ml', private: true, type: 'module' }));
+    }
+    const npm = process.platform === 'win32' ? 'npm.cmd' : 'npm';
+    const r = await run(npm, ['install', ...PACKAGES, '--no-audit', '--no-fund', '--loglevel=error'], { cwd: dir, timeoutMs: 25 * 60_000 });
+    if (r.code !== 0 || !ok()) {
+      installing = null;
+      throw new PipelineError('Could not install the local AI models runtime.', { detail: tail(r.stderr) });
+    }
+    console.log('  Installed the local AI runtime (search by meaning, sound tags, voiceover).');
+    return nm;
+  })();
+  return installing;
+}
+
+/** Cosine similarity of unit vectors. */
+export const cosine = (a, b) => {
+  let s = 0;
+  for (let i = 0; i < a.length; i++) s += a[i] * b[i];
+  return s;
+};
+
+/** Rank assets for a query embedding: best frame per clip. [{ id, score }] best first. */
+export function rankByEmbedding(query, embeddings) {
+  return Object.entries(embeddings)
+    .map(([id, vecs]) => ({ id, score: Math.max(...vecs.map((v) => cosine(query, v))) }))
+    .sort((a, b) => b.score - a.score);
+}
+
+/** Turn CLAP scores into the sound tags worth mentioning. */
+export function pickSounds(scores) {
+  const sorted = [...scores].sort((a, b) => b.score - a.score);
+  return sorted.filter((s, i) => s.label !== 'silence' && (s.score >= 0.25 || (i === 0 && s.score >= 0.15))).slice(0, 3).map((s) => s.label);
+}
+
+export function createMl({ toolsDir, library, isBusy = () => false, onChange = () => {} }) {
+  let proc = null;
+  let nextId = 1;
+  const pending = new Map();
+  let idleTimer = null;
+  let state = { status: 'idle', error: null }; // idle | installing | ready | error
+
+  async function worker() {
+    if (proc) return proc;
+    state = { status: 'installing', error: null };
+    const nm = await ensureMlPackages(toolsDir);
+    const p = spawn(process.execPath, [WORKER], {
+      env: {
+        ...process.env,
+        TRANSFORMERS_ENTRY: path.join(nm, '@huggingface', 'transformers', 'dist', 'transformers.node.mjs'),
+        MODEL_CACHE: path.join(toolsDir, 'ml', 'models'),
+      },
+      stdio: ['pipe', 'pipe', 'pipe'],
+    });
+    let stderr = '';
+    p.stderr.on('data', (d) => (stderr = (stderr + d).slice(-4000)));
+    readline.createInterface({ input: p.stdout }).on('line', (line) => {
+      let msg;
+      try {
+        msg = JSON.parse(line);
+      } catch {
+        return;
+      }
+      const cb = pending.get(msg.id);
+      if (!cb) return;
+      pending.delete(msg.id);
+      if (msg.error) cb.reject(new Error(msg.error));
+      else cb.resolve(msg.result);
+    });
+    p.on('close', () => {
+      for (const cb of pending.values()) cb.reject(new Error(`AI worker stopped. ${tail(stderr, 3)}`));
+      pending.clear();
+      proc = null;
+    });
+    proc = p;
+    state = { status: 'ready', error: null };
+    return p;
+  }
+
+  async function call(method, params) {
+    const p = await worker();
+    clearTimeout(idleTimer);
+    const id = nextId++;
+    const result = await new Promise((resolve, reject) => {
+      pending.set(id, { resolve, reject });
+      p.stdin.write(`${JSON.stringify({ id, method, params })}\n`);
+    });
+    // Free the models' memory after 3 idle minutes.
+    clearTimeout(idleTimer);
+    idleTimer = setTimeout(() => proc?.stdin.end(), 3 * 60_000);
+    idleTimer.unref?.();
+    return result;
+  }
+
+  // ---- background indexing --------------------------------------------------
+  const embedFile = (id) => path.join(library.assetDir(id), 'embed.json');
+  const embeddings = {}; // assetId → [vector ×4] (loaded lazily)
+  const queue = [];
+  let working = false;
+
+  async function loadEmbeddings() {
+    for (const a of library.list()) {
+      if (a.kind !== 'video' || a.embedded !== EMBED_VERSION || embeddings[a.id]) continue;
+      try {
+        embeddings[a.id] = JSON.parse(await fs.readFile(embedFile(a.id), 'utf8')).vectors;
+      } catch {
+        /* re-index below */
+      }
+    }
+  }
+
+  function enqueue(ids) {
+    for (const id of ids) if (!queue.includes(id)) queue.push(id);
+    if (!working) drain();
+  }
+
+  async function indexOne(a) {
+    const work = path.join(library.assetDir(a.id), '.ml');
+    await fs.rm(work, { recursive: true, force: true });
+    await fs.mkdir(work, { recursive: true });
+    try {
+      const src = library.sourcePath(a.id);
+      const frames = [];
+      for (const f of [0.12, 0.37, 0.62, 0.87]) {
+        const out = path.join(work, `f${frames.length}.jpg`);
+        const r = await run('ffmpeg', ['-v', 'error', '-y', '-ss', String((a.duration || 1) * f), '-i', src, '-frames:v', '1', '-vf', 'scale=336:-2', out], { timeoutMs: 120_000 });
+        if (r.code === 0) frames.push(out);
+      }
+      const patch = {};
+      if (frames.length) {
+        const vectors = await call('embedImages', { paths: frames });
+        await fs.writeFile(embedFile(a.id), JSON.stringify({ model: EMBED_VERSION, vectors }));
+        embeddings[a.id] = vectors;
+        patch.embedded = EMBED_VERSION;
+      }
+      if (a.hasAudio && a.duration >= 1.5) {
+        const seconds = Math.min(10, a.duration);
+        const start = Math.max(0, a.duration / 2 - seconds / 2);
+        patch.sounds = pickSounds(await call('audioTags', { file: src, start, seconds, labels: SOUND_LABELS }));
+      } else {
+        patch.sounds = [];
+      }
+      await library.setFields(a.id, patch);
+    } finally {
+      await fs.rm(work, { recursive: true, force: true });
+    }
+  }
+
+  async function drain() {
+    working = true;
+    try {
+      while (queue.length) {
+        while (isBusy()) await new Promise((r) => setTimeout(r, 15_000)); // renders first
+        const a = library.get(queue.shift());
+        if (!a || a.kind === 'audio' || a.status !== 'ready') continue;
+        try {
+          await indexOne(a);
+        } catch (err) {
+          state = { status: 'error', error: err.message };
+          console.error(`[ai-index ${a.id}]`, err.message);
+          if (/install|Could not|fetch|network|ENOTFOUND|EAI_AGAIN/i.test(err.message)) {
+            queue.length = 0; // runtime unavailable — try again on the next restart / new upload
+            break;
+          }
+        }
+        onChange({ type: 'ml', ml: status() });
+      }
+    } finally {
+      working = false;
+      onChange({ type: 'ml', ml: status() });
+    }
+  }
+
+  const status = () => ({ ...state, queued: queue.length + (working ? 1 : 0), indexed: Object.keys(embeddings).length });
+
+  return {
+    status,
+    /** Index everything that isn't yet (after startup and whenever a clip becomes ready). */
+    async start() {
+      await loadEmbeddings();
+      enqueue(library.list().filter((a) => a.kind === 'video' && a.status === 'ready' && (a.embedded !== EMBED_VERSION || !Array.isArray(a.sounds))).map((a) => a.id));
+    },
+    onReady(a) {
+      if (a.kind !== 'audio') enqueue([a.id]);
+    },
+    forget(id) {
+      delete embeddings[id];
+    },
+    hasIndex: () => Object.keys(embeddings).length > 0,
+    /** Clips ranked by how well their frames match a text query. */
+    async search(text, { limit = 60 } = {}) {
+      if (!Object.keys(embeddings).length) return [];
+      const [q] = await call('embedText', { texts: [text] });
+      return rankByEmbedding(q, embeddings).slice(0, limit);
+    },
+    stop() {
+      proc?.kill();
+    },
+  };
+}

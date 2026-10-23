@@ -1,15 +1,15 @@
 import fs from 'node:fs/promises';
-import fsSync from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { run, tail, round, PipelineError } from './util.js';
+import { ensureMlPackages } from './ml.js';
 
 /**
  * AI voiceover with Kokoro-82M (Apache-2.0 code and weights — fine for monetised videos), running
- * on the CPU through kokoro-js. The package (~700 MB with ONNX Runtime) is installed on first use
- * into .tools/tts, and the model (~90 MB) is downloaded from Hugging Face on first synthesis.
+ * on the CPU through kokoro-js. The package (~700 MB with ONNX Runtime, shared with the library's
+ * search models) is installed on first use into .tools/ml; the model (~90 MB) is downloaded from
+ * Hugging Face on first synthesis.
  */
-const KOKORO_VERSION = '1.2.1';
 const WORKER = path.join(path.dirname(fileURLToPath(import.meta.url)), 'tts-worker.js');
 
 export const VOICES = {
@@ -26,27 +26,10 @@ export const VOICES = {
 };
 export const VOICEOVER_MODES = ['off', 'auto', 'on'];
 
-let installing = null;
-
-/** Path of kokoro-js' entry module (installed on first use). */
-export function ensureKokoro(toolsDir) {
-  installing ||= (async () => {
-    const dir = path.join(toolsDir, 'tts');
-    const entry = path.join(dir, 'node_modules', 'kokoro-js', 'dist', 'kokoro.js');
-    if (fsSync.existsSync(entry)) return entry;
-    await fs.mkdir(dir, { recursive: true });
-    if (!fsSync.existsSync(path.join(dir, 'package.json'))) {
-      await fs.writeFile(path.join(dir, 'package.json'), JSON.stringify({ name: 'clipforge-tts', private: true, type: 'module' }));
-    }
-    const npm = process.platform === 'win32' ? 'npm.cmd' : 'npm';
-    const r = await run(npm, ['install', `kokoro-js@${KOKORO_VERSION}`, '--no-audit', '--no-fund', '--loglevel=error'], { cwd: dir, timeoutMs: 20 * 60_000 });
-    if (r.code !== 0 || !fsSync.existsSync(entry)) {
-      installing = null;
-      throw new PipelineError('Could not install the voiceover engine (Kokoro).', { detail: tail(r.stderr) });
-    }
-    return entry;
-  })();
-  return installing;
+/** Path of kokoro-js' entry module (shared local AI runtime, installed on first use). */
+export async function ensureKokoro(toolsDir) {
+  const nm = await ensureMlPackages(toolsDir);
+  return path.join(nm, 'kokoro-js', 'dist', 'kokoro.js');
 }
 
 /** Synthesise each line to a WAV in outDir: [{ file, duration }]. */

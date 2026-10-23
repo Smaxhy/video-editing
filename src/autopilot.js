@@ -80,15 +80,16 @@ export function normalizeHashtags(list) {
   return out;
 }
 
-export function buildPlanPrompt({ assets, settings, count, recent }) {
+export function buildPlanPrompt({ assets, settings, count, recent, candidates = count }) {
   return `You are the content strategist and video producer for a short-form creator (Instagram Reels / TikTok / Shorts).
 Below is their whole footage library — an AI watched every clip and described it. Plan the next batch of ${count} short vertical videos made ONLY from this footage.
+Brainstorm ${candidates} candidate ideas and give each a "score" (1-10): how likely it is to stop the scroll and get watched to the end, judged by the strength of the hook and how well the footage supports it. Only the ${count} best-scoring ideas will be made, so be critical.
 
 ## What the creator wants
 ${settings.direction ? `"""\n${settings.direction}\n"""` : '(No direction given — work out what the footage is about and what would perform well with it.)'}
 ${settings.brand ? `Brand / account name: ${settings.brand}\n` : ''}${settings.cta ? `Call to action they like: ${settings.cta}\n` : ''}
 ## Rules
-- ${count} ideas, each a DIFFERENT vibe (for example: cinematic & calm, hype & fast cuts, satisfying ASMR, educational / how-to, funny, story / day-in-the-life, motivational). No two ideas should feel alike.
+- ${candidates} ideas, each a DIFFERENT vibe (for example: cinematic & calm, hype & fast cuts, satisfying ASMR, educational / how-to, funny, story / day-in-the-life, motivational). No two ideas should feel alike.
 - Each idea uses 2–${MAX_IDEA_CLIPS} clips from the library (by id) that genuinely fit it, in story order. Different ideas may reuse a clip, but vary them where you can. Prefer good-quality clips.
 - Length per idea: one of ${settings.lengths.map((l) => `"${l}"`).join(', ')} seconds — pick what suits the idea and the amount of fitting footage.
 - "brief" is the instruction for the video editor: the hook in the first 2 seconds, pacing, what on-screen text/subtitles to show, the mood of the music, how it ends. Concrete, 2–5 sentences.
@@ -104,13 +105,17 @@ ${assets.map(indexLine).join('\n')}
 ## Response
 Reply with ONLY this JSON (no prose):
 {"plan":"2–4 sentences: the content strategy for this batch and why it fits the footage",
- "ideas":[{"title":"short title","vibe":"2–4 words","hook":"…","brief":"…","clips":["<clip id>",…],"length":"30","captionStyle":"bold","accent":"#ffcc00","caption":"…","hashtags":["#…",…]}]}`;
+ "ideas":[{"title":"short title","score":8,"vibe":"2–4 words","hook":"…","brief":"…","clips":["<clip id>",…],"length":"30","captionStyle":"bold","accent":"#ffcc00","caption":"…","hashtags":["#…",…]}]}`;
 }
 
 /** Validate Claude's plan against the library: real clip ids only, allowed lengths, tidy text. */
 export function normalizePlan(raw, { known, lengths, count }) {
   const ideas = [];
-  for (const it of Array.isArray(raw?.ideas) ? raw.ideas : []) {
+  // Best first: Claude scored every candidate; only the top `count` are made.
+  const ranked = (Array.isArray(raw?.ideas) ? raw.ideas : [])
+    .map((it, i) => ({ it, i, score: Number.isFinite(Number(it?.score)) ? Number(it.score) : 5 }))
+    .sort((a, b) => b.score - a.score || a.i - b.i);
+  for (const { it, score } of ranked) {
     const seen = new Set();
     const assetIds = (Array.isArray(it?.clips) ? it.clips : [])
       .map((c) => String(c?.id ?? c).trim())
@@ -131,6 +136,7 @@ export function normalizePlan(raw, { known, lengths, count }) {
       accent: /^#[0-9a-f]{6}$/i.test(it?.accent || '') ? it.accent : null,
       caption: String(it?.caption || '').trim().slice(0, 2000),
       hashtags: normalizeHashtags(it?.hashtags),
+      score: clamp(Math.round(score), 1, 10, 5),
       status: 'queued',
     });
     if (ideas.length >= count) break;
@@ -207,6 +213,8 @@ export function createAutopilot({ dir, library, scanner, renderIdea, otherWork =
     hashtags: i.hashtags,
     captionText: captionText(i),
     clips: i.assetIds.length,
+    score: i.score || null,
+    review: i.review || null,
     status: i.status,
     message: i.message || '',
     progress: i.progress || 0,
@@ -272,6 +280,7 @@ export function createAutopilot({ dir, library, scanner, renderIdea, otherWork =
       assets: shortlist(scanned, data.settings.direction, 300),
       settings: data.settings,
       count: data.settings.perBatch,
+      candidates: Math.min(12, data.settings.perBatch * 2),
       recent,
     });
     const cwd = batchDir(batch);
@@ -349,6 +358,7 @@ export function createAutopilot({ dir, library, scanner, renderIdea, otherWork =
           width: r.width,
           height: r.height,
           jobId: r.jobId,
+          review: r.review ? { score: r.review.score, summary: r.review.summary } : null,
           progress: 1,
           message: '',
           error: null,

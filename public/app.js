@@ -1525,6 +1525,14 @@ async function showResult(r) {
     </div>`;
   }).join('');
   $('#warns').innerHTML = (r.warnings || []).map((w) => `⚠ ${esc(w)}`).join('<br>');
+  const rv = r.review;
+  $('#review').classList.toggle('hidden', !rv);
+  if (rv) {
+    const cls = rv.score >= 8 ? 'good' : rv.score >= 6 ? 'ok' : 'bad';
+    $('#review').innerHTML = `<div class="score ${cls}">Claude's review: <b>${rv.score}/10</b> <span>${esc(rv.summary)}</span></div>
+      <div class="bars">${['hook', 'clarity', 'visuals', 'pacing', 'brief'].map((k) => `<span>${k} ${rv[k]}/10</span>`).join('')}${rv.measures?.lufs != null ? `<span>loudness ${rv.measures.lufs} LUFS</span>` : ''}</div>
+      ${rv.issues?.length ? `<ul>${rv.issues.map((i) => `<li>${esc(i)}</li>`).join('')}</ul>` : ''}`;
+  }
   $('#checkCard').classList.toggle('hidden', !r.checklist?.length);
   $('#checklist').innerHTML = (r.checklist || []).map((c) =>
     `<li><div><div class="rq">${esc(c.request)}</div><div class="dn">${esc(c.done)}</div></div></li>`).join('');
@@ -1802,7 +1810,7 @@ function ideaHtml(b, i) {
   const label = `${i.length}s`;
   return `<article class="variant idea" aria-label="${esc(i.title)}">
     ${media}
-    <div class="vm"><div><div class="vl">${esc(i.title)}</div><div class="vs">${label}${i.size ? ` · ${fmtSize(i.size)}` : ''}${i.vibe ? ` · <span class="vibe">${esc(i.vibe)}</span>` : ''}</div></div></div>
+    <div class="vm"><div><div class="vl">${esc(i.title)}${i.review ? `<span class="stars" title="${esc(i.review.summary)}">★ ${i.review.score}/10</span>` : ''}</div><div class="vs">${label}${i.size ? ` · ${fmtSize(i.size)}` : ''}${i.vibe ? ` · <span class="vibe">${esc(i.vibe)}</span>` : ''}</div></div></div>
     <div class="cap">${esc(i.caption)}${i.hashtags.length ? `\n<span class="tags">${esc(i.hashtags.join(' '))}</span>` : ''}</div>
     <div class="acts">
       <button class="btn sm ghost" type="button" data-copy="${esc(i.captionText)}">Copy caption</button>

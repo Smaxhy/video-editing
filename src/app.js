@@ -29,6 +29,7 @@ import { tightenPlan } from './tighten.js';
 import { preparePicture } from './picture.js';
 import { beatsFor, snapCutsToBeats } from './beats.js';
 import { ensureSfx } from './sfx.js';
+import { reviewVideo } from './review.js';
 import { Server as TusServer } from '@tus/server';
 import { FileStore } from '@tus/file-store';
 
@@ -94,7 +95,8 @@ for (const up of subdirs(DIRS.uploads)) {
 }
 for (const ws of subdirs(DIRS.workspace)) fsSync.rmSync(path.join(ws, 'project'), { recursive: true, force: true });
 for (const out of subdirs(DIRS.output)) {
-  for (const f of filesIn(out)) if (f.endsWith('.raw.mp4')) fsSync.rmSync(f, { force: true });
+  if (out.endsWith('-prev')) fsSync.rmSync(out, { recursive: true, force: true }); // re-edit interrupted by a restart
+  else for (const f of filesIn(out)) if (f.endsWith('.raw.mp4')) fsSync.rmSync(f, { force: true });
 }
 
 // ---------------------------------------------------------------------------
@@ -696,6 +698,32 @@ async function runPipeline(job, { prompt, clipIds, settings, reusePlan }) {
   }
   setStep(job, 'render', 'done', `Rendered ${variants.length} video${variants.length > 1 ? 's' : ''}.`, 1);
 
+  // Self-review: Claude watches the first finished video and scores it against a short-form rubric.
+  let review = null;
+  if (settings.selfReview && variants.length) {
+    const v0 = variants[0];
+    const ver = planned.versions.find((v) => v0.id.startsWith(`${v.id}-`)) || planned.versions[0];
+    setStep(job, 'render', 'active', 'Claude is watching the finished video to review it…', 0.99);
+    try {
+      review = await reviewVideo({
+        file: path.join(outDir, v0.file),
+        workDir: path.join(ws, 'review'),
+        brief: prompt || '(re-render of the saved plan)',
+        target: ver.id === 'full' ? null : Number(ver.id),
+        duration: v0.duration,
+        width: v0.width,
+        height: v0.height,
+        overlays: ver.plan.overlays,
+        captions: settings.captions === 'off' ? 'off' : `${settings.captions} style, from the transcript`,
+        model: settings.plannerModel,
+        signal,
+      });
+    } catch (err) {
+      if (signal.aborted) throw new PipelineError('Cancelled.');
+      notes.push(`Self-review skipped (${String(err.message).split('\n')[0]}).`);
+    }
+  }
+
   const result = {
     title: planned.title,
     checklist: planned.checklist,
@@ -703,10 +731,55 @@ async function runPipeline(job, { prompt, clipIds, settings, reusePlan }) {
     variants,
     totalSize: variants.reduce((s, x) => s + x.size, 0),
     music: musicAsset ? { name: musicAsset.name, start: planned.music.start } : null,
+    review,
+    clipIds: clips.map((c) => c.id),
     settings,
   };
   await fs.writeFile(resultFile(job.id), JSON.stringify(result, null, 2));
   return result;
+}
+
+/**
+ * A weak cut (self-review score under 7) is re-planned once with the reviewer's notes; whichever
+ * version scores higher is kept (the other one's files are deleted).
+ */
+async function maybeReedit(job, opts, first) {
+  const s = opts.settings;
+  if (!s.selfReview || !s.autoFix || opts.reusePlan || !first.review || first.review.score >= 7 || !first.review.fixes) return first;
+  const outDir = path.join(DIRS.output, job.id);
+  const ws = path.join(DIRS.workspace, job.id);
+  const prevOut = `${outDir}-prev`;
+  await fs.rm(prevOut, { recursive: true, force: true });
+  await fs.rename(outDir, prevOut);
+  await fs.copyFile(path.join(ws, 'edit-plan.json'), path.join(ws, 'edit-plan.prev.json')).catch(() => {});
+  setStep(job, 'render', 'active', `Claude rated this cut ${first.review.score}/10 — re-editing it with its own notes…`, 0.5);
+  console.log(`[job ${job.id}] self-review ${first.review.score}/10 — re-editing once with the reviewer's notes`);
+  let second = null;
+  try {
+    second = await runPipeline(job, {
+      ...opts,
+      prompt: `${opts.prompt}\n\n## A reviewer watched the previous cut (score ${first.review.score}/10). Fix this:\n${first.review.fixes}\nIssues: ${first.review.issues.join(' | ')}`,
+      clipIds: first.clipIds,
+      settings: { ...s, autoFind: false },
+    });
+  } catch (err) {
+    if (job.abort?.signal.aborted) throw err;
+    console.error(`[job ${job.id}] re-edit failed:`, err.message);
+  }
+  console.log(`[job ${job.id}] re-edit scored ${second?.review?.score ?? 'n/a'}/10 (first cut ${first.review.score}/10)`);
+  if (second && (second.review?.score ?? 0) >= first.review.score) {
+    await fs.rm(prevOut, { recursive: true, force: true });
+    second.warnings.unshift(`Claude re-edited the first cut (${first.review.score}/10) using its own review — this version scored ${second.review?.score ?? '?'}/10.`);
+    await fs.writeFile(resultFile(job.id), JSON.stringify(second, null, 2));
+    return second;
+  }
+  // Keep the first cut (and its plan, so "re-render only" matches the video).
+  await fs.rm(outDir, { recursive: true, force: true });
+  await fs.rename(prevOut, outDir);
+  await fs.rename(path.join(ws, 'edit-plan.prev.json'), path.join(ws, 'edit-plan.json')).catch(() => {});
+  first.warnings.unshift(`Claude rated this cut ${first.review.score}/10 and tried a re-edit with its notes${second ? ` (${second.review?.score ?? '?'}/10)` : ''} — the first cut was better, so it was kept. Better footage for the brief will raise the score.`);
+  await fs.writeFile(resultFile(job.id), JSON.stringify(first, null, 2));
+  return first;
 }
 
 async function startPipeline(job, opts) {
@@ -721,6 +794,7 @@ async function startPipeline(job, opts) {
   emit(job);
   try {
     job.result = await runPipeline(job, opts);
+    job.result = await maybeReedit(job, opts, job.result);
     job.state = 'done';
     job.message = 'Done!';
   } catch (err) {
@@ -772,6 +846,7 @@ async function renderAutopilotIdea(idea, { prompt, settings, signal, onJob, onPr
     size: v.size,
     width: v.width,
     height: v.height,
+    review: job.result.review || null,
   };
 }
 
@@ -1250,6 +1325,8 @@ function editSettings(s = {}, autoFind = false) {
     polish: s.polish !== false,
     beatSync: s.beatSync !== false,
     sfx: s.sfx !== false,
+    selfReview: s.selfReview !== false,
+    autoFix: s.autoFix !== false,
     motion: s.motion !== false,
     useLogo: s.useLogo !== false,
     watermark: s.watermark === true,

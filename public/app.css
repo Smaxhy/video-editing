@@ -426,3 +426,12 @@ dialog::backdrop { background: rgba(4, 5, 8, .78); backdrop-filter: blur(3px); }
 .activity + .disk { margin-top: 0; }
 @keyframes pulse { 50% { opacity: .3; } }
 @media (prefers-reduced-motion: reduce) { .activity strong::before { animation: none; } }
+
+/* ---- Claude's self-review ---- */
+.review { margin-top: 12px; padding: 12px 14px; border: 1px solid var(--line); border-radius: 12px; background: var(--panel-2); font-size: 13.5px; display: grid; gap: 6px; }
+.review .score { font-size: 15px; font-weight: 800; display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.review .score b { font-size: 20px; }
+.review .score.good b { color: #34d399; } .review .score.ok b { color: #fbbf24; } .review .score.bad b { color: var(--err); }
+.review .bars { display: flex; flex-wrap: wrap; gap: 6px 14px; color: var(--muted); font-size: 12.5px; }
+.review ul { margin: 0; padding-left: 18px; color: var(--muted); }
+.idea .stars { font-size: 11.5px; color: #fbbf24; margin-left: 4px; }

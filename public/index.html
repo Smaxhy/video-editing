@@ -317,6 +317,10 @@
                   <small>B-roll and POV cuts land on the music's downbeats, and those shots pulse on the beat (talking stays word-accurate)</small></span></label>
                 <label class="tg"><input type="checkbox" id="sfx" checked /><span>Sound effects
                   <small>Whooshes on transitions, impacts on titles, pops on hooks &amp; emoji, a riser into the call to action</small></span></label>
+                <label class="tg"><input type="checkbox" id="selfReview" checked /><span>Claude reviews the result
+                  <small>Claude watches the finished video (hook, readability, pacing, sound levels) and scores it out of 10</small></span></label>
+                <label class="tg"><input type="checkbox" id="autoFix" checked /><span>Re-edit weak cuts
+                  <small>Below 7/10, Claude re-edits once using its own review and keeps the better version (takes longer)</small></span></label>
               </div>
             </div>
 
@@ -394,6 +398,7 @@
           <section class="card hidden" id="resultCard" aria-labelledby="resultTitle">
             <h2><span id="resultTitle">Videos</span> <span class="meta" id="resultMeta"></span></h2>
             <div class="variants" id="variants"></div>
+            <div class="review hidden" id="review" role="note"></div>
             <div class="warns" id="warns"></div>
           </section>
 

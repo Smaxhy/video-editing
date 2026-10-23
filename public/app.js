@@ -1519,6 +1519,7 @@ async function showResult(r) {
       <div class="vm">
         <div><div class="vl">${esc(label)}</div><div class="vs">${fmtTime(v.duration)} · ${fmtSize(v.size)}</div></div>
         ${canShareFiles ? `<button class="btn sm ghost share" type="button" data-url="${v.downloadUrl}" data-name="${esc(v.file)}">Share</button>` : ''}
+        ${v.srtUrl ? `<a class="btn sm ghost" href="${v.srtUrl}" download title="Closed captions (.srt) — upload them on YouTube/TikTok/Facebook" aria-label="Download subtitles for ${esc(label)}">CC</a>` : ''}
         <a class="btn sm" href="${v.downloadUrl}" download aria-label="Download ${esc(label)}">↓</a>
       </div>
     </div>`;

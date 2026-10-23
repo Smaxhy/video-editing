@@ -15,7 +15,7 @@ export const FORMATS = {
   '1x1': { width: 1080, height: 1080, label: '1:1 Square', use: 'Feeds · LinkedIn · X' },
   '16x9': { width: 1920, height: 1080, label: '16:9 Landscape', use: 'YouTube · web · pre-roll' },
 };
-export const CAPTION_STYLES = ['off', 'clean', 'bold'];
+export const CAPTION_STYLES = ['off', 'clean', 'bold', 'pop'];
 export const FRAMINGS = ['blur', 'face', 'crop', 'fit'];
 
 // Transitions where the incoming scene overlaps the tail of the previous one.
@@ -67,12 +67,26 @@ export function layoutTimeline(plan) {
 }
 
 /**
- * Turn Whisper word timings inside each scene's source range into caption cues on the output timeline.
+ * Caption grouping per style. Short-form research: 1–3 words per group for high energy, breaking
+ * at natural pauses; clean subtitles read best at up to ~38 characters; SRT sidecars at 42.
+ */
+const CAPTION_RULES = {
+  bold: { maxWords: 3, maxChars: 18, pause: 0.35 },
+  pop: { maxWords: 2, maxChars: 11, pause: 0.25, single: true },
+  clean: { maxWords: 7, maxChars: 38, pause: 0.6 },
+  srt: { maxWords: 12, maxChars: 42, pause: 0.8 },
+};
+const tidyWord = (w) => String(w).trim();
+/** Lower-case word without punctuation, for matching emphasis words. */
+export const wordKey = (w) => String(w).toLowerCase().normalize('NFKD').replace(/[^\p{L}\p{N}]+/gu, '');
+
+/**
+ * Turn Whisper word timings inside each scene's source range into caption cues on the output
+ * timeline. Each cue keeps its words with their own output-timeline times (for karaoke highlighting).
  */
 export function buildCaptions(timeline, transcripts, style) {
   if (style === 'off') return [];
-  const maxWords = style === 'bold' ? 3 : 8;
-  const maxChars = style === 'bold' ? 20 : 42;
+  const rule = CAPTION_RULES[style] || CAPTION_RULES.bold;
   const cues = [];
 
   for (const sc of timeline.scenes) {
@@ -81,9 +95,10 @@ export function buildCaptions(timeline, transcripts, style) {
     const { srcStart, srcEnd } = sc;
     const sceneEnd = sc.tlStart + sc.duration;
     const map = (src) => sc.tlStart + (clamp(src, srcStart, srcEnd) - srcStart) / sc.speed;
-    const words = (t.words?.length ? t.words : segmentsToWords(t.segments || [])).filter(
-      (w) => w.end > srcStart + 0.05 && w.start < srcEnd - 0.05,
-    );
+    const words = (t.words?.length ? t.words : segmentsToWords(t.segments || []))
+      .filter((w) => w.end > srcStart + 0.05 && w.start < srcEnd - 0.05 && tidyWord(w.word))
+      // Whisper sometimes gives a word ~0 s; give it a readable minimum so the highlight is visible.
+      .map((w) => ({ ...w, word: tidyWord(w.word), end: Math.max(w.end, w.start + 0.08) }));
 
     let group = [];
     const flush = () => {
@@ -91,13 +106,17 @@ export function buildCaptions(timeline, transcripts, style) {
       const text = group.map((w) => w.word).join(' ').replace(/\s+([,.!?;:])/g, '$1');
       const start = map(group[0].start);
       const end = Math.min(Math.max(map(group[group.length - 1].end) + 0.15, start + 0.4), sceneEnd);
-      cues.push({ start, end, text: style === 'bold' ? text.toUpperCase() : text });
+      const upper = style === 'bold' || style === 'pop';
+      const cueWords = group.map((w) => ({ text: upper ? w.word.toUpperCase() : w.word, start: round(map(w.start), 3), end: round(map(w.end), 3) }));
+      cues.push({ start, end, text: upper ? text.toUpperCase() : text, words: cueWords });
       group = [];
     };
     for (const w of words) {
       const prev = group[group.length - 1];
       const nextLen = group.reduce((n, g) => n + g.word.length + 1, 0) + w.word.length;
-      if (prev && (w.start - prev.end > 0.6 || group.length >= maxWords || nextLen > maxChars || /[.!?]$/.test(prev.word))) {
+      // "pop" shows one word at a time, but keeps tiny words ("a", "of") with their neighbour.
+      const full = rule.single ? group.length >= 1 && !(group.length === 1 && group[0].word.length <= 3) : group.length >= rule.maxWords;
+      if (prev && (w.start - prev.end > rule.pause || full || nextLen > rule.maxChars || /[.!?]$/.test(prev.word))) {
         flush();
       }
       group.push(w);
@@ -115,6 +134,16 @@ export function buildCaptions(timeline, transcripts, style) {
     .map((c) => ({ ...c, end: Math.min(c.end, total) }))
     .filter((c) => c.end - c.start >= 0.15)
     .map((c) => ({ ...c, start: round(c.start, 3), end: round(c.end, 3) }));
+}
+
+/** SubRip subtitles (sentence-sized cues) for uploading as closed captions. */
+export function toSrt(cues) {
+  const ts = (t) => {
+    const ms = Math.max(0, Math.round(t * 1000));
+    const p = (n, w = 2) => String(n).padStart(w, '0');
+    return `${p(Math.floor(ms / 3600000))}:${p(Math.floor(ms / 60000) % 60)}:${p(Math.floor(ms / 1000) % 60)},${p(ms % 1000, 3)}`;
+  };
+  return cues.map((c, i) => `${i + 1}\n${ts(c.start)} --> ${ts(c.end)}\n${c.text}\n`).join('\n');
 }
 
 function segmentsToWords(segments) {
@@ -212,6 +241,14 @@ export function buildComposition({ plan, clips, transcripts, settings, gsapSrc =
   const safeTop = Math.round(H * (tall > 1.5 ? 0.11 : 0.07));
   const safeBottom = Math.round(H * (tall > 1.5 ? 0.22 : tall > 1.1 ? 0.12 : 0.08));
   const accent = /^#[0-9a-f]{6}$/i.test(settings.accent || '') ? settings.accent : '#7c5cff';
+  // Captions clear the platform UI: ~27% from the bottom on 9:16 (caption text, buttons, nav bar).
+  const capBottom = Math.round(H * (tall > 1.5 ? 0.27 : tall > 1.1 ? 0.14 : 0.1));
+  const fontFaces = [
+    settings.fontFiles?.display && `    @font-face { font-family: "CF Display"; src: url("fonts/${settings.fontFiles.display}"); }`,
+    settings.fontFiles?.body && `    @font-face { font-family: "CF Body"; src: url("fonts/${settings.fontFiles.body}"); font-weight: 100 900; }`,
+  ].filter(Boolean).join('\n');
+  const displayFont = `${settings.fontFiles?.display ? '"CF Display", ' : ''}Impact, "Arial Narrow Bold", sans-serif`;
+  const bodyFont = `${settings.fontFiles?.body ? '"CF Body", ' : ''}system-ui, "Segoe UI", Roboto, Arial, sans-serif`;
   const clipById = new Map(clips.map((c) => [c.id, c]));
 
   const laid = layoutTimeline(plan);
@@ -379,12 +416,45 @@ export function buildComposition({ plan, clips, transcripts, settings, gsapSrc =
     };
   });
 
+  // Captions: karaoke-style active-word highlight, keyword colour + emoji from the planner's
+  // "emphasis" list, pop-in entrances. Highlight colour: the brand accent, or caption yellow.
+  const style = settings.captions;
+  const highlight = accent.toLowerCase() === '#7c5cff' ? '#ffe14d' : accent;
+  const emphasis = new Map((settings.emphasis || []).map((e) => [wordKey(e.word), e.emoji || '']));
+  let lastEmoji = -Infinity;
   const captionHtml = captions.map((c, i) => {
     const id = `cap${i}`;
-    if (settings.captions === 'bold') {
-      tweens.push(`tl.fromTo("#${id}i", { scale: 0.8, opacity: 0 }, { scale: 1, opacity: 1, duration: 0.12, ease: "back.out(2)" }, ${c.start});`);
+    const dur = round(c.end - c.start, 3);
+    if (style === 'pop') {
+      const tilt = i % 2 ? 2 : -2;
+      tweens.push(`tl.fromTo("#${id}i", { scale: 0.45, opacity: 0, rotation: ${-tilt} }, { scale: 1, opacity: 1, rotation: ${tilt / 2}, duration: 0.16, ease: "back.out(3)" }, ${c.start});`);
+    } else if (style === 'bold') {
+      tweens.push(`tl.fromTo("#${id}i", { scale: 0.85, opacity: 0, y: ${Math.round(18 * u)} }, { scale: 1, opacity: 1, y: 0, duration: 0.12, ease: "back.out(2)" }, ${c.start});`);
+    } else {
+      tweens.push(`tl.fromTo("#${id}i", { opacity: 0 }, { opacity: 1, duration: 0.1, ease: "none" }, ${c.start});`);
     }
-    return `    <div id="${id}" class="clip cap cap-${settings.captions}" data-start="${c.start}" data-duration="${round(c.end - c.start, 3)}" data-track-index="9"><span id="${id}i">${escapeHtml(c.text)}</span></div>`;
+    let emoji = '';
+    const words = c.words.map((w, k) => {
+      const key = wordKey(w.text);
+      const strong = emphasis.has(key);
+      const wid = `${id}w${k}`;
+      // Active word: highlight colour + a little pop (karaoke). Not for one-word "pop" captions.
+      if (style !== 'pop' && c.words.length > 1) {
+        const on = Math.max(c.start, w.start);
+        const off = k < c.words.length - 1 ? Math.max(on + 0.06, c.words[k + 1].start) : null;
+        tweens.push(`tl.to("#${wid}", { color: "${highlight}", scale: ${style === 'clean' ? 1 : 1.12}, duration: 0.07, ease: "power2.out" }, ${round(on, 3)});`);
+        if (off != null && !strong) tweens.push(`tl.to("#${wid}", { color: "#ffffff", scale: 1, duration: 0.07, ease: "power1.out" }, ${round(off, 3)});`);
+        else if (off != null) tweens.push(`tl.to("#${wid}", { scale: 1, duration: 0.07 }, ${round(off, 3)});`);
+      }
+      if (strong && emphasis.get(key) && !emoji && w.start - lastEmoji >= 2.5 && style !== 'clean') {
+        emoji = emphasis.get(key);
+        lastEmoji = w.start;
+        tweens.push(`tl.fromTo("#${id}e", { scale: 0, opacity: 0, rotation: -20 }, { scale: 1, opacity: 1, rotation: 0, duration: 0.22, ease: "back.out(3)" }, ${round(Math.max(c.start, w.start), 3)});`);
+      }
+      return `<span id="${wid}" class="w${strong ? ' em' : ''}">${escapeHtml(w.text)}</span>`;
+    });
+    const emojiHtml = emoji ? `<div id="${id}e" class="emoji">${escapeHtml(emoji)}</div>` : '';
+    return `    <div id="${id}" class="clip cap cap-${style}" data-start="${c.start}" data-duration="${dur}" data-track-index="9"><div class="cap-box">${emojiHtml}<span id="${id}i" class="line">${words.join(' ')}</span></div></div>`;
   });
   const layerHtml = (n) => overlayHtml.filter((o) => o.layer === n).map((o) => o.html);
   // Background music: one track under the whole video, ducked wherever an audible scene has speech.
@@ -410,6 +480,7 @@ export function buildComposition({ plan, clips, transcripts, settings, gsapSrc =
   <title>${escapeHtml(plan.title)}</title>
   <script src="${gsapSrc}"></script>
   <style>
+${fontFaces}
     html, body { margin: 0; background: #000; }
     #root { position: relative; width: 100%; height: 100%; overflow: hidden; background: #000;
       font-family: system-ui, -apple-system, "Segoe UI", Roboto, Helvetica, Arial, sans-serif; color: #fff; }
@@ -456,11 +527,22 @@ export function buildComposition({ plan, clips, transcripts, settings, gsapSrc =
     .wm img { position: absolute; top: ${safeTop}px; right: ${px(44)}; max-height: ${px(84)}; max-width: ${px(220)}; object-fit: contain; opacity: .9;
       filter: drop-shadow(0 ${px(3)} ${px(10)} rgba(0,0,0,.45)); }
 
-    .cap { display: flex; justify-content: center; align-items: flex-end; padding-bottom: ${safeBottom}px; }
-    .cap span { display: block; max-width: 84%; text-align: center; }
-    .cap-clean span { font-size: ${px(46)}; font-weight: 600; line-height: 1.25; background: rgba(0,0,0,.62); padding: ${px(8)} ${px(20)}; border-radius: ${px(8)}; }
-    .cap-bold span { font-size: ${px(84)}; font-weight: 900; line-height: 1.05; letter-spacing: -0.01em; color: #fff;
-      -webkit-text-stroke: ${px(4)} #000; paint-order: stroke fill; text-shadow: 0 ${px(6)} ${px(18)} rgba(0,0,0,.55); }
+    /* Captions sit above the Reels/TikTok caption + button area and stay clear of the right-hand icons. */
+    .cap { display: flex; justify-content: center; align-items: flex-end; padding-bottom: ${capBottom}px; }
+    .cap .cap-box { max-width: ${tall > 1.5 ? 78 : 86}%; text-align: center; display: flex; flex-direction: column; align-items: center; }
+    .cap .line { display: block; }
+    .cap .w { display: inline-block; transform-origin: 50% 60%; margin: 0 0.09em; }
+    .cap .emoji { font-family: "Noto Color Emoji", "Apple Color Emoji", sans-serif; font-size: ${px(style === 'pop' ? 120 : 100)}; line-height: 1;
+      margin-bottom: ${px(14)}; filter: drop-shadow(0 ${px(6)} ${px(14)} rgba(0,0,0,.45)); }
+    .cap-clean .line { font-family: ${bodyFont}; font-size: ${px(46)}; font-weight: 700; line-height: 1.3; background: rgba(0,0,0,.62);
+      padding: ${px(10)} ${px(22)}; border-radius: ${px(12)}; }
+    .cap-clean .w { opacity: .92; }
+    .cap-bold .line { font-family: ${bodyFont}; font-size: ${px(80)}; font-weight: 900; line-height: 1.08; letter-spacing: -0.01em; color: #fff;
+      -webkit-text-stroke: ${px(10)} #000; paint-order: stroke fill; text-shadow: 0 ${px(8)} ${px(22)} rgba(0,0,0,.6); }
+    .cap-bold .w.em { color: ${highlight}; }
+    .cap-pop .line { font-family: ${displayFont}; font-size: ${px(132)}; font-weight: 400; line-height: 1; letter-spacing: 0.01em; color: #fff;
+      -webkit-text-stroke: ${px(12)} #000; paint-order: stroke fill; text-shadow: 0 ${px(10)} ${px(26)} rgba(0,0,0,.6); }
+    .cap-pop .w.em { color: ${highlight}; font-size: 1.18em; }
   </style>
 </head>
 <body>
@@ -591,10 +673,19 @@ export async function writeProject({ projectDir, plan, clips, transcripts, setti
   let gsapSrc = 'gsap.min.js';
   if (await exists(GSAP_LOCAL)) await fs.copyFile(GSAP_LOCAL, path.join(projectDir, 'gsap.min.js'));
   else gsapSrc = GSAP_CDN;
+  const fontFiles = {};
+  for (const [key, src] of Object.entries(settings.fontPaths || {})) {
+    if (!src) continue;
+    await fs.mkdir(path.join(projectDir, 'fonts'), { recursive: true });
+    fontFiles[key] = `${key}${path.extname(src)}`;
+    await linkOrCopy(src, path.join(projectDir, 'fonts', fontFiles[key]));
+  }
 
-  const result = buildComposition({ plan, clips: projectClips, transcripts, settings: { ...settings, logoFile, musicFile }, gsapSrc });
+  const result = buildComposition({ plan, clips: projectClips, transcripts, settings: { ...settings, logoFile, musicFile, fontFiles }, gsapSrc });
   await fs.writeFile(path.join(projectDir, 'index.html'), result.html);
-  return result;
+  // Closed-caption sidecar (sentence-sized cues) for uploading to the platform.
+  const srt = toSrt(buildCaptions(result.timeline, transcripts, 'srt'));
+  return { ...result, srt };
 }
 
 /**

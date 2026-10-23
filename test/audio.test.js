@@ -38,3 +38,30 @@ test('music ducking bridges short pauses and recovers smoothly', () => {
   assert.equal(pts.filter((p) => p.v === 0.2).length, 2);
   assert.ok(pts.some((p) => p.v === 1 && Math.abs(p.t - 5.7) < 0.01));
 });
+
+import { buildCaptions, toSrt, wordKey } from '../src/renderer.js';
+import { normalizeResponse } from '../src/editor.js';
+
+test('captions keep per-word timings, honour each style and export SRT', () => {
+  const words = 'one two three four. five six'.split(' ').map((w, i) => ({ word: w, start: i * 0.4, end: i * 0.4 + 0.3 }));
+  const timeline = { scenes: [{ clip: 'a', srcStart: 0, srcEnd: 3, tlStart: 0, duration: 3, speed: 1 }] };
+  const bold = buildCaptions(timeline, { a: { words } }, 'bold');
+  assert.deepEqual(bold.map((c) => c.text), ['ONE TWO THREE', 'FOUR.', 'FIVE SIX']);
+  assert.equal(bold[0].words[1].text, 'TWO');
+  assert.equal(bold[0].words[1].start, 0.4);
+  const pop = buildCaptions(timeline, { a: { words } }, 'pop');
+  assert.ok(pop.every((c) => c.words.length <= 2));
+  const srt = toSrt(buildCaptions(timeline, { a: { words } }, 'srt'));
+  assert.match(srt, /^1\n00:00:00,000 --> 00:00:01,\d{3}\none two three four\.\n/);
+  assert.equal(wordKey('Timber!'), 'timber');
+});
+
+test('planner emphasis words are cleaned and emoji-only', () => {
+  const clips = [{ id: 'clip1', duration: 10 }];
+  const raw = {
+    versions: [{ id: '15', scenes: [{ clip: 'clip1', start: 0, end: 5 }], overlays: [] }],
+    emphasis: [{ word: 'timber now', emoji: '🌲' }, { word: 'art', emoji: 'tree' }, 'cut'],
+  };
+  const r = normalizeResponse(raw, clips, { versions: ['15'] });
+  assert.deepEqual(r.emphasis, [{ word: 'timber', emoji: '🌲' }, { word: 'art', emoji: null }, { word: 'cut', emoji: null }]);
+});

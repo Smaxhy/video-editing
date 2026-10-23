@@ -32,6 +32,7 @@ import { ensureSfx } from './sfx.js';
 import { reviewVideo } from './review.js';
 import { VOICES, VOICEOVER_MODES, synthesize, scheduleLines, estimateWords, mixNarration } from './tts.js';
 import { createMl } from './ml.js';
+import { musicLine, alignedStart } from './musicscan.js';
 import { ensureYunet } from './reframe.js';
 import { createStyles, styleGuideText } from './style.js';
 import { Server as TusServer } from '@tus/server';
@@ -393,6 +394,9 @@ function musicOptions(setting) {
     name: a.name,
     duration: a.duration,
     tags: [a.tags.title, a.tags.artist, a.tags.genre].filter(Boolean).join(' · '),
+    // What ClipForge heard: tempo, energy, drop, loud parts, genre & mood.
+    sound: musicLine(a.music, a.musicTags),
+    drop: a.music?.drop ?? null,
   }));
   const fixed = [...byKey].find(([, a]) => a.id === setting)?.[0];
   return { options: { mode: fixed ? 'fixed' : 'auto', fixed, tracks: list }, byKey };
@@ -585,6 +589,17 @@ async function runPipeline(job, { prompt, clipIds, settings, reusePlan, revise =
   // trending-sound mode the grid comes from a sound the creator saved (timing only, not mixed) or
   // from the tempo Claude chose for the sound to add in the app.
   const timingAsset = settings.trendingSound && library.get(settings.music)?.kind === 'audio' ? library.get(settings.music) : null;
+  // Drop on the peak: each version starts the track so its drop hits the cut Claude marked "peak".
+  const musicStart = {};
+  if (musicAsset) {
+    for (const v of planned.versions) {
+      const lay = layoutTimeline(v.plan);
+      const peak = lay.scenes.find((sc) => sc.peak)?.tlStart;
+      const start = alignedStart({ drop: musicAsset.music?.drop ?? null, duration: musicAsset.duration }, { peak, length: lay.total, fallback: planned.music.start });
+      musicStart[v.id] = start;
+      if (start !== planned.music.start && v === planned.versions[0]) notes.push(`Lined the drop of "${musicAsset.name}" (${musicAsset.music.drop}s) up with the peak of the edit (${round(peak, 1)}s).`);
+    }
+  }
   if (settings.beatSync && (musicAsset || settings.trendingSound)) {
     setStep(job, 'plan', 'active', 'Finding the beat…', 0.37);
     try {
@@ -592,10 +607,10 @@ async function runPipeline(job, { prompt, clipIds, settings, reusePlan, revise =
       const clipDuration = (id) => clips.find((c) => c.id === id)?.duration || 0;
       const ref = musicAsset || timingAsset;
       const beats = ref ? await beatsFor(library.sourcePath(ref.id), path.join(library.cacheDir(ref.id), 'beats-v1.json')) : null;
-      const offset = musicAsset ? planned.music.start : 0;
-      const shift = (list) => list.map((b) => round(b - offset, 3)).filter((b) => b > 0.1);
       let moved = 0;
       planned.versions = planned.versions.map((v) => {
+        const offset = musicAsset ? musicStart[v.id] : 0;
+        const shift = (list) => list.map((b) => round(b - offset, 3)).filter((b) => b > 0.1);
         const out = beats ? { beats: shift(beats.beats), downbeats: shift(beats.downbeats) } : beatGrid(planned.sound?.bpm || 120, layoutTimeline(v.plan).total + 5);
         const r = snapCutsToBeats(v.plan, out, { talking, clipDuration, layout: layoutTimeline });
         moved += r.moved;
@@ -731,7 +746,7 @@ async function runPipeline(job, { prompt, clipIds, settings, reusePlan, revise =
     if (musicAsset && !musicPaths[v.id]) {
       setStep(job, 'render', 'active', `${prefix}Mixing music for ${lengthLabel(v.id)}…`, base);
       musicPaths[v.id] = await prepareMusic(library.sourcePath(musicAsset.id), path.join(ws, 'music', `${v.id}.m4a`), {
-        start: planned.music.start,
+        start: musicStart[v.id] ?? planned.music.start,
         duration: layoutTimeline(v.plan).total,
         signal,
       });

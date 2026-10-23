@@ -140,7 +140,18 @@ const assetSub = (a) => (a.kind === 'audio'
 const assetTitle = (a) => (a.kind === 'audio' && a.tags.title ? a.tags.title : a.name);
 /** One line of what Claude saw, plus the first few tags. */
 function aiHtml(a) {
-  if (a.kind === 'audio') return '<div class="tagrow"><span class="tag kind">Music</span></div>';
+  if (a.kind === 'audio') {
+    // What ClipForge heard: tempo, energy, genre, mood.
+    const m = a.music;
+    const t = a.musicTags;
+    const chips = [
+      m?.bpm ? `<span class="tag snd" title="Tempo">♩ ${m.bpm} BPM</span>` : '',
+      m?.energy ? `<span class="tag ${m.energy === 'high' ? 'q-good' : m.energy === 'medium' ? 'q-ok' : ''}" title="Energy">⚡ ${m.energy}</span>` : '',
+      ...(t?.genres || []).slice(0, 1).map((g) => `<span class="tag">${esc(g)}</span>`),
+      ...(t?.moods || []).slice(0, 2).map((x) => `<span class="tag">${esc(x)}</span>`),
+    ].join('');
+    return `<div class="tagrow"><span class="tag kind">Music</span>${chips}</div>`;
+  }
   if (a.ai.status === 'error') return '<div class="ai-line" style="color:var(--warn)">AI scan failed — open to retry</div>';
   const q = a.quality?.score != null
     ? `<span class="tag ${a.quality.score >= 60 ? 'q-good' : a.quality.score >= 35 ? 'q-ok' : 'q-bad'}" title="Measured quality: sharpness, exposure, shake, sound${a.quality.flags.length ? ` — ${esc(a.quality.flags.join(', '))}` : ''}">★ ${a.quality.score}${a.quality.flags.length ? ` · ${esc(a.quality.flags[0])}` : ''}</span>`
@@ -162,7 +173,7 @@ function assetCard(a) {
 }
 
 /** Search matches the file name, Claude's description and tags, and music metadata — every word must hit. */
-const haystack = (a) => [a.name, a.ai?.summary, ...(a.ai?.tags || []), ...(a.ai?.moments || []).map((m) => m.what), ...(a.sounds || []), ...(a.quality?.flags || []), ...Object.values(a.tags || {})]
+const haystack = (a) => [a.name, a.ai?.summary, ...(a.ai?.tags || []), ...(a.ai?.moments || []).map((m) => m.what), ...(a.sounds || []), ...(a.musicTags?.genres || []), ...(a.musicTags?.moods || []), a.music?.energy, ...(a.quality?.flags || []), ...Object.values(a.tags || {})]
   .filter(Boolean).join(' ').toLowerCase();
 function visibleAssets(query, sort, filter = 'all') {
   const words = query.trim().toLowerCase().split(/\s+/).filter(Boolean);
@@ -972,7 +983,16 @@ function refreshViewer(a, first = false) {
     $('#vPlayer .wait').textContent = `Making a browser-friendly preview (${a.preview.proxyReason})… ${Math.round((a.preview.progress || 0) * 100)}%`;
   }
   $('#vFacts').innerHTML = facts(a.kind === 'audio'
-    ? [['Duration', fmtTime(a.duration)], ['Title', a.tags.title || '—'], ['Artist', a.tags.artist || '—'], ['Genre', a.tags.genre || '—'], ['File size', fmtSize(a.size)], ['Added', new Date(a.createdAt).toLocaleString()]]
+    ? [
+      ['Duration', fmtTime(a.duration)], ['Title', a.tags.title || '—'], ['Artist', a.tags.artist || '—'], ['Genre', a.tags.genre || a.musicTags?.genres?.join(' / ') || '—'],
+      ...(a.music ? [
+        ['Tempo', a.music.bpm ? `${a.music.bpm} BPM` : '—'],
+        ['Energy', a.music.energy],
+        ...(a.musicTags?.moods?.length ? [['Mood', a.musicTags.moods.join(', ')]] : []),
+        ['Drop', a.music.drop != null ? `at ${fmtTime(a.music.drop)} — lined up with the peak of your edit` : 'no clear drop'],
+      ] : [['Listening', 'Measuring tempo, energy and the drop…']]),
+      ['File size', fmtSize(a.size)], ['Added', new Date(a.createdAt).toLocaleString()],
+    ]
     : [
       ['Duration', fmtTime(a.duration)],
       ['Resolution', `${a.width}×${a.height}`],
@@ -1474,7 +1494,7 @@ function renderMusicSelect() {
   const tracks = state.assets.filter((a) => a.kind === 'audio' && a.status === 'ready');
   const want = state.musicWanted || sel.value || 'auto';
   sel.innerHTML = `<option value="auto">Claude picks from my music (${tracks.length})</option><option value="off">No music</option>` +
-    (tracks.length ? `<optgroup label="Use this track">${tracks.map((a) => `<option value="${a.id}">${esc(assetTitle(a))}${a.tags.artist ? ` — ${esc(a.tags.artist)}` : ''} (${fmtTime(a.duration)})</option>`).join('')}</optgroup>` : '');
+    (tracks.length ? `<optgroup label="Use this track">${tracks.map((a) => `<option value="${a.id}">${esc(assetTitle(a))}${a.tags.artist ? ` — ${esc(a.tags.artist)}` : ''} (${fmtTime(a.duration)}${a.music?.bpm ? ` · ${a.music.bpm} BPM` : ''}${a.musicTags?.moods?.[0] ? ` · ${esc(a.musicTags.moods[0])}` : ''})</option>`).join('')}</optgroup>` : '');
   sel.value = [...sel.options].some((o) => o.value === want) ? want : 'auto';
   $('#musicHint').textContent = sel.value === 'auto' && !tracks.length
     ? 'Your library has no music yet — drop MP3/WAV files on the Library page (or import a Drive folder with music).'

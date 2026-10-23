@@ -5,6 +5,7 @@ import path from 'node:path';
 
 import { run, probe, exists, tail, PipelineError } from './util.js';
 import { measureQuality } from './quality.js';
+import { scanMusic, MUSIC_VERSION } from './musicscan.js';
 
 // v2: measured as 8-bit (10-bit phone footage used to read as over-exposed).
 const QUALITY_VERSION = 2;
@@ -129,6 +130,8 @@ export function createLibrary({ dir, onChange = () => {}, onReady = () => {}, is
       ai: a.ai || { status: 'none' },
       quality: a.quality || null,
       sounds: a.sounds || null,
+      music: a.music && !a.music.error ? a.music : null,
+      musicTags: a.musicTags || null,
       embedded: a.embedded || null,
       styleRef: Boolean(a.styleRef),
       shrunk: a.shrunk && a.shrunk !== 'failed' ? a.shrunk.from : null,
@@ -188,7 +191,7 @@ export function createLibrary({ dir, onChange = () => {}, onReady = () => {}, is
   }
 
   const needsHeavy = (a) =>
-    a.kind !== 'audio' &&
+    a.kind === 'audio' ? a.music?.v !== MUSIC_VERSION :
     ((settings.shrinkLarge && !a.shrunk && shouldShrink(a, a.size)) ||
       (a.preview.proxyReason && !['ready', 'failed'].includes(a.preview.proxy)) ||
       a.quality?.v !== QUALITY_VERSION);
@@ -197,6 +200,7 @@ export function createLibrary({ dir, onChange = () => {}, onReady = () => {}, is
     const src = file(a.id, a.file);
     if (a.kind === 'audio') {
       await update(a, { status: 'ready' });
+      if (needsHeavy(a)) enqueueHeavy(a.id); // "listen" to it: tempo, energy, drop
       return onReady(a);
     }
     if (!a.preview.sprite) {
@@ -213,6 +217,14 @@ export function createLibrary({ dir, onChange = () => {}, onReady = () => {}, is
   }
 
   async function makeHeavy(a) {
+    if (a.kind === 'audio') {
+      try {
+        await update(a, { music: (await scanMusic(file(a.id, a.file))) || { v: MUSIC_VERSION, error: 'too short' } });
+      } catch (err) {
+        await update(a, { music: { v: MUSIC_VERSION, error: err.message } });
+      }
+      return onReady(a); // now the AI index can tag its genre and mood
+    }
     if (settings.shrinkLarge && !a.shrunk && shouldShrink(a, a.size)) await shrink(a);
     if (!assets.has(a.id)) return;
     if (a.preview.proxyReason && !['ready', 'failed'].includes(a.preview.proxy)) {

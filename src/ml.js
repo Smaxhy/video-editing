@@ -21,6 +21,31 @@ export const SOUND_LABELS = [
   'crowd', 'laughter', 'applause', 'traffic', 'hammering', 'wood cracking', 'footsteps', 'silence',
 ];
 
+/** Zero-shot prompts for music (what CLAP hears) → the short tag shown to Claude. */
+export const MUSIC_TAGS_VERSION = 1;
+export const MUSIC_GENRES = {
+  'hip hop / rap': 'a hip hop rap song', drill: 'a dark drill beat with sliding 808 bass', trap: 'a trap beat with hi-hat rolls',
+  phonk: 'a phonk track with cowbell and distorted bass', 'lo-fi': 'a mellow lo-fi hip hop beat', pop: 'a catchy pop song',
+  'EDM / house': 'an electronic dance music track', rock: 'a rock song with electric guitars', acoustic: 'an acoustic guitar song',
+  cinematic: 'an epic cinematic orchestral score', piano: 'a solo piano piece', 'R&B': 'a smooth R&B song', ambient: 'calm ambient music',
+  'funk / disco': 'a funky disco groove', country: 'a country song', latin: 'a latin reggaeton song', jazz: 'a jazz track',
+  'meme / quirky': 'a quirky funny cartoon tune',
+};
+export const MUSIC_MOODS = {
+  energetic: 'energetic hype music', aggressive: 'aggressive intense music', happy: 'happy upbeat music', sad: 'sad emotional music',
+  calm: 'calm relaxing music', epic: 'epic powerful music', dark: 'dark mysterious music', motivational: 'motivational inspiring music',
+  funny: 'funny playful music', romantic: 'romantic music', nostalgic: 'nostalgic dreamy music', tense: 'tense suspenseful music',
+  confident: 'confident swagger music', satisfying: 'smooth satisfying chill music',
+};
+
+/** Best tags from CLAP scores: the top one, plus the next if close. Exported for tests. */
+export function pickTop(scores, table, max = 2) {
+  const back = Object.fromEntries(Object.entries(table).map(([k, v]) => [v, k]));
+  const sorted = [...scores].sort((a, b) => b.score - a.score).filter((s) => back[s.label]);
+  if (!sorted.length) return [];
+  return sorted.filter((s, i) => i === 0 || (i < max && s.score >= sorted[0].score * 0.55)).map((s) => back[s.label]);
+}
+
 let installing = null;
 
 /** Install (once) the shared model runtime; returns its node_modules folder. */
@@ -152,7 +177,19 @@ export function createMl({ toolsDir, library, isBusy = () => false, onChange = (
     if (!working) drain();
   }
 
+  async function tagMusic(a) {
+    const src = library.sourcePath(a.id);
+    // Listen where the track is most itself: its drop or first loud part, else the middle.
+    const at = a.music?.drop ?? a.music?.loud?.[0]?.[0] ?? Math.max(0, (a.duration || 20) / 2 - 5);
+    const start = Math.max(0, Math.min(at, (a.duration || 10) - 10));
+    const seconds = Math.min(10, a.duration || 10);
+    const genres = pickTop(await call('audioTags', { file: src, start, seconds, labels: Object.values(MUSIC_GENRES) }), MUSIC_GENRES);
+    const moods = pickTop(await call('audioTags', { file: src, start, seconds, labels: Object.values(MUSIC_MOODS) }), MUSIC_MOODS, 3);
+    await library.setFields(a.id, { musicTags: { v: MUSIC_TAGS_VERSION, genres, moods } });
+  }
+
   async function indexOne(a) {
+    if (a.kind === 'audio') return tagMusic(a);
     const work = path.join(library.assetDir(a.id), '.ml');
     await fs.rm(work, { recursive: true, force: true });
     await fs.mkdir(work, { recursive: true });
@@ -192,7 +229,7 @@ export function createMl({ toolsDir, library, isBusy = () => false, onChange = (
         // need ~1.5 GB) — never compete with a render or starve the codespace.
         while (isBusy() || os.freemem() < 1.8 * 1024 ** 3) await new Promise((r) => setTimeout(r, 20_000));
         const a = library.get(queue.shift());
-        if (!a || a.kind === 'audio' || a.status !== 'ready') continue;
+        if (!a || a.status !== 'ready') continue;
         try {
           await indexOne(a);
         } catch (err) {
@@ -211,6 +248,10 @@ export function createMl({ toolsDir, library, isBusy = () => false, onChange = (
     }
   }
 
+  // Music is tagged once its scan (tempo, drop) is done, so CLAP listens to the right part.
+  const needsIndex = (a) =>
+    a.kind === 'audio' ? Boolean(a.music) && a.musicTags?.v !== MUSIC_TAGS_VERSION : a.embedded !== EMBED_VERSION || !Array.isArray(a.sounds);
+
   const status = () => ({ ...state, queued: queue.length + (working ? 1 : 0), indexed: Object.keys(embeddings).length });
 
   return {
@@ -224,10 +265,10 @@ export function createMl({ toolsDir, library, isBusy = () => false, onChange = (
       }
       started = true;
       await loadEmbeddings();
-      enqueue(library.list().filter((a) => a.kind === 'video' && a.status === 'ready' && (a.embedded !== EMBED_VERSION || !Array.isArray(a.sounds))).map((a) => a.id));
+      enqueue(library.list().filter((a) => a.status === 'ready' && needsIndex(a)).map((a) => a.id));
     },
     onReady(a) {
-      if (started && a.kind !== 'audio' && state.status !== 'off') enqueue([a.id]);
+      if (started && state.status !== 'off' && needsIndex(a)) enqueue([a.id]);
     },
     forget(id) {
       delete embeddings[id];

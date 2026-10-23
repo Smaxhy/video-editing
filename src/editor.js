@@ -11,10 +11,12 @@ export const GOALS = ['social', 'ad', 'both'];
 export const LENGTHS = ['15', '30', '60', 'full'];
 
 const GOAL_GUIDE = {
-  social: `ORGANIC SOCIAL (TikTok / Reels / Shorts):
-- The first 1.5 seconds decide everything: open on the most surprising, emotional or useful line — not on "hi everyone". Pull a strong moment forward if needed.
-- Add a "hook" overlay (2-6 punchy words) over the first ~2.5s that teases the payoff.
-- Fast pacing: remove every pause, breath, filler word and retake. Talking-head jump cuts are fine — alternate "effect": "punch-in" on every other cut to hide them.
+  social: `ORGANIC SOCIAL (TikTok / Reels / Shorts) — it must feel made by a person, not a template:
+- The first 1.5 seconds decide everything: open on the most surprising, emotional or useful moment — not on "hi everyone". Pull a strong moment forward if needed.
+- One short "hook" overlay (2-6 words) over the opening ~2 seconds that teases the payoff. Keep other on-screen text rare and purposeful — not a title on every shot.
+- Keep it moving but human: cut out dead air and retakes, yet keep the natural rhythm of speech and the odd real reaction or breath. Vary shot lengths (some 1 s, some 3-4 s) — never a mechanical every-N-seconds pattern.
+- Mostly straight cuts. Use a transition only where the story changes place or time. Effects ("kenburns"/"punch-in") sparingly, where they help.
+- Let real sound live: natural sounds (a saw starting, laughter, wind) are part of the story.
 - End on a payoff or a loop-able line. No slow outros.`,
   ad: `ADVERTISEMENT (paid social / pre-roll):
 - Structure: Hook (0-3s) → Problem or desire → Product/solution & proof → Call to action.
@@ -159,7 +161,11 @@ Every version will be rendered in these frame formats: ${formats}. Keep overlay 
 Captions: ${options.captions === 'off' ? 'OFF' : `burned in automatically from the transcript (style "${options.captions}") — do NOT add "caption" overlays repeating spoken words. Fill "emphasis" with the 4-12 spoken words that carry the meaning (numbers, key nouns, payoff words, strong verbs); they are coloured and popped in the captions. Add a fitting emoji to the most visual ones (max one emoji per ~3 seconds; skip emoji for serious topics)`}.
 ${brandLines.length ? `${brandLines.join('\n')}\n` : ''}
 ## Style guide (only where the user is silent)
-${GOAL_GUIDE[options.goal]}
+${options.style ? `Match the creator's own style — copied from reference videos they love. This beats the generic advice below.
+${options.style}
+
+Generic advice (only where the style above says nothing):
+` : ''}${GOAL_GUIDE[options.goal]}
 ${musicSection}${voiceoverSection}
 ## Clip catalog
 ${catalog}

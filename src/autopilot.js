@@ -32,6 +32,7 @@ export const DEFAULT_SETTINGS = {
   plannerModel: 'sonnet',
   voiceover: 'auto',
   voice: 'am_michael',
+  style: null,
 };
 const VOICE_IDS = ['am_michael', 'am_fenrir', 'am_puck', 'am_onyx', 'bm_george', 'bm_fable', 'af_heart', 'af_bella', 'af_nicole', 'bf_emma'];
 
@@ -51,6 +52,7 @@ export function normalizeSettings(s = {}, prev = DEFAULT_SETTINGS) {
     plannerModel: PLANNER_MODELS.includes(s.plannerModel) ? s.plannerModel : prev.plannerModel,
     voiceover: ['off', 'auto', 'on'].includes(s.voiceover) ? s.voiceover : prev.voiceover || 'auto',
     voice: VOICE_IDS.includes(s.voice) ? s.voice : prev.voice || 'am_michael',
+    style: s.style === undefined ? prev.style ?? null : /^[a-z0-9-]{1,40}$/i.test(s.style || '') ? s.style : null,
   };
 }
 
@@ -85,14 +87,14 @@ export function normalizeHashtags(list) {
   return out;
 }
 
-export function buildPlanPrompt({ assets, settings, count, recent, candidates = count }) {
+export function buildPlanPrompt({ assets, settings, count, recent, candidates = count, styleGuide = null }) {
   return `You are the content strategist and video producer for a short-form creator (Instagram Reels / TikTok / Shorts).
 Below is their whole footage library — an AI watched every clip and described it. Plan the next batch of ${count} short vertical videos made ONLY from this footage.
 Brainstorm ${candidates} candidate ideas and give each a "score" (1-10): how likely it is to stop the scroll and get watched to the end, judged by the strength of the hook and how well the footage supports it. Only the ${count} best-scoring ideas will be made, so be critical.
 
 ## What the creator wants
 ${settings.direction ? `"""\n${settings.direction}\n"""` : '(No direction given — work out what the footage is about and what would perform well with it.)'}
-${settings.brand ? `Brand / account name: ${settings.brand}\n` : ''}${settings.cta ? `Call to action they like: ${settings.cta}\n` : ''}
+${styleGuide ? `\n## The creator's style (copied from reference videos they love — every idea must fit it)\n${styleGuide}\n` : ''}${settings.brand ? `Brand / account name: ${settings.brand}\n` : ''}${settings.cta ? `Call to action they like: ${settings.cta}\n` : ''}
 ## Rules
 - ${candidates} ideas, each a DIFFERENT vibe (for example: cinematic & calm, hype & fast cuts, satisfying ASMR, educational / how-to, funny, story / day-in-the-life, motivational). No two ideas should feel alike.
 - Each idea uses 2–${MAX_IDEA_CLIPS} clips from the library (by id) that genuinely fit it, in story order. Different ideas may reuse a clip, but vary them where you can. Prefer good-quality clips.
@@ -183,7 +185,7 @@ async function linkOrCopy(from, to) {
  * @param {Function} o.onChange       broadcast (type 'autopilot')
  * @param {Function} [o.plan]         injectable Claude call for tests
  */
-export function createAutopilot({ dir, library, scanner, renderIdea, otherWork = () => false, onChange = () => {}, plan = callClaude, now = Date.now }) {
+export function createAutopilot({ dir, library, scanner, renderIdea, otherWork = () => false, onChange = () => {}, plan = callClaude, now = Date.now, styleGuide = () => null }) {
   const file = path.join(dir, 'autopilot.json');
   let data = { settings: { ...DEFAULT_SETTINGS }, lastRun: null, failedAt: null, batches: [] };
   let current = null; // { batchId, abort, phase, message }
@@ -262,7 +264,7 @@ export function createAutopilot({ dir, library, scanner, renderIdea, otherWork =
   };
 
   async function planBatch(batch, signal) {
-    const videos = library.list().filter((a) => a.kind === 'video' && a.status === 'ready');
+    const videos = library.list().filter((a) => a.kind === 'video' && a.status === 'ready' && !a.styleRef);
     if (!videos.length) {
       throw new PipelineError('No videos in your library yet.', { hint: 'Upload or import videos — Autopilot plans from what is in the library.' });
     }
@@ -274,7 +276,7 @@ export function createAutopilot({ dir, library, scanner, renderIdea, otherWork =
         onProgress: (done, total) => say('scan', `Claude is watching your library: ${done}/${total}…`),
       });
     }
-    const scanned = library.list().filter((a) => a.kind === 'video' && a.status === 'ready' && a.ai?.status === 'done');
+    const scanned = library.list().filter((a) => a.kind === 'video' && a.status === 'ready' && a.ai?.status === 'done' && !a.styleRef);
     if (!scanned.length) throw new PipelineError('Claude could not scan any of your videos.', { hint: 'Check the AI scan bar on the Library page.' });
     say('plan', `Claude is planning ${data.settings.perBatch} video${data.settings.perBatch > 1 ? 's' : ''}…`);
     const recent = data.batches
@@ -287,6 +289,7 @@ export function createAutopilot({ dir, library, scanner, renderIdea, otherWork =
       count: data.settings.perBatch,
       candidates: Math.min(12, data.settings.perBatch * 2),
       recent,
+      styleGuide: styleGuide(data.settings.style),
     });
     const cwd = batchDir(batch);
     await fs.mkdir(cwd, { recursive: true });
@@ -331,6 +334,7 @@ export function createAutopilot({ dir, library, scanner, renderIdea, otherWork =
           plannerModel: data.settings.plannerModel,
           voiceover: data.settings.voiceover,
           voice: data.settings.voice,
+          style: data.settings.style,
         };
         let last = 0;
         const r = await renderIdea(idea, {

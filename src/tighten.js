@@ -48,14 +48,14 @@ export function keepRanges(words, start, end, { maxGap = MAX_GAP } = {}) {
 }
 
 /** Split talking scenes around pauses and fillers; returns { plan, removed } (seconds cut). */
-export function tightenPlan(plan, transcripts) {
+export function tightenPlan(plan, transcripts, { maxGap = MAX_GAP } = {}) {
   const before = layoutTimeline(plan);
   const scenes = [];
   const pieces = []; // per original scene: [{ index in new scenes, srcStart, srcEnd }]
   plan.scenes.forEach((s) => {
     const t = transcripts[s.clip];
     const words = t?.words?.length ? t.words : [];
-    const keep = s.speed === 1 && words.length ? keepRanges(words, s.start, s.end) : [[s.start, s.end]];
+    const keep = s.speed === 1 && words.length ? keepRanges(words, s.start, s.end, { maxGap }) : [[s.start, s.end]];
     const mine = [];
     keep.forEach(([a, b], k) => {
       mine.push({ index: scenes.length, srcStart: a, srcEnd: b });

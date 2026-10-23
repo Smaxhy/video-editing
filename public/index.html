@@ -163,6 +163,9 @@
           <label>Call to action<input class="field" id="autoCta" maxlength="60" placeholder="Follow for more" autocomplete="off" /></label>
         </div>
         <div class="autogrid">
+          <label>Style
+            <select class="field" id="autoStyle"></select>
+          </label>
           <label>Voiceover
             <select class="field" id="autoVoiceover">
               <option value="auto">Auto — when footage has no talking</option>
@@ -253,6 +256,14 @@
                 <button type="button" data-v="30" aria-pressed="true">30s</button>
                 <button type="button" data-v="60">60s</button>
                 <button type="button" data-v="full">Full</button>
+              </div>
+            </div>
+
+            <div class="opt"><label class="lbl" for="style">Style</label>
+              <div class="music-row">
+                <select id="style"></select>
+                <button class="btn sm ghost" type="button" data-open-style>Copy a style from reels…</button>
+                <small class="hint-line" id="styleHint">Natural ClipForge style. Copy a creator's style and every edit follows their pacing, captions, colour and feel.</small>
               </div>
             </div>
 
@@ -487,6 +498,30 @@
     <button class="icon-btn" type="button" data-close aria-label="Close"><svg><use href="#i-x"/></svg></button>
   </div>
   <div class="dlg-b" id="imBody"></div>
+</dialog>
+
+<!-- Copy a style -->
+<dialog id="styleDlg" aria-labelledby="stTitle">
+  <div class="dlg-h">
+    <h2 id="stTitle">Copy a style from reels you like</h2>
+    <button class="icon-btn" type="button" data-close aria-label="Close"><svg><use href="#i-x"/></svg></button>
+  </div>
+  <div class="dlg-b">
+    <p class="hint-line" style="margin-top:0">Give ClipForge 2–5 videos whose look &amp; feel you want. It measures how they're cut (shot length, talking, colour, loudness) and Claude watches them to copy captions, hooks, pacing, effects and the little human touches. Your videos are never posted.</p>
+    <label class="lbl" for="stName">Name (optional)</label>
+    <input class="field" id="stName" maxlength="40" placeholder="e.g. Arborist POV" autocomplete="off" style="width:100%" />
+    <label class="lbl" for="stUrls" style="margin-top:12px;display:block">Links to public reels / TikToks / Shorts — one per line</label>
+    <textarea class="field" id="stUrls" rows="3" placeholder="https://www.instagram.com/reel/…&#10;https://www.tiktok.com/@…/video/…"></textarea>
+    <small class="hint-line">Instagram often blocks downloads without a login — if a link fails, save the reel to your phone, upload it to the Library and tick it below.</small>
+    <div class="lbl" style="margin-top:12px">…or pick videos you uploaded</div>
+    <ul class="st-pick" id="stPick" aria-label="Library videos"></ul>
+    <div class="dlg-f" style="padding:12px 0 0;border:0">
+      <span class="grow" id="stMsg" aria-live="polite"></span>
+      <button class="btn" type="button" id="stGo">Study this style</button>
+    </div>
+    <h3 class="lbl" style="margin-top:18px">Your styles</h3>
+    <ul class="st-list" id="stList"></ul>
+  </div>
 </dialog>
 
 <!-- Library picker for a project -->

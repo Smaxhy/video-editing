@@ -95,3 +95,17 @@ test('sound suggestions are cleaned and a beat grid is made from the tempo', () 
   const txt = captionText({ title: 'T', caption: 'C', hashtags: ['#a'], sound: { search: ['epic sound'], style: 'cinematic', part: 'the drop' } });
   assert.match(txt, /Sound to add: epic sound — cinematic \(the drop\)/);
 });
+
+test('sound suggestions carry the vibe, energy and alternatives', () => {
+  const s = normalizeSound({ vibe: 'calm satisfying craft', energy: 'low', search: ['soft acoustic'], options: [{ search: 'lofi chill', style: 'lo-fi' }, { style: 'no search' }], bpm: 85 });
+  assert.equal(s.vibe, 'calm satisfying craft');
+  assert.equal(s.energy, 'low');
+  assert.deepEqual(s.options, [{ search: 'lofi chill', style: 'lo-fi' }]);
+  assert.equal(normalizeSound({ search: ['x'], energy: 'extreme' }).energy, null);
+});
+
+import { extractJson } from '../src/editor.js';
+
+test('planner replies with trailing commas or curly quotes are still read', () => {
+  assert.deepEqual(extractJson('Here you go: {"a": [1, 2,], "b": {"c": “x”,},}'), { a: [1, 2], b: { c: 'x' } });
+});

@@ -17,7 +17,12 @@ import { run, probe, exists, tail, PipelineError } from './util.js';
  *   library/<assetId>/proxy.mp4      small H.264 copy, only when the browser can't play the original
  *   library/<assetId>/cache/…        transcripts, analysis, seekable/blur/voice renders (shared by projects)
  *
- * Previews are made in a background queue (one at a time) so big uploads finish instantly.
+ * Previews are made in two background queues so big uploads finish instantly:
+ *   - fast: storyboard + contact sheet (a few seconds per clip) → the clip is "ready" and Claude can
+ *     scan it straight away;
+ *   - heavy: shrinking 4K to 1080p and browser preview copies (full re-encodes). These wait while a
+ *     video is rendering, so they never slow a render down or swap a file a render is reading.
+ * Every ffmpeg call has a time limit, so one broken file can't freeze the queue.
  */
 
 export const VIDEO_EXT = /\.(mp4|mov|m4v|mkv|webm|avi|mts|m2ts|mpg|mpeg|3gp|wmv|flv|mxf|ts)$/i;
@@ -74,7 +79,12 @@ export function sheetLayout(duration) {
   return { count, cols: 4, rows: Math.ceil(count / 4), w: 384, h: 216, times };
 }
 
-export function createLibrary({ dir, onChange = () => {}, onReady = () => {} }) {
+const FRAME_TIMEOUT = 2 * 60_000;
+/** A full re-encode gets 30 min plus 20× the clip's length (2-core machines encode 4K slowly). */
+const encodeTimeout = (duration) => 30 * 60_000 + (duration || 0) * 20_000;
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+
+export function createLibrary({ dir, onChange = () => {}, onReady = () => {}, isRendering = () => false }) {
   const incoming = path.join(dir, '.incoming');
   fsSync.mkdirSync(incoming, { recursive: true });
   const settingsFile = path.join(dir, '.library.json');
@@ -121,12 +131,18 @@ export function createLibrary({ dir, onChange = () => {}, onReady = () => {} }) 
     };
   }
 
-  // ---- background preview queue ----------------------------------------------
-  const queue = [];
+  // ---- background preview queues ---------------------------------------------
+  const queue = []; // fast: storyboard + contact sheet
+  const heavy = []; // re-encodes: shrink + proxy
   let working = false;
+  let heavyWorking = false;
   function enqueue(id) {
     if (!queue.includes(id)) queue.push(id);
     if (!working) drain();
+  }
+  function enqueueHeavy(id) {
+    if (!heavy.includes(id)) heavy.push(id);
+    if (!heavyWorking) drainHeavy();
   }
   async function drain() {
     working = true;
@@ -141,6 +157,20 @@ export function createLibrary({ dir, onChange = () => {}, onReady = () => {} }) 
     }
     working = false;
   }
+  async function drainHeavy() {
+    heavyWorking = true;
+    while (heavy.length) {
+      while (isRendering() || queue.length) await sleep(5_000); // renders and storyboards first
+      const a = assets.get(heavy.shift());
+      if (!a) continue;
+      try {
+        await makeHeavy(a);
+      } catch (err) {
+        console.error(`[library ${a.id}]`, err.message);
+      }
+    }
+    heavyWorking = false;
+  }
 
   async function update(a, patch) {
     if (!assets.has(a.id)) return; // deleted while working
@@ -149,13 +179,17 @@ export function createLibrary({ dir, onChange = () => {}, onReady = () => {} }) 
     changed(a);
   }
 
+  const needsHeavy = (a) =>
+    a.kind !== 'audio' &&
+    ((settings.shrinkLarge && !a.shrunk && shouldShrink(a, a.size)) ||
+      (a.preview.proxyReason && !['ready', 'failed'].includes(a.preview.proxy)));
+
   async function makePreviews(a) {
     const src = file(a.id, a.file);
     if (a.kind === 'audio') {
       await update(a, { status: 'ready' });
       return onReady(a);
     }
-    if (settings.shrinkLarge && !a.shrunk && shouldShrink(a, a.size)) await shrink(a);
     if (!a.preview.sprite) {
       await update(a, { preview: { ...a.preview, step: 'storyboard' } });
       const layout = spriteLayout(a.duration);
@@ -163,17 +197,24 @@ export function createLibrary({ dir, onChange = () => {}, onReady = () => {} }) 
       await update(a, { preview: { ...a.preview, sprite: ok ? layout : null, step: null } });
     }
     if (!a.preview.sheet) await makeSheet(a);
-    if (a.preview.proxyReason && a.preview.proxy !== 'ready') {
+    await update(a, { status: 'ready' });
+    if (!assets.has(a.id)) return;
+    onReady(a);
+    if (needsHeavy(a)) enqueueHeavy(a.id);
+  }
+
+  async function makeHeavy(a) {
+    if (settings.shrinkLarge && !a.shrunk && shouldShrink(a, a.size)) await shrink(a);
+    if (!assets.has(a.id)) return;
+    if (a.preview.proxyReason && !['ready', 'failed'].includes(a.preview.proxy)) {
       await update(a, { preview: { ...a.preview, proxy: 'encoding', progress: 0 } });
-      const ok = await makeProxy(src, file(a.id, 'proxy.mp4'), a.duration, (p) => {
+      const ok = await makeProxy(file(a.id, a.file), file(a.id, 'proxy.mp4'), a.duration, (p) => {
         if (Math.abs(p - (a.preview.progress || 0)) < 0.02) return;
         a.preview = { ...a.preview, progress: p };
         changed(a);
       });
       await update(a, { preview: { ...a.preview, proxy: ok ? 'ready' : 'failed', progress: ok ? 1 : 0 } });
     }
-    await update(a, { status: 'ready' });
-    if (assets.has(a.id)) onReady(a);
   }
 
   /** Re-encode to ≤1080p H.264 with a keyframe every second and replace the stored file. */
@@ -188,6 +229,7 @@ export function createLibrary({ dir, onChange = () => {}, onReady = () => {} }) 
       '-c:v', 'libx264', '-preset', 'veryfast', '-crf', '20', '-g', '30',
       '-c:a', 'aac', '-b:a', '160k', '-movflags', '+faststart', tmp,
     ], {
+      timeoutMs: encodeTimeout(a.duration),
       onLine: (line) => {
         const m = line.match(/^out_time_us=(\d+)/);
         if (!m || !a.duration) return;
@@ -202,6 +244,9 @@ export function createLibrary({ dir, onChange = () => {}, onReady = () => {} }) 
       if (r.code !== 0) console.error(`[library ${a.id}] shrink failed — keeping the original:`, tail(r.stderr, 3));
       return update(a, { shrunk: 'failed', preview: { ...a.preview, step: null, progress: 0 } });
     }
+    // Never swap the file under a render that is reading it.
+    while (isRendering() && assets.has(a.id)) await sleep(10_000);
+    if (!assets.has(a.id)) return fs.rm(tmp, { force: true });
     const meta = await probe(tmp);
     const size = (await fs.stat(tmp)).size;
     await fs.rename(tmp, file(a.id, 'source.mp4'));
@@ -239,7 +284,7 @@ export function createLibrary({ dir, onChange = () => {}, onReady = () => {} }) 
         const r = await run('ffmpeg', [
           '-v', 'error', '-y', '-ss', times[i].toFixed(2), '-i', src,
           '-frames:v', '1', '-vf', `scale=${w}:${h}:force_original_aspect_ratio=decrease,pad=${w}:${h}:-1:-1`, '-q:v', String(q), frame,
-        ]);
+        ], { timeoutMs: FRAME_TIMEOUT });
         if (r.code === 0 && (await exists(frame))) last = frame;
         else if (last) await fs.copyFile(last, frame);
         else return false;
@@ -247,7 +292,7 @@ export function createLibrary({ dir, onChange = () => {}, onReady = () => {} }) 
       const r = await run('ffmpeg', [
         '-v', 'error', '-y', '-i', path.join(work, 'f%03d.jpg'),
         '-vf', `tile=${cols}x${rows}`, '-frames:v', '1', '-q:v', String(q), out,
-      ]);
+      ], { timeoutMs: FRAME_TIMEOUT });
       return r.code === 0;
     } finally {
       await fs.rm(work, { recursive: true, force: true });
@@ -263,6 +308,7 @@ export function createLibrary({ dir, onChange = () => {}, onReady = () => {} }) 
       '-c:v', 'libx264', '-preset', 'veryfast', '-crf', '26',
       '-c:a', 'aac', '-b:a', '128k', '-ac', '2', '-movflags', '+faststart', tmp,
     ], {
+      timeoutMs: encodeTimeout(duration),
       onLine: (line) => {
         const m = line.match(/^out_time_us=(\d+)/);
         if (m && duration) onProgress(Math.min(0.99, Number(m[1]) / 1e6 / duration));
@@ -289,7 +335,10 @@ export function createLibrary({ dir, onChange = () => {}, onReady = () => {} }) 
         try {
           const a = JSON.parse(await fs.readFile(file(e.name, 'meta.json'), 'utf8'));
           assets.set(a.id, a);
+          if (a.preview?.proxy === 'encoding') a.preview.proxy = 'pending'; // interrupted by a restart
+          if (a.preview?.step === 'shrinking') a.preview = { ...a.preview, step: null, progress: 0 };
           if (a.status !== 'ready') enqueue(a.id);
+          else if (needsHeavy(a)) enqueueHeavy(a.id);
         } catch {
           /* half-written asset from a crash — leave it for manual cleanup */
         }
@@ -304,8 +353,12 @@ export function createLibrary({ dir, onChange = () => {}, onReady = () => {} }) 
     async setSettings(patch) {
       settings = { ...settings, ...patch };
       await fs.writeFile(settingsFile, JSON.stringify(settings, null, 2));
+      // Turned "Save space" on: shrink what's already there, in the background.
+      if (settings.shrinkLarge) for (const a of assets.values()) if (a.status === 'ready' && needsHeavy(a)) enqueueHeavy(a.id);
       return { ...settings };
     },
+    /** Background work waiting (for the "working on…" line). */
+    activity: () => ({ previews: queue.length + (working ? 1 : 0), heavy: heavy.length + (heavyWorking ? 1 : 0), paused: heavy.length > 0 && isRendering() }),
     list: () => [...assets.values()].sort((x, y) => y.createdAt - x.createdAt).map(toPublic),
     get: (id) => (isAssetId(id) ? assets.get(id) || null : null),
     toPublic,
@@ -367,7 +420,7 @@ export function createLibrary({ dir, onChange = () => {}, onReady = () => {} }) 
       const thumbArgs = kind === 'video'
         ? ['-ss', String(Math.min(1, meta.duration / 3)), '-i', dest, '-frames:v', '1', '-vf', 'scale=480:-2']
         : ['-i', dest, '-filter_complex', 'aformat=channel_layouts=mono,showwavespic=s=480x270:colors=#9b85ff', '-frames:v', '1'];
-      await run('ffmpeg', ['-v', 'error', '-y', ...thumbArgs, '-q:v', '4', file(id, 'thumb.jpg')]).catch(() => null);
+      await run('ffmpeg', ['-v', 'error', '-y', ...thumbArgs, '-q:v', '4', file(id, 'thumb.jpg')], { timeoutMs: FRAME_TIMEOUT }).catch(() => null);
 
       const reason = kind === 'video' ? proxyReason(meta, ext) : null;
       const a = {
@@ -399,8 +452,10 @@ export function createLibrary({ dir, onChange = () => {}, onReady = () => {} }) 
 
     async remove(id) {
       assets.delete(id);
-      const i = queue.indexOf(id);
-      if (i >= 0) queue.splice(i, 1);
+      for (const q of [queue, heavy]) {
+        const i = q.indexOf(id);
+        if (i >= 0) q.splice(i, 1);
+      }
       await fs.rm(assetDir(id), { recursive: true, force: true });
       onChange({ type: 'removed', id });
     },

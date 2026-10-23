@@ -22,6 +22,7 @@ import { createLibrary, VIDEO_EXT, AUDIO_EXT } from './library.js';
 import { createScanner } from './scanner.js';
 import { createCloud } from './cloud.js';
 import { createUpdater } from './updater.js';
+import { createAutopilot } from './autopilot.js';
 import { Server as TusServer } from '@tus/server';
 import { FileStore } from '@tus/file-store';
 
@@ -643,6 +644,50 @@ async function startPipeline(job, opts) {
   }
 }
 
+
+// ---------------------------------------------------------------------------
+// Autopilot: every few days plan a batch of videos from the library and render them to files.
+// Each idea becomes its own project ("Autopilot · …") so it can be re-edited by hand later.
+// ---------------------------------------------------------------------------
+
+async function renderAutopilotIdea(idea, { prompt, settings, signal, onJob, onProgress }) {
+  const assets = idea.assetIds.map((id) => library.get(id)).filter((a) => a?.kind === 'video' && a.status === 'ready');
+  if (!assets.length) throw new PipelineError('The clips picked for this video were deleted from the library.');
+  const job = newJob(undefined, cleanText(`Autopilot · ${idea.title}`, 80));
+  addAssetClips(job, assets);
+  await saveManifest(job);
+  onJob(job.id);
+  const stop = () => job.abort?.abort();
+  signal.addEventListener('abort', stop, { once: true });
+  const timer = setInterval(() => onProgress(job.progress, job.message), 2000);
+  try {
+    await startPipeline(job, { prompt, clipIds: job.clips.map((c) => c.id), settings: editSettings(settings), reusePlan: false });
+  } finally {
+    clearInterval(timer);
+    signal.removeEventListener('abort', stop);
+  }
+  if (job.state !== 'done') throw new PipelineError(job.error?.message || 'The render failed.', { hint: job.error?.hint });
+  const v = job.result.variants[0];
+  return {
+    jobId: job.id,
+    file: path.join(DIRS.output, job.id, v.file),
+    poster: (await exists(path.join(DIRS.output, job.id, `${v.id}.jpg`))) ? path.join(DIRS.output, job.id, `${v.id}.jpg`) : null,
+    duration: v.duration,
+    size: v.size,
+    width: v.width,
+    height: v.height,
+  };
+}
+
+const autopilot = createAutopilot({
+  dir: path.join(DIRS.output, '_autopilot'),
+  library,
+  scanner,
+  renderIdea: renderAutopilotIdea,
+  otherWork: () => ([...jobs.values()].some((j) => j.state === 'running') && 'another video render') || false,
+  onChange: broadcast,
+});
+
 // ---------------------------------------------------------------------------
 // HTTP
 // ---------------------------------------------------------------------------
@@ -1057,21 +1102,9 @@ const pick = (list, values, fallback) => {
 };
 const cleanText = (s, max) => String(s ?? '').replace(/\s+/g, ' ').trim().slice(0, max);
 
-// POST /api/edit — { jobId, prompt, clips?: [clipId…], settings?: {...} }
-app.post('/api/edit', async (req, res) => {
-  const { jobId, prompt, clips: clipIds, settings: s = {}, reusePlan = false } = req.body || {};
-  const job = await getJob(jobId);
-  if (!job) return res.status(404).json({ error: 'Unknown project — upload clips first.' });
-  if (job.state === 'running') return res.status(409).json({ error: 'This project is already rendering.' });
-  if (!reusePlan && (!prompt || !String(prompt).trim())) return res.status(400).json({ error: 'Describe how you want the video edited.' });
-
-  const autoFind = s.autoFind === true && !reusePlan;
-  const ids = Array.isArray(clipIds) && clipIds.length ? clipIds : job.clips.map((c) => c.id);
-  const missing = ids.filter((id) => !job.clips.some((c) => c.id === id));
-  if (missing.length) return res.status(400).json({ error: `Unknown clip(s): ${missing.join(', ')}` });
-  if (!ids.length && !autoFind) return res.status(400).json({ error: 'Add at least one clip, or turn on "Let Claude find the clips".' });
-
-  const settings = {
+/** Validate render settings from the client (or Autopilot); anything unknown falls back to a default. */
+function editSettings(s = {}, autoFind = false) {
+  return {
     whisperModel: WHISPER_MODELS.includes(s.whisperModel) ? s.whisperModel : 'small',
     engine: ENGINES.includes(s.engine) ? s.engine : 'auto',
     silence: s.silence !== false,
@@ -1093,6 +1126,23 @@ app.post('/api/edit', async (req, res) => {
     music: s.music === 'auto' || (library.get(s.music)?.kind === 'audio') ? s.music : 'off',
     musicLevel: MUSIC_LEVEL[s.musicLevel] ? s.musicLevel : 'medium',
   };
+}
+
+// POST /api/edit — { jobId, prompt, clips?: [clipId…], settings?: {...} }
+app.post('/api/edit', async (req, res) => {
+  const { jobId, prompt, clips: clipIds, settings: s = {}, reusePlan = false } = req.body || {};
+  const job = await getJob(jobId);
+  if (!job) return res.status(404).json({ error: 'Unknown project — upload clips first.' });
+  if (job.state === 'running') return res.status(409).json({ error: 'This project is already rendering.' });
+  if (!reusePlan && (!prompt || !String(prompt).trim())) return res.status(400).json({ error: 'Describe how you want the video edited.' });
+
+  const autoFind = s.autoFind === true && !reusePlan;
+  const ids = Array.isArray(clipIds) && clipIds.length ? clipIds : job.clips.map((c) => c.id);
+  const missing = ids.filter((id) => !job.clips.some((c) => c.id === id));
+  if (missing.length) return res.status(400).json({ error: `Unknown clip(s): ${missing.join(', ')}` });
+  if (!ids.length && !autoFind) return res.status(400).json({ error: 'Add at least one clip, or turn on "Let Claude find the clips".' });
+
+  const settings = editSettings(s, autoFind);
   const count = settings.formats.length * settings.lengths.length;
   if (count > MAX_VARIANTS) {
     return res.status(400).json({ error: `That's ${count} videos — pick at most ${MAX_VARIANTS} format × length combinations.` });
@@ -1180,6 +1230,47 @@ app.delete('/api/jobs/:jobId', async (req, res) => {
   res.json({ ok: true });
 });
 
+
+// ---- autopilot -------------------------------------------------------------------
+
+app.get('/api/autopilot', (_req, res) => res.json(autopilot.status()));
+app.patch('/api/autopilot', async (req, res) => res.json(await autopilot.setSettings(req.body || {})));
+app.post('/api/autopilot/run', (_req, res) => {
+  const batch = autopilot.runNow();
+  if (!batch) return res.status(409).json({ error: 'Autopilot is already making a batch.' });
+  res.status(202).json(autopilot.status());
+});
+app.post('/api/autopilot/cancel', (_req, res) => res.json({ ok: autopilot.cancel() }));
+app.delete('/api/autopilot/batches/:id', async (req, res, next) => {
+  try {
+    if (!(await autopilot.removeBatch(req.params.id))) return res.status(404).json({ error: 'Unknown batch.' });
+    res.json(autopilot.status());
+  } catch (err) {
+    next(err);
+  }
+});
+app.get('/api/autopilot/file/:batchId/:name', async (req, res) => {
+  const file = autopilot.filePath(req.params.batchId, req.params.name);
+  if (!file || !(await exists(file))) return res.status(404).json({ error: 'That file is gone.' });
+  if (req.query.inline) return res.sendFile(file);
+  res.download(file, req.params.name);
+});
+// GET /api/autopilot/zip/:batchId — every video + caption file of a batch in one .zip.
+app.get('/api/autopilot/zip/:batchId', async (req, res, next) => {
+  const files = (autopilot.batchFiles(req.params.batchId) || []).filter((f) => fsSync.existsSync(f));
+  if (!files.length) return res.status(404).json({ error: 'No finished videos in that batch.' });
+  const zip = path.join(DIRS.workspace, `autopilot-${req.params.batchId}-${crypto.randomUUID().slice(0, 6)}.zip`);
+  try {
+    // Stored, not deflated: MP4s don't compress and this keeps it fast.
+    const r = await run('python3', ['-I', '-c', 'import sys,zipfile,os\nwith zipfile.ZipFile(sys.argv[1],"w",zipfile.ZIP_STORED,allowZip64=True) as z:\n  [z.write(f,os.path.basename(f)) for f in sys.argv[2:]]', zip, ...files], { timeoutMs: 30 * 60_000 });
+    if (r.code !== 0) throw new PipelineError('Could not build the .zip.', { detail: r.stderr, hint: 'Download the videos one by one instead.' });
+    res.download(zip, `clipforge-autopilot-${req.params.batchId}.zip`, () => fs.rm(zip, { force: true }).catch(() => {}));
+  } catch (err) {
+    fs.rm(zip, { force: true }).catch(() => {});
+    next(err);
+  }
+});
+
 // Errors (multer limits, bad JSON, …) → JSON
 app.use((err, _req, res, _next) => {
   const status =
@@ -1202,9 +1293,11 @@ const updater = createUpdater({
     ([...jobs.values()].some((j) => j.state === 'running') && 'a video render') ||
     (Date.now() - lastUploadAt < 2 * 60_000 && 'an upload') ||
     (cloud.jobs().some((j) => j.state === 'running') && 'a Google Drive import') ||
+    (autopilot.busy() && 'Autopilot') ||
     false,
   beforeRestart: async () => {
     cloud.shutdown();
+    autopilot.stop();
     for (const res of libraryListeners) res.end();
     for (const job of jobs.values()) for (const l of job.listeners) l.end();
     server.closeAllConnections();
@@ -1212,6 +1305,7 @@ const updater = createUpdater({
   },
 });
 await updater.start();
+autopilot.start();
 
 const server = app.listen(PORT, HOST, () => {
   console.log(`\n  ClipForge running at http://${LOOPBACK ? 'localhost' : '127.0.0.1'}:${PORT}`);

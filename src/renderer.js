@@ -1,5 +1,6 @@
 import fs from 'node:fs/promises';
 import path from 'node:path';
+import os from 'node:os';
 import { fileURLToPath } from 'node:url';
 import { run, tail, exists, linkOrCopy, round, clamp, escapeHtml, PipelineError } from './util.js';
 
@@ -134,7 +135,7 @@ export function musicAutomation(speech, total, base, ducked) {
   const merged = [];
   for (const c of [...speech].sort((a, b) => a.start - b.start)) {
     const last = merged[merged.length - 1];
-    if (last && c.start - last.end < 1) last.end = Math.max(last.end, c.end);
+    if (last && c.start - last.end < 0.8) last.end = Math.max(last.end, c.end);
     else merged.push({ start: c.start, end: c.end });
   }
   const pts = [{ t: 0, v: base }];
@@ -142,7 +143,7 @@ export function musicAutomation(speech, total, base, ducked) {
     const down = Math.max(pts[pts.length - 1].t, start - RAMP);
     pts.push({ t: round(down, 3), v: pts[pts.length - 1].v }, { t: round(Math.max(down, start), 3), v: ducked });
     const up = Math.min(total, end + 0.1);
-    pts.push({ t: round(up, 3), v: ducked }, { t: round(Math.min(total, up + 0.4), 3), v: base });
+    pts.push({ t: round(up, 3), v: ducked }, { t: round(Math.min(total, up + 0.6), 3), v: base });
   }
   if (pts[pts.length - 1].t < total) pts.push({ t: round(total, 3), v: pts[pts.length - 1].v });
   return pts.filter((p, i) => i === 0 || p.t >= pts[i - 1].t);
@@ -273,8 +274,10 @@ export function buildComposition({ plan, clips, transcripts, settings, gsapSrc =
     const isFirst = i === 0;
     const isLast = i === laid.scenes.length - 1;
     const v = s.volume;
-    let audioIn = Math.max(s.overlapIn, s.fadeIn, isFirst ? plan.audio.fadeIn : 0);
-    let audioOut = Math.max(s.overlapOut, s.fadeOut, isLast ? plan.audio.fadeOut : 0);
+    // A 20 ms fade at every splice: hard audio cuts click; pro editors always add a tiny crossfade.
+    const SPLICE = 0.02;
+    let audioIn = Math.max(s.overlapIn, s.fadeIn, isFirst ? plan.audio.fadeIn : 0, SPLICE);
+    let audioOut = Math.max(s.overlapOut, s.fadeOut, isLast ? plan.audio.fadeOut : 0, SPLICE);
     if (audioIn + audioOut > dur) {
       const k = dur / (audioIn + audioOut);
       audioIn *= k;
@@ -315,8 +318,12 @@ export function buildComposition({ plan, clips, transcripts, settings, gsapSrc =
     const bg = useBlur
       ? `\n      <video id="b${i}" class="bg" src="media/${escapeHtml(clip.blurFile)}" ${timing} data-track-index="${20 + (i % 2)}" muted playsinline></video>`
       : '';
+    // The processed voice track may start part-way into the clip (only the used range is processed).
+    const voiceTiming = `data-start="${s.tlStart}" data-duration="${round(dur, 3)}" data-media-start="${round(s.srcStart - (clip.voiceOffset || 0), 3)}"${
+      s.speed !== 1 ? ` data-playback-rate="${s.speed}"` : ''
+    }`;
     const voice = useVoice
-      ? `\n      <audio id="a${i}" src="media/${escapeHtml(clip.voiceFile)}" ${timing} data-track-index="${30 + (i % 2)}" ${volumeAttrs}></audio>`
+      ? `\n      <audio id="a${i}" src="media/${escapeHtml(clip.voiceFile)}" ${voiceTiming} data-track-index="${30 + (i % 2)}" ${volumeAttrs}></audio>`
       : '';
     return `    <div id="${id}" class="scene">${bg}
       <div id="${id}i" class="inner" style="transform-origin: ${origin}">
@@ -591,13 +598,24 @@ export async function writeProject({ projectDir, plan, clips, transcripts, setti
 }
 
 /**
+ * Parallel Chrome capture workers. Measured on a 4-core codespace: 1 worker 29 s, 2 workers 19 s,
+ * 3 workers 18.5 s for the same 12 s clip (byte-identical output), so 2 is the sweet spot; a 2-core
+ * machine keeps 1 so the encoder isn't starved. CLIPFORGE_RENDER_WORKERS overrides.
+ */
+export function renderWorkers(cpus = os.cpus().length) {
+  const forced = Number(process.env.CLIPFORGE_RENDER_WORKERS);
+  if (forced >= 1) return Math.floor(forced);
+  return cpus >= 3 ? 2 : 1;
+}
+
+/**
  * Render projectDir to outputPath with `npx hyperframes render`.
  */
 export async function renderProject({ projectDir, outputPath, quality = 'looks', onProgress, logPath, signal }) {
   await fs.mkdir(path.dirname(outputPath), { recursive: true });
   await fs.rm(outputPath, { force: true });
 
-  const renderArgs = ['render', projectDir, '--output', outputPath, '--quality', quality, '--fps', String(FPS)];
+  const renderArgs = ['render', projectDir, '--output', outputPath, '--quality', quality, '--fps', String(FPS), '--workers', String(renderWorkers())];
   const useLocal = await exists(LOCAL_HYPERFRAMES);
   const [cmd, args] = useLocal ? [LOCAL_HYPERFRAMES, renderArgs] : ['npx', ['--yes', 'hyperframes', ...renderArgs]];
 

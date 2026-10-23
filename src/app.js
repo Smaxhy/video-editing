@@ -23,10 +23,12 @@ import { createScanner } from './scanner.js';
 import { createCloud } from './cloud.js';
 import { createUpdater } from './updater.js';
 import { createAutopilot } from './autopilot.js';
+import { ensureDeepFilter, polishAudio, hasSpeech, usedWindows } from './audio.js';
 import { Server as TusServer } from '@tus/server';
 import { FileStore } from '@tus/file-store';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
+const TOOLS_DIR = path.join(ROOT, '.tools');
 const DIRS = {
   uploads: path.join(ROOT, 'uploads'),
   workspace: path.join(ROOT, 'workspace'),
@@ -73,7 +75,8 @@ const library = createLibrary({
 await library.load();
 scanner = createScanner({ library, dir: DIRS.library, onChange: broadcast });
 scanner.load();
-const cloud = createCloud({ library, toolsDir: path.join(ROOT, '.tools'), onChange: broadcast });
+const cloud = createCloud({ library, toolsDir: TOOLS_DIR, onChange: broadcast });
+ensureDeepFilter(TOOLS_DIR); // fetch the denoiser in the background so the first edit doesn't wait
 
 // Startup sweep: nothing is running yet, so half-finished uploads from older versions,
 // compositions and raw renders left by a crash or restart are garbage.
@@ -506,6 +509,28 @@ async function runPipeline(job, { prompt, clipIds, settings, reusePlan }) {
     }
   }
 
+  // Studio sound: denoise + EQ + compression + level matching on the part of each clip the edit uses.
+  const voiceTracks = {}; // clipId → { path, offset } — offset = source second the track starts at
+  for (const [id, p] of Object.entries(voicePaths)) voiceTracks[id] = { path: p, offset: 0 };
+  if (settings.proAudio) {
+    const windows = usedWindows(planned.versions);
+    const withAudio = clips.filter((c) => c.hasAudio && windows[c.id]);
+    const deepFilter = withAudio.length ? await ensureDeepFilter(TOOLS_DIR) : null;
+    for (const [k, c] of withAudio.entries()) {
+      const [from, to] = windows[c.id];
+      const speech = hasSpeech(transcripts[c.id], from, to);
+      setStep(job, 'render', 'active', `Studio sound ${k + 1}/${withAudio.length}: ${speech ? 'cleaning up the voice' : 'balancing the sound'}…`, 0.38);
+      const src = voicePaths[c.id] || c.path;
+      const tag = `-${from}-${to}-${speech ? (deepFilter ? 'df' : 'fx') : 'amb'}${voicePaths[c.id] ? '-iso' : ''}-v1.m4a`;
+      try {
+        voiceTracks[c.id] = { path: await polishAudio(src, cache(c, 'studio', tag), { start: from, end: to, speech, deepFilter, signal }), offset: from };
+      } catch (err) {
+        if (signal.aborted) throw new PipelineError('Cancelled.');
+        notes.push(`Studio sound failed for ${c.name} — kept its original audio. (${String(err.message).split('\n').pop()})`);
+      }
+    }
+  }
+
   // Blurred backgrounds only for clips whose aspect doesn't match some output format.
   const blurPaths = {};
   if (settings.framing === 'blur') {
@@ -545,7 +570,8 @@ async function runPipeline(job, { prompt, clipIds, settings, reusePlan }) {
         ...c,
         path: renderPaths[c.id],
         blurPath: blurPaths[c.id] || null,
-        voicePath: voicePaths[c.id] || null,
+        voicePath: voiceTracks[c.id]?.path || null,
+        voiceOffset: voiceTracks[c.id]?.offset || 0,
         faces: analysis[c.id]?.faces || null,
       })),
       transcripts,
@@ -1155,6 +1181,7 @@ function editSettings(s = {}, autoFind = false) {
     silence: s.silence !== false,
     shots: s.shots !== false,
     cleanVoice: s.cleanVoice === true,
+    proAudio: s.proAudio !== false,
     useLogo: s.useLogo !== false,
     watermark: s.watermark === true,
     plannerModel: PLANNER_MODELS.includes(s.plannerModel) ? s.plannerModel : 'sonnet',

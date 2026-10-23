@@ -105,6 +105,7 @@
         <button class="btn sm ghost hidden" type="button" id="scanAll"></button>
         <label class="switch"><input type="checkbox" id="autoScan" role="switch" checked /><span>Scan new videos automatically</span></label>
         <label class="switch" title="ClipForge never outputs more than 1080p, so bigger originals only use up disk space"><input type="checkbox" id="shrinkLarge" role="switch" checked /><span>Save space: shrink 4K to 1080p</span></label>
+        <label class="switch" title="Every video you upload or import also adds its sound to the library as a music track — handy for saved reels and sounds you want to edit to"><input type="checkbox" id="extractAudio" role="switch" /><span>Also save the sound of new videos as music</span></label>
       </section>
       <ul class="jobs" id="importJobs" aria-label="Imports"></ul>
 
@@ -118,6 +119,7 @@
         <label class="sr-only" for="selProject">Project to add to</label>
         <select class="field" id="selProject"></select>
         <button class="btn sm" type="button" id="selAdd">Add to project</button>
+        <button class="btn sm ghost" type="button" id="selExtract" title="Save the sound of the selected videos as music tracks">Extract audio</button>
         <button class="btn sm danger" type="button" id="selDelete">Delete</button>
         <button class="btn sm ghost" type="button" id="selClear">Clear selection</button>
       </div>

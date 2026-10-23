@@ -88,11 +88,11 @@ const FRAME_TIMEOUT = 2 * 60_000;
 const encodeTimeout = (duration) => 30 * 60_000 + (duration || 0) * 20_000;
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
-export function createLibrary({ dir, onChange = () => {}, onReady = () => {}, isRendering = () => false }) {
+export function createLibrary({ dir, onChange = () => {}, onReady = () => {}, isRendering = () => false, onIngest = () => {} }) {
   const incoming = path.join(dir, '.incoming');
   fsSync.mkdirSync(incoming, { recursive: true });
   const settingsFile = path.join(dir, '.library.json');
-  let settings = { shrinkLarge: true };
+  let settings = { shrinkLarge: true, extractAudio: false };
   try {
     settings = { ...settings, ...JSON.parse(fsSync.readFileSync(settingsFile, 'utf8')) };
   } catch {
@@ -465,6 +465,7 @@ export function createLibrary({ dir, onChange = () => {}, onReady = () => {}, is
       assets.set(id, a);
       changed(a);
       enqueue(id);
+      onIngest(toPublic(a));
       return toPublic(a);
     },
 

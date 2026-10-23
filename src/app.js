@@ -93,7 +93,33 @@ const library = createLibrary({
   },
   // Heavy re-encodes (4K shrink, preview copies) wait while a video renders.
   isRendering: () => [...jobs.values()].some((j) => j.state === 'running'),
+  // "Save the sound of uploaded videos as music": runs for uploads and Drive imports alike.
+  onIngest: (a) => {
+    if (a.kind === 'video' && a.hasAudio && library.settings().extractAudio) {
+      extractAudio(a.id).catch((err) => console.error(`[extract ${a.id}]`, err.message));
+    }
+  },
 });
+
+/**
+ * Save a video's sound as its own music track in the library (e.g. a reel or a screen recording of a
+ * sound you want to edit to). Re-uses the earlier extraction of the same video.
+ */
+async function extractAudio(id) {
+  const a = library.get(id);
+  if (!a || a.kind === 'audio') throw new PipelineError('Pick a video to take the sound from.');
+  if (!a.hasAudio) throw new PipelineError(`${a.name} has no sound to extract.`);
+  const done = library.list().find((x) => x.kind === 'audio' && x.source?.type === 'extracted' && x.source.from === id);
+  if (done) return done;
+  const tmp = path.join(library.incoming, `extract-${id}-${Date.now()}.m4a`);
+  const r = await run('ffmpeg', ['-v', 'error', '-y', '-i', library.sourcePath(id), '-vn', '-map', '0:a:0', '-ac', '2', '-ar', '48000', '-c:a', 'aac', '-b:a', '256k', tmp], { timeoutMs: 30 * 60_000 });
+  if (r.code !== 0) {
+    await fs.rm(tmp, { force: true });
+    throw new PipelineError(`Could not extract the sound of ${a.name}.`, { detail: r.stderr.slice(-500) });
+  }
+  const name = `${a.name.replace(/\.[^.]+$/, '')} (sound).m4a`;
+  return library.ingest(tmp, { name, size: (await fs.stat(tmp)).size, source: { type: 'extracted', from: id } });
+}
 await library.load();
 ml = createMl({
   toolsDir: TOOLS_DIR,
@@ -1138,7 +1164,29 @@ app.get('/api/library/search', async (req, res, next) => {
   }
 });
 app.patch('/api/library/settings', async (req, res) => {
-  res.json(await library.setSettings({ shrinkLarge: req.body?.shrinkLarge !== false }));
+  const patch = {};
+  if (typeof req.body?.shrinkLarge === 'boolean') patch.shrinkLarge = req.body.shrinkLarge;
+  if (typeof req.body?.extractAudio === 'boolean') patch.extractAudio = req.body.extractAudio;
+  res.json(await library.setSettings(patch));
+});
+
+// POST /api/library/extract-audio — { assetIds } → each video's sound saved as a music track.
+app.post('/api/library/extract-audio', async (req, res, next) => {
+  try {
+    const ids = (Array.isArray(req.body?.assetIds) ? req.body.assetIds : []).slice(0, 100);
+    if (!ids.length) return res.status(400).json({ error: 'Pick at least one video.' });
+    const results = [];
+    for (const id of ids) {
+      try {
+        results.push({ id, asset: await extractAudio(id) });
+      } catch (err) {
+        results.push({ id, error: err.message });
+      }
+    }
+    res.json({ results });
+  } catch (err) {
+    next(err);
+  }
 });
 
 app.get('/api/library/events', (req, res) => {

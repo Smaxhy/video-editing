@@ -26,6 +26,7 @@ import { createAutopilot } from './autopilot.js';
 import { ensureDeepFilter, polishAudio, hasSpeech, usedWindows } from './audio.js';
 import { ensureFonts } from './fonts.js';
 import { tightenPlan } from './tighten.js';
+import { preparePicture } from './picture.js';
 import { Server as TusServer } from '@tus/server';
 import { FileStore } from '@tus/file-store';
 
@@ -498,9 +499,28 @@ async function runPipeline(job, { prompt, clipIds, settings, reusePlan }) {
   await fs.rm(outDir, { recursive: true, force: true }); // new run replaces old outputs (saves disk)
   await fs.mkdir(outDir, { recursive: true });
 
-  // Make sure every source can be seeked frame-accurately (re-encodes only clips that need it).
+  // Picture polish: colour/exposure correction, stabilisation of shaky clips and light sharpening,
+  // on just the used part of each clip (that copy is also frame-accurate to seek). Without it, only
+  // clips with sparse keyframes are re-encoded.
   const renderPaths = {};
+  const videoOffsets = {};
+  const pictureWindows = settings.polish ? usedWindows(planned.versions, 1) : {};
   for (const [k, c] of clips.entries()) {
+    if (pictureWindows[c.id]) {
+      const [from, to] = pictureWindows[c.id];
+      setStep(job, 'render', 'active', `Polishing the picture of clip ${k + 1}/${clips.length} (colour, exposure, stabilisation)…`, 0.38);
+      try {
+        const r = await preparePicture(c.path, cache(c, 'picture', `-${from}-${to}-v1.mp4`), { start: from, end: to, signal });
+        renderPaths[c.id] = r.path;
+        videoOffsets[c.id] = r.offset;
+        if (r.applied.some((a) => a.startsWith('stabilised'))) notes.push(`Stabilised the shaky footage in ${c.name}.`);
+        checkAbort();
+        continue;
+      } catch (err) {
+        if (signal.aborted) throw new PipelineError('Cancelled.');
+        notes.push(`Picture polish failed for ${c.name} — used it as is. (${String(err.message).split('\n').pop()})`);
+      }
+    }
     setStep(job, 'render', 'active', `Checking clip ${k + 1}/${clips.length} for smooth seeking…`, 0.38);
     renderPaths[c.id] = await ensureSeekable(c.path, cache(c, 'seekable', '.mp4'), { signal });
     checkAbort();
@@ -585,6 +605,7 @@ async function runPipeline(job, { prompt, clipIds, settings, reusePlan }) {
         blurPath: blurPaths[c.id] || null,
         voicePath: voiceTracks[c.id]?.path || null,
         voiceOffset: voiceTracks[c.id]?.offset || 0,
+        videoOffset: videoOffsets[c.id] || 0,
         faces: analysis[c.id]?.faces || null,
       })),
       transcripts,
@@ -1202,6 +1223,7 @@ function editSettings(s = {}, autoFind = false) {
     cleanVoice: s.cleanVoice === true,
     proAudio: s.proAudio !== false,
     tighten: s.tighten !== false,
+    polish: s.polish !== false,
     motion: s.motion !== false,
     useLogo: s.useLogo !== false,
     watermark: s.watermark === true,

@@ -382,6 +382,10 @@ export function buildComposition({ plan, clips, transcripts, settings, gsapSrc =
     const bg = useBlur
       ? `\n      <video id="b${i}" class="bg" src="media/${escapeHtml(clip.blurFile)}" ${timing} data-track-index="${20 + (i % 2)}" muted playsinline></video>`
       : '';
+    // A polished copy covers only the used range, so it starts `videoOffset` seconds into the clip.
+    const videoTiming = clip.videoOffset
+      ? `data-start="${s.tlStart}" data-duration="${round(dur, 3)}" data-media-start="${round(s.srcStart - clip.videoOffset, 3)}"${s.speed !== 1 ? ` data-playback-rate="${s.speed}"` : ''}`
+      : timing;
     // The processed voice track may start part-way into the clip (only the used range is processed).
     const voiceTiming = `data-start="${s.tlStart}" data-duration="${round(dur, 3)}" data-media-start="${round(s.srcStart - (clip.voiceOffset || 0), 3)}"${
       s.speed !== 1 ? ` data-playback-rate="${s.speed}"` : ''
@@ -391,7 +395,7 @@ export function buildComposition({ plan, clips, transcripts, settings, gsapSrc =
       : '';
     return `    <div id="${id}" class="scene">${bg}
       <div id="${id}i" class="inner" style="transform-origin: ${origin}"><div id="${id}p" class="inner" style="transform-origin: ${origin}">
-        <video id="v${i}" src="media/${escapeHtml(clip.file)}" ${timing} data-track-index="${i % 2}" playsinline ${videoAudioAttrs} style="object-fit: ${fit}; object-position: ${position}"></video>
+        <video id="v${i}" src="media/${escapeHtml(clip.file)}" ${videoTiming} data-track-index="${i % 2}" playsinline ${videoAudioAttrs} style="object-fit: ${fit}; object-position: ${position}"></video>
       </div></div>${voice}
     </div>`;
   });

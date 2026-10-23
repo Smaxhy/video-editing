@@ -24,6 +24,7 @@ import { createCloud } from './cloud.js';
 import { createUpdater } from './updater.js';
 import { createAutopilot } from './autopilot.js';
 import { ensureDeepFilter, polishAudio, hasSpeech, usedWindows } from './audio.js';
+import { ensureFonts } from './fonts.js';
 import { Server as TusServer } from '@tus/server';
 import { FileStore } from '@tus/file-store';
 
@@ -76,7 +77,8 @@ await library.load();
 scanner = createScanner({ library, dir: DIRS.library, onChange: broadcast });
 scanner.load();
 const cloud = createCloud({ library, toolsDir: TOOLS_DIR, onChange: broadcast });
-ensureDeepFilter(TOOLS_DIR); // fetch the denoiser in the background so the first edit doesn't wait
+ensureDeepFilter(TOOLS_DIR); // fetch the denoiser and caption fonts in the background so the first edit doesn't wait
+ensureFonts(TOOLS_DIR);
 
 // Startup sweep: nothing is running yet, so half-finished uploads from older versions,
 // compositions and raw renders left by a crash or restart are garbage.
@@ -427,7 +429,7 @@ async function runPipeline(job, { prompt, clipIds, settings, reusePlan }) {
     else if (settings.music !== 'off' && library.get(settings.music)) {
       music = { assetId: settings.music, start: saved.music?.assetId === settings.music ? saved.music.start : 0 };
     }
-    planned = { ...saved, versions, warnings: [], music };
+    planned = { ...saved, versions, warnings: [], music, emphasis: saved.emphasis || [] };
     setStep(job, 'plan', 'done', 'Reused the saved plan — no Claude call.', 0.38);
   } else {
     setStep(job, 'plan', 'active', 'Claude is planning the edit…', 0.32);
@@ -472,7 +474,7 @@ async function runPipeline(job, { prompt, clipIds, settings, reusePlan }) {
     planned.music = pick ? { assetId: pick.id, start: planned.music.start } : null;
     await fs.writeFile(
       planFile,
-      JSON.stringify({ title: planned.title, checklist: planned.checklist, versions: planned.versions, music: planned.music }, null, 2),
+      JSON.stringify({ title: planned.title, checklist: planned.checklist, versions: planned.versions, music: planned.music, emphasis: planned.emphasis }, null, 2),
     );
   }
   const musicAsset = planned.music && library.get(planned.music.assetId);
@@ -563,7 +565,7 @@ async function runPipeline(job, { prompt, clipIds, settings, reusePlan }) {
         signal,
       });
     }
-    const { total, captions } = await writeProject({
+    const { total, captions, srt } = await writeProject({
       projectDir,
       plan: { ...v.plan, title: planned.title },
       clips: clips.map((c) => ({
@@ -585,6 +587,8 @@ async function runPipeline(job, { prompt, clipIds, settings, reusePlan }) {
         watermark: settings.watermark,
         musicPath: musicPaths[v.id] || null,
         musicVolume: MUSIC_LEVEL[settings.musicLevel],
+        fontPaths: settings.captions === 'off' ? null : await ensureFonts(TOOLS_DIR),
+        emphasis: planned.emphasis || [],
       },
     });
 
@@ -607,6 +611,8 @@ async function runPipeline(job, { prompt, clipIds, settings, reusePlan }) {
     setStep(job, 'render', 'active', `${prefix}Compressing ${label}…`, base + share * 0.92);
     const fileName = `clipforge-${id}.mp4`;
     const size = await compressVideo(raw, path.join(outDir, fileName), settings.size, { signal, twoPass: tools.ffmpegNormalize });
+    const srtName = srt.trim() ? `clipforge-${id}.srt` : null;
+    if (srtName) await fs.writeFile(path.join(outDir, srtName), srt);
     await fs.rm(projectDir, { recursive: true, force: true }); // composition is rebuilt on every run
     await run('ffmpeg', [
       '-v', 'error', '-y', '-ss', String(Math.min(1.2, total / 2)), '-i', path.join(outDir, fileName),
@@ -628,6 +634,7 @@ async function runPipeline(job, { prompt, clipIds, settings, reusePlan }) {
       previewUrl: `/api/download/${job.id}/${id}?inline=1&v=${Date.now()}`,
       posterUrl: `/api/poster/${job.id}/${id}?v=${Date.now()}`,
       downloadUrl: `/api/download/${job.id}/${id}`,
+      srtUrl: srtName ? `/api/subtitles/${job.id}/${id}` : null,
     });
   }
   setStep(job, 'render', 'done', `Rendered ${variants.length} video${variants.length > 1 ? 's' : ''}.`, 1);
@@ -1268,6 +1275,14 @@ app.get(['/api/download/:jobId', '/api/download/:jobId/:variantId'], async (req,
   if (!(await exists(file))) return res.status(404).json({ error: 'The file was deleted.' });
   if (req.query.inline) return res.sendFile(file);
   res.download(file, v.file);
+});
+
+// GET /api/subtitles/:jobId/:variantId — the .srt closed captions of a rendered video.
+app.get('/api/subtitles/:jobId/:variantId', async (req, res) => {
+  if (!isId(req.params.jobId) || !isId(req.params.variantId)) return res.sendStatus(404);
+  const file = path.join(DIRS.output, req.params.jobId, `clipforge-${req.params.variantId}.srt`);
+  if (!(await exists(file))) return res.status(404).json({ error: 'No subtitles for that video.' });
+  res.download(file);
 });
 
 app.get('/api/poster/:jobId/:variantId', async (req, res) => {

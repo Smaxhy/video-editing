@@ -59,7 +59,10 @@ const PLAN_SCHEMA = `{
       "audio": { "fadeIn": 0, "fadeOut": 0.4 }
     }
   ],
-  "music": { "track": "m1", "start": 0 }   // ONLY when a music section is given below; omit otherwise
+  "music": { "track": "m1", "start": 0 },  // ONLY when a music section is given below; omit otherwise
+  "emphasis": [                            // ONLY when captions are on: words the captions should make pop
+    { "word": "timber", "emoji": "🌲" }    // a single spoken word; emoji optional (null) — at most 1 in 3 gets one
+  ]
 }`;
 
 function versionLine(id) {
@@ -139,7 +142,7 @@ Produce one version per id below. Each version is a complete, standalone edit of
 ${options.versions.map(versionLine).join('\n')}
 
 Every version will be rendered in these frame formats: ${formats}. Keep overlay text short so it fits a narrow 9:16 frame.
-Captions: ${options.captions === 'off' ? 'OFF' : `burned in automatically from the transcript (style "${options.captions}") — do NOT add "caption" overlays repeating spoken words`}.
+Captions: ${options.captions === 'off' ? 'OFF' : `burned in automatically from the transcript (style "${options.captions}") — do NOT add "caption" overlays repeating spoken words. Fill "emphasis" with the 4-12 spoken words that carry the meaning (numbers, key nouns, payoff words, strong verbs); they are coloured and popped in the captions. Add a fitting emoji to the most visual ones (max one emoji per ~3 seconds; skip emoji for serious topics)`}.
 ${brandLines.length ? `${brandLines.join('\n')}\n` : ''}
 ## Style guide (only where the user is silent)
 ${GOAL_GUIDE[options.goal]}
@@ -312,7 +315,16 @@ export function normalizeResponse(raw, clips, options) {
     }
   }
 
-  return { title: String(raw.title || 'ClipForge edit').slice(0, 120), checklist, versions, warnings, music };
+  const emphasis = (Array.isArray(raw.emphasis) ? raw.emphasis : [])
+    .map((e) => ({
+      word: String(e?.word ?? e ?? '').trim().split(/\s+/)[0].slice(0, 30),
+      // Emoji only: no letters/digits, a few code points at most.
+      emoji: typeof e?.emoji === 'string' && /^[^\p{L}\p{N}\s]{1,8}$/u.test(e.emoji.trim()) ? e.emoji.trim() : null,
+    }))
+    .filter((e) => e.word)
+    .slice(0, 20);
+
+  return { title: String(raw.title || 'ClipForge edit').slice(0, 120), checklist, versions, warnings, music, emphasis };
 }
 
 /** Output length of a normalized plan (sum of scene lengths minus transition overlaps). */

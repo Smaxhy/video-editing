@@ -25,6 +25,7 @@ import { createUpdater } from './updater.js';
 import { createAutopilot } from './autopilot.js';
 import { ensureDeepFilter, polishAudio, hasSpeech, usedWindows } from './audio.js';
 import { ensureFonts } from './fonts.js';
+import { tightenPlan } from './tighten.js';
 import { Server as TusServer } from '@tus/server';
 import { FileStore } from '@tus/file-store';
 
@@ -477,6 +478,16 @@ async function runPipeline(job, { prompt, clipIds, settings, reusePlan }) {
       JSON.stringify({ title: planned.title, checklist: planned.checklist, versions: planned.versions, music: planned.music, emphasis: planned.emphasis }, null, 2),
     );
   }
+  // Auto-tighten: cut pauses and "um"s inside talking scenes (B-roll and POV stay as planned).
+  if (settings.tighten) {
+    let removed = 0;
+    planned.versions = planned.versions.map((v) => {
+      const t = tightenPlan(v.plan, transcripts);
+      removed += t.removed;
+      return { ...v, plan: { ...t.plan, title: v.plan.title } };
+    });
+    if (removed >= 0.3) notes.push(`Auto-tighten removed ${removed.toFixed(1)} s of pauses and filler words.`);
+  }
   const musicAsset = planned.music && library.get(planned.music.assetId);
   const n = planned.versions.length * formats.length;
   const planMsg = `${planned.versions.length} version${planned.versions.length > 1 ? 's' : ''} → ${n} video${n > 1 ? 's' : ''}`;
@@ -588,6 +599,7 @@ async function runPipeline(job, { prompt, clipIds, settings, reusePlan }) {
         musicPath: musicPaths[v.id] || null,
         musicVolume: MUSIC_LEVEL[settings.musicLevel],
         fontPaths: settings.captions === 'off' ? null : await ensureFonts(TOOLS_DIR),
+        motion: settings.motion,
         emphasis: planned.emphasis || [],
       },
     });
@@ -1189,6 +1201,8 @@ function editSettings(s = {}, autoFind = false) {
     shots: s.shots !== false,
     cleanVoice: s.cleanVoice === true,
     proAudio: s.proAudio !== false,
+    tighten: s.tighten !== false,
+    motion: s.motion !== false,
     useLogo: s.useLogo !== false,
     watermark: s.watermark === true,
     plannerModel: PLANNER_MODELS.includes(s.plannerModel) ? s.plannerModel : 'sonnet',

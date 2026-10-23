@@ -266,6 +266,15 @@ export function buildComposition({ plan, clips, transcripts, settings, gsapSrc =
     .filter(Boolean);
 
   const tweens = [];
+  // Jump cuts (same clip, straight cut, a little further on) alternate between normal and a 112%
+  // punch-in so they look intentional — the standard talking-head trick.
+  const zoom = [];
+  laid.scenes.forEach((s, i) => {
+    const p = laid.scenes[i - 1];
+    const jump = settings.motion && p && p.clip === s.clip && s.transition === 'cut' && s.srcStart >= p.srcEnd - 0.05 && s.srcStart - p.srcEnd < 3;
+    zoom[i] = jump ? (zoom[i - 1] > 1 ? 1 : 1.12) : 1;
+  });
+  const emphasisKeys = new Set((settings.emphasis || []).map((e) => wordKey(e.word)));
   const sceneHtml = laid.scenes.map((s, i) => {
     const clip = clipById.get(s.clip);
     const id = `s${i}`;
@@ -301,10 +310,28 @@ export function buildComposition({ plan, clips, transcripts, settings, gsapSrc =
       );
     }
     // In-scene camera move on the inner wrapper (never on the timed <video> itself)
+    const z = zoom[i];
     if (s.effect === 'kenburns') {
-      tweens.push(`tl.fromTo("#${id}i", { scale: 1 }, { scale: 1.12, duration: ${round(dur, 3)}, ease: "none" }, ${s.tlStart});`);
+      tweens.push(`tl.fromTo("#${id}i", { scale: ${z} }, { scale: ${round(z * 1.1, 3)}, duration: ${round(dur, 3)}, ease: "none" }, ${s.tlStart});`);
     } else if (s.effect === 'punch-in') {
-      tweens.push(`tl.fromTo("#${id}i", { scale: 1.15 }, { scale: 1.2, duration: ${round(dur, 3)}, ease: "none" }, ${s.tlStart});`);
+      tweens.push(`tl.fromTo("#${id}i", { scale: ${round(Math.max(z, 1.15), 3)} }, { scale: ${round(Math.max(z, 1.15) * 1.04, 3)}, duration: ${round(dur, 3)}, ease: "none" }, ${s.tlStart});`);
+    } else if (settings.motion && dur > 3.5) {
+      // Never a dead-still frame: a slow 4% push over long shots.
+      tweens.push(`tl.fromTo("#${id}i", { scale: ${z} }, { scale: ${round(z * 1.04, 3)}, duration: ${round(dur, 3)}, ease: "none" }, ${s.tlStart});`);
+    } else if (z !== 1) {
+      tweens.push(`tl.set("#${id}i", { scale: ${z} }, ${s.tlStart});`);
+    }
+    // Emphasis zoom: a quick 7% punch on the first key word of a talking scene.
+    if (settings.motion && emphasisKeys.size && transcripts[s.clip]?.words?.length) {
+      const hit = transcripts[s.clip].words.find((w) => {
+        if (!emphasisKeys.has(wordKey(w.word)) || w.start < s.srcStart || w.start >= s.srcEnd) return false;
+        const at = s.tlStart + (w.start - s.srcStart) / s.speed;
+        return at > s.tlStart + 0.5 && at < end - 0.8;
+      });
+      if (hit) {
+        const at = round(s.tlStart + (hit.start - s.srcStart) / s.speed, 3);
+        tweens.push(`tl.fromTo("#${id}p", { scale: 1 }, { scale: 1.07, duration: 0.14, ease: "power2.out" }, ${at});`);
+      }
     }
 
     // Audio: the clip's own sound stays on the <video>; fades ride a volume automation lane.
@@ -363,9 +390,9 @@ export function buildComposition({ plan, clips, transcripts, settings, gsapSrc =
       ? `\n      <audio id="a${i}" src="media/${escapeHtml(clip.voiceFile)}" ${voiceTiming} data-track-index="${30 + (i % 2)}" ${volumeAttrs}></audio>`
       : '';
     return `    <div id="${id}" class="scene">${bg}
-      <div id="${id}i" class="inner" style="transform-origin: ${origin}">
+      <div id="${id}i" class="inner" style="transform-origin: ${origin}"><div id="${id}p" class="inner" style="transform-origin: ${origin}">
         <video id="v${i}" src="media/${escapeHtml(clip.file)}" ${timing} data-track-index="${i % 2}" playsinline ${videoAudioAttrs} style="object-fit: ${fit}; object-position: ${position}"></video>
-      </div>${voice}
+      </div></div>${voice}
     </div>`;
   });
 

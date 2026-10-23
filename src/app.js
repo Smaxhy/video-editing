@@ -30,6 +30,7 @@ import { preparePicture } from './picture.js';
 import { beatsFor, snapCutsToBeats } from './beats.js';
 import { ensureSfx } from './sfx.js';
 import { reviewVideo } from './review.js';
+import { VOICES, VOICEOVER_MODES, synthesize, scheduleLines, estimateWords, mixNarration } from './tts.js';
 import { Server as TusServer } from '@tus/server';
 import { FileStore } from '@tus/file-store';
 
@@ -449,6 +450,7 @@ async function runPipeline(job, { prompt, clipIds, settings, reusePlan }) {
       cta: settings.cta,
       brand: settings.brand,
       music: mus.byKey.size ? mus.options : null,
+      voiceover: settings.voiceover === 'off' ? null : { mode: settings.voiceover, voiceLabel: VOICES[settings.voice] },
       model: settings.plannerModel,
     };
     // Library clips come with Claude's earlier look at them, plus their frame grid to look at again.
@@ -512,6 +514,29 @@ async function runPipeline(job, { prompt, clipIds, settings, reusePlan }) {
       if (moved) notes.push(`Synced ${moved} cut${moved > 1 ? 's' : ''} to the beat of "${musicAsset.name}" (${beats.bpm} BPM).`);
     } catch (err) {
       notes.push(`Could not find the beat of the music (${err.message}) — cuts left as planned.`);
+    }
+  }
+  // AI voiceover: Kokoro reads the planner's narration lines; they become one mixed track + captions.
+  if (settings.voiceover !== 'off') {
+    for (const v of planned.versions) {
+      const lines = v.plan.narration || [];
+      if (!lines.length) continue;
+      setStep(job, 'plan', 'active', `Recording the voiceover (${VOICES[settings.voice].split(' — ')[0]})${v.id === 'full' ? '' : ` for ${v.id}s`}…`, 0.37);
+      try {
+        const total = layoutTimeline(v.plan).total;
+        const rendered = await synthesize(lines, { toolsDir: TOOLS_DIR, voice: settings.voice, outDir: path.join(ws, 'voiceover', v.id), signal });
+        const placed = scheduleLines(lines, rendered, total);
+        if (!placed.length) continue;
+        v.narration = {
+          path: await mixNarration(placed, path.join(ws, 'voiceover', `${v.id}.m4a`), total, { signal }),
+          words: estimateWords(placed),
+          segments: placed.map((l) => ({ start: l.start, end: l.end })),
+        };
+      } catch (err) {
+        if (signal.aborted) throw new PipelineError('Cancelled.');
+        notes.push(`Voiceover unavailable — made the video without it. (${String(err.message).split('\n')[0]})`);
+        break;
+      }
     }
   }
   const n = planned.versions.length * formats.length;
@@ -646,6 +671,7 @@ async function runPipeline(job, { prompt, clipIds, settings, reusePlan }) {
         fontPaths: settings.captions === 'off' ? null : await ensureFonts(TOOLS_DIR),
         motion: settings.motion,
         downbeats: v.downbeats || null,
+        narration: v.narration || null,
         sfxDir: settings.sfx ? await ensureSfx(TOOLS_DIR).catch(() => null) : null,
         emphasis: planned.emphasis || [],
       },
@@ -1325,6 +1351,8 @@ function editSettings(s = {}, autoFind = false) {
     polish: s.polish !== false,
     beatSync: s.beatSync !== false,
     sfx: s.sfx !== false,
+    voiceover: VOICEOVER_MODES.includes(s.voiceover) ? s.voiceover : 'auto',
+    voice: VOICES[s.voice] ? s.voice : 'am_michael',
     selfReview: s.selfReview !== false,
     autoFix: s.autoFix !== false,
     motion: s.motion !== false,

@@ -1347,6 +1347,8 @@ function readSettings() {
     useLogo: true,
     autoFind: $('#autoFind').checked,
     music: $('#music').value || 'auto',
+    voiceover: $('#voiceover').value,
+    voice: $('#voice').value,
     musicLevel: segValue('musicLevel')[0],
   };
 }
@@ -1359,7 +1361,7 @@ function applySaved(saved) {
   $('#autoFind').checked = s.autoFind === true;
   state.musicWanted = s.music || 'auto';
   renderMusicSelect();
-  for (const k of ['brand', 'cta', 'accent', 'whisperModel', 'engine', 'plannerModel']) if (s[k]) $('#' + k).value = s[k];
+  for (const k of ['brand', 'cta', 'accent', 'whisperModel', 'engine', 'plannerModel', 'voiceover', 'voice']) if (s[k]) $('#' + k).value = s[k];
   for (const k of ['silence', 'shots', 'cleanVoice', 'watermark', ...PRO_TOGGLES]) {
     const el = $('#' + k);
     if (typeof s[k] === 'boolean' && !el.disabled) el.checked = s[k];
@@ -1382,7 +1384,7 @@ function onOptionsChange() {
   updateGo();
   remember();
 }
-['#brand', '#cta', '#accent', '#whisperModel', '#engine', '#plannerModel', '#silence', '#shots', '#cleanVoice', '#watermark', '#logoCutout', ...PRO_TOGGLES.map((k) => '#' + k)]
+['#brand', '#cta', '#accent', '#whisperModel', '#engine', '#plannerModel', '#voiceover', '#voice', '#silence', '#shots', '#cleanVoice', '#watermark', '#logoCutout', ...PRO_TOGGLES.map((k) => '#' + k)]
   .forEach((sel) => $(sel).addEventListener('input', remember));
 $('#autoFind').addEventListener('change', () => { updateGo(); remember(); });
 $('#music').addEventListener('change', () => { state.musicWanted = $('#music').value; renderMusicSelect(); remember(); });
@@ -1751,6 +1753,9 @@ function fillAutoForm(s) {
   if (document.activeElement !== $('#autoDir')) $('#autoDir').value = s.direction;
   if (document.activeElement !== $('#autoBrand')) $('#autoBrand').value = s.brand;
   if (document.activeElement !== $('#autoCta')) $('#autoCta').value = s.cta;
+  if (!$('#autoVoice').options.length) $('#autoVoice').innerHTML = $('#voice').innerHTML;
+  $('#autoVoiceover').value = s.voiceover || 'auto';
+  $('#autoVoice').value = s.voice || 'am_michael';
 }
 
 const whenText = (t) => {
@@ -1863,6 +1868,8 @@ async function saveAutopilot() {
         direction: $('#autoDir').value,
         brand: $('#autoBrand').value,
         cta: $('#autoCta').value,
+        voiceover: $('#autoVoiceover').value,
+        voice: $('#autoVoice').value,
       },
     }));
   } catch (err) { toast(err.message, 'error'); }

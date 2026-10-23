@@ -30,7 +30,10 @@ export const DEFAULT_SETTINGS = {
   brand: '',
   cta: '',
   plannerModel: 'sonnet',
+  voiceover: 'auto',
+  voice: 'am_michael',
 };
+const VOICE_IDS = ['am_michael', 'am_fenrir', 'am_puck', 'am_onyx', 'bm_george', 'bm_fable', 'af_heart', 'af_bella', 'af_nicole', 'bf_emma'];
 
 const clean = (s, max) => String(s ?? '').replace(/\s+/g, ' ').trim().slice(0, max);
 const clamp = (n, lo, hi, d) => (Number.isFinite(Number(n)) ? Math.min(hi, Math.max(lo, Math.round(Number(n)))) : d);
@@ -46,6 +49,8 @@ export function normalizeSettings(s = {}, prev = DEFAULT_SETTINGS) {
     brand: s.brand == null ? prev.brand : clean(s.brand, 60),
     cta: s.cta == null ? prev.cta : clean(s.cta, 60),
     plannerModel: PLANNER_MODELS.includes(s.plannerModel) ? s.plannerModel : prev.plannerModel,
+    voiceover: ['off', 'auto', 'on'].includes(s.voiceover) ? s.voiceover : prev.voiceover || 'auto',
+    voice: VOICE_IDS.includes(s.voice) ? s.voice : prev.voice || 'am_michael',
   };
 }
 
@@ -324,6 +329,8 @@ export function createAutopilot({ dir, library, scanner, renderIdea, otherWork =
           brand: data.settings.brand,
           cta: data.settings.cta,
           plannerModel: data.settings.plannerModel,
+          voiceover: data.settings.voiceover,
+          voice: data.settings.voice,
         };
         let last = 0;
         const r = await renderIdea(idea, {

@@ -16,7 +16,7 @@ import {
   FORMATS, CAPTION_STYLES, FRAMINGS,
 } from './renderer.js';
 import { compressVideo, SIZE_PRESETS, RENDER_QUALITY } from './compress.js';
-import { run, exists, PipelineError } from './util.js';
+import { run, exists, round, PipelineError } from './util.js';
 import { createAuth } from './auth.js';
 import { createLibrary, VIDEO_EXT, AUDIO_EXT } from './library.js';
 import { createScanner } from './scanner.js';
@@ -27,6 +27,8 @@ import { ensureDeepFilter, polishAudio, hasSpeech, usedWindows } from './audio.j
 import { ensureFonts } from './fonts.js';
 import { tightenPlan } from './tighten.js';
 import { preparePicture } from './picture.js';
+import { beatsFor, snapCutsToBeats } from './beats.js';
+import { ensureSfx } from './sfx.js';
 import { Server as TusServer } from '@tus/server';
 import { FileStore } from '@tus/file-store';
 
@@ -490,6 +492,26 @@ async function runPipeline(job, { prompt, clipIds, settings, reusePlan }) {
     if (removed >= 0.3) notes.push(`Auto-tighten removed ${removed.toFixed(1)} s of pauses and filler words.`);
   }
   const musicAsset = planned.music && library.get(planned.music.assetId);
+  // Beat sync: B-roll/POV cuts land on the music's downbeats; montage shots pulse on the beat.
+  if (settings.beatSync && musicAsset) {
+    setStep(job, 'plan', 'active', 'Finding the beat of the music…', 0.37);
+    try {
+      const beats = await beatsFor(library.sourcePath(musicAsset.id), path.join(library.cacheDir(musicAsset.id), 'beats-v1.json'));
+      const shift = (list) => list.map((b) => round(b - planned.music.start, 3)).filter((b) => b > 0.1);
+      const out = { beats: shift(beats.beats), downbeats: shift(beats.downbeats) };
+      const talking = (sc) => (transcripts[sc.clip]?.words || []).filter((w) => w.end > sc.start && w.start < sc.end).length >= 3;
+      const clipDuration = (id) => clips.find((c) => c.id === id)?.duration || 0;
+      let moved = 0;
+      planned.versions = planned.versions.map((v) => {
+        const r = snapCutsToBeats(v.plan, out, { talking, clipDuration, layout: layoutTimeline });
+        moved += r.moved;
+        return { ...v, plan: r.plan, downbeats: out.downbeats };
+      });
+      if (moved) notes.push(`Synced ${moved} cut${moved > 1 ? 's' : ''} to the beat of "${musicAsset.name}" (${beats.bpm} BPM).`);
+    } catch (err) {
+      notes.push(`Could not find the beat of the music (${err.message}) — cuts left as planned.`);
+    }
+  }
   const n = planned.versions.length * formats.length;
   const planMsg = `${planned.versions.length} version${planned.versions.length > 1 ? 's' : ''} → ${n} video${n > 1 ? 's' : ''}`;
   setStep(job, 'plan', 'done', reusePlan ? `Reused saved plan (no Claude call): ${planMsg}.` : `Planned ${planMsg}.`, 0.38);
@@ -621,6 +643,8 @@ async function runPipeline(job, { prompt, clipIds, settings, reusePlan }) {
         musicVolume: MUSIC_LEVEL[settings.musicLevel],
         fontPaths: settings.captions === 'off' ? null : await ensureFonts(TOOLS_DIR),
         motion: settings.motion,
+        downbeats: v.downbeats || null,
+        sfxDir: settings.sfx ? await ensureSfx(TOOLS_DIR).catch(() => null) : null,
         emphasis: planned.emphasis || [],
       },
     });
@@ -1224,6 +1248,8 @@ function editSettings(s = {}, autoFind = false) {
     proAudio: s.proAudio !== false,
     tighten: s.tighten !== false,
     polish: s.polish !== false,
+    beatSync: s.beatSync !== false,
+    sfx: s.sfx !== false,
     motion: s.motion !== false,
     useLogo: s.useLogo !== false,
     watermark: s.watermark === true,

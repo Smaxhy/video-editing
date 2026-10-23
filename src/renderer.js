@@ -3,6 +3,7 @@ import path from 'node:path';
 import os from 'node:os';
 import { fileURLToPath } from 'node:url';
 import { run, tail, exists, linkOrCopy, round, clamp, escapeHtml, PipelineError } from './util.js';
+import { sfxCues, SFX_VOLUME, SFX_LENGTH } from './sfx.js';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const LOCAL_HYPERFRAMES = path.join(ROOT, 'node_modules', '.bin', 'hyperframes');
@@ -321,6 +322,14 @@ export function buildComposition({ plan, clips, transcripts, settings, gsapSrc =
     } else if (z !== 1) {
       tweens.push(`tl.set("#${id}i", { scale: ${z} }, ${s.tlStart});`);
     }
+    // On the beat: B-roll / POV scenes get a small 3% pulse on every downbeat of the music.
+    const sceneWords = (transcripts[s.clip]?.words || []).filter((w) => w.end > s.srcStart && w.start < s.srcEnd);
+    if (settings.motion && settings.downbeats?.length && sceneWords.length < 3) {
+      for (const b of settings.downbeats) {
+        if (b <= s.tlStart + 0.15 || b >= end - 0.3) continue;
+        tweens.push(`tl.fromTo("#${id}p", { scale: 1 }, { scale: 1.03, duration: 0.06, ease: "power2.out", yoyo: true, repeat: 1, repeatDelay: 0.04 }, ${round(b - 0.02, 3)});`);
+      }
+    }
     // Emphasis zoom: a quick 7% punch on the first key word of a talking scene.
     if (settings.motion && emphasisKeys.size && transcripts[s.clip]?.words?.length) {
       const hit = transcripts[s.clip].words.find((w) => {
@@ -453,6 +462,7 @@ export function buildComposition({ plan, clips, transcripts, settings, gsapSrc =
   const highlight = accent.toLowerCase() === '#7c5cff' ? '#ffe14d' : accent;
   const emphasis = new Map((settings.emphasis || []).map((e) => [wordKey(e.word), e.emoji || '']));
   let lastEmoji = -Infinity;
+  const emojiTimes = [];
   const captionHtml = captions.map((c, i) => {
     const id = `cap${i}`;
     const dur = round(c.end - c.start, 3);
@@ -480,6 +490,7 @@ export function buildComposition({ plan, clips, transcripts, settings, gsapSrc =
       if (strong && emphasis.get(key) && !emoji && w.start - lastEmoji >= 2.5 && style !== 'clean') {
         emoji = emphasis.get(key);
         lastEmoji = w.start;
+        emojiTimes.push(round(Math.max(c.start, w.start), 3));
         tweens.push(`tl.fromTo("#${id}e", { scale: 0, opacity: 0, rotation: -20 }, { scale: 1, opacity: 1, rotation: 0, duration: 0.22, ease: "back.out(3)" }, ${round(Math.max(c.start, w.start), 3)});`);
       }
       return `<span id="${wid}" class="w${strong ? ' em' : ''}">${escapeHtml(w.text)}</span>`;
@@ -496,6 +507,15 @@ export function buildComposition({ plan, clips, transcripts, settings, gsapSrc =
     const base = clamp(Number(settings.musicVolume) || 0.8, 0, 1.5);
     const automation = JSON.stringify({ version: 1, lanes: [{ target: 'volume', points: musicAutomation(speech, total, base, round(base * 0.22, 3)) }] });
     music.push(`    <audio id="music" src="media/${escapeHtml(settings.musicFile)}" data-start="0" data-duration="${total}" data-track-index="50" data-volume="1" data-automation='${automation}'></audio>`);
+  }
+  // Sound effects: whooshes into transitions, impacts on titles, pops on hooks/emoji, a riser into the CTA.
+  const sfx = [];
+  if (settings.sfxFiles) {
+    sfxCues({ timeline: laid, overlays, emojiTimes }).forEach((c, k) => {
+      if (!settings.sfxFiles[c.name] || c.start >= total - 0.05) return;
+      const d = round(Math.min(SFX_LENGTH[c.name], total - c.start), 3);
+      sfx.push(`    <audio id="fx${k}" src="media/${escapeHtml(settings.sfxFiles[c.name])}" data-start="${c.start}" data-duration="${d}" data-track-index="${60 + (k % 4)}" data-volume="${SFX_VOLUME[c.name]}"></audio>`);
+    });
   }
   // Brand watermark: the logo in the top-right corner for the whole video.
   const watermark =
@@ -578,7 +598,7 @@ ${fontFaces}
 </head>
 <body>
   <div id="root" data-composition-id="main" data-start="0" data-width="${W}" data-height="${H}" data-duration="${total}" data-fps="${FPS}">
-${[...sceneHtml, ...music, ...layerHtml(0), ...captionHtml, ...watermark, ...layerHtml(1), ...layerHtml(2)].join('\n')}
+${[...sceneHtml, ...music, ...sfx, ...layerHtml(0), ...captionHtml, ...watermark, ...layerHtml(1), ...layerHtml(2)].join('\n')}
   </div>
   <script>
     const tl = gsap.timeline({ paused: true });
@@ -704,6 +724,17 @@ export async function writeProject({ projectDir, plan, clips, transcripts, setti
   let gsapSrc = 'gsap.min.js';
   if (await exists(GSAP_LOCAL)) await fs.copyFile(GSAP_LOCAL, path.join(projectDir, 'gsap.min.js'));
   else gsapSrc = GSAP_CDN;
+  let sfxFiles = null;
+  if (settings.sfxDir) {
+    sfxFiles = {};
+    await fs.mkdir(path.join(projectDir, 'media', 'sfx'), { recursive: true });
+    for (const name of Object.keys(SFX_VOLUME)) {
+      const src = path.join(settings.sfxDir, `${name}.wav`);
+      if (!(await exists(src))) continue;
+      await linkOrCopy(src, path.join(projectDir, 'media', 'sfx', `${name}.wav`));
+      sfxFiles[name] = `sfx/${name}.wav`;
+    }
+  }
   const fontFiles = {};
   for (const [key, src] of Object.entries(settings.fontPaths || {})) {
     if (!src) continue;
@@ -712,7 +743,7 @@ export async function writeProject({ projectDir, plan, clips, transcripts, setti
     await linkOrCopy(src, path.join(projectDir, 'fonts', fontFiles[key]));
   }
 
-  const result = buildComposition({ plan, clips: projectClips, transcripts, settings: { ...settings, logoFile, musicFile, fontFiles }, gsapSrc });
+  const result = buildComposition({ plan, clips: projectClips, transcripts, settings: { ...settings, logoFile, musicFile, fontFiles, sfxFiles }, gsapSrc });
   await fs.writeFile(path.join(projectDir, 'index.html'), result.html);
   // Closed-caption sidecar (sentence-sized cues) for uploading to the platform.
   const srt = toSrt(buildCaptions(result.timeline, transcripts, 'srt'));

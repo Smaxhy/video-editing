@@ -85,7 +85,7 @@ export async function measureReference(file, { transcript, signal }) {
   const v = (info.streams || []).find((st) => st.codec_type === 'video') || {};
   const hasAudio = (info.streams || []).some((st) => st.codec_type === 'audio');
   const scenes = await run('ffmpeg', ['-hide_banner', '-i', file, '-an', '-vf', "scale=320:-2,select='gt(scene,0.3)',showinfo", '-f', 'null', '-'], { signal, timeoutMs: 10 * 60_000 });
-  const colour = await run('ffmpeg', ['-hide_banner', '-v', 'error', '-i', file, '-an', '-vf', "select='not(mod(n\\,20))',scale=320:-2,signalstats,metadata=print:file=-", '-f', 'null', '-'], { signal, timeoutMs: 10 * 60_000 });
+  const colour = await run('ffmpeg', ['-hide_banner', '-v', 'error', '-i', file, '-an', '-vf', "select='not(mod(n\\,20))',scale=320:-2,format=yuv420p,signalstats,metadata=print:file=-", '-f', 'null', '-'], { signal, timeoutMs: 10 * 60_000 });
   let lufs = null;
   if (hasAudio) {
     const l = await run('ffmpeg', ['-hide_banner', '-nostats', '-i', file, '-vn', '-af', 'ebur128', '-f', 'null', '-'], { signal, timeoutMs: 10 * 60_000 });

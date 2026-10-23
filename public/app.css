@@ -457,3 +457,9 @@ dialog::backdrop { background: rgba(4, 5, 8, .78); backdrop-filter: blur(3px); }
 .st-list .knobs { color: var(--muted); font-size: 12.5px; }
 .st-list ul { margin: 2px 0 0; padding-left: 18px; color: var(--muted); font-size: 12.5px; }
 .tag.ref { color: #f0abfc; border-color: rgba(240, 171, 252, .4); }
+
+/* ---- "Tell Claude what to fix" ---- */
+.fixbox { margin-top: 14px; display: grid; gap: 6px; }
+.fixbox textarea { min-height: 64px; }
+.fixrow { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; }
+.fixrow .grow { flex: 1; min-width: 180px; }

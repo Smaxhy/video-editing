@@ -6,6 +6,9 @@ import path from 'node:path';
 import { run, probe, exists, tail, PipelineError } from './util.js';
 import { measureQuality } from './quality.js';
 
+// v2: measured as 8-bit (10-bit phone footage used to read as over-exposed).
+const QUALITY_VERSION = 2;
+
 /**
  * Media library: every uploaded video (or music track) lives here once and can be used by any
  * number of projects.
@@ -188,7 +191,7 @@ export function createLibrary({ dir, onChange = () => {}, onReady = () => {}, is
     a.kind !== 'audio' &&
     ((settings.shrinkLarge && !a.shrunk && shouldShrink(a, a.size)) ||
       (a.preview.proxyReason && !['ready', 'failed'].includes(a.preview.proxy)) ||
-      !a.quality);
+      a.quality?.v !== QUALITY_VERSION);
 
   async function makePreviews(a) {
     const src = file(a.id, a.file);
@@ -222,12 +225,12 @@ export function createLibrary({ dir, onChange = () => {}, onReady = () => {}, is
       await update(a, { preview: { ...a.preview, proxy: ok ? 'ready' : 'failed', progress: ok ? 1 : 0 } });
     }
     // Quality score (sharpness, exposure, shake, sound level) — so bad clips are never picked.
-    if (!a.quality && assets.has(a.id)) {
+    if (a.quality?.v !== QUALITY_VERSION && assets.has(a.id)) {
       try {
         const quality = await measureQuality(file(a.id, a.file), { hasAudio: a.hasAudio, work: file(a.id, '.quality') });
-        await update(a, { quality });
+        await update(a, { quality: { ...quality, v: QUALITY_VERSION } });
       } catch (err) {
-        await update(a, { quality: { score: null, flags: [], error: err.message, measuredAt: Date.now() } });
+        await update(a, { quality: { score: null, flags: [], error: err.message, measuredAt: Date.now(), v: QUALITY_VERSION } });
       }
     }
   }

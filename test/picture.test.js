@@ -20,8 +20,11 @@ test('shake: a steady camera scores ~0, a jittery one scores high', () => {
 test('grading brightens dark footage, fixes casts and leaves good footage nearly alone', () => {
   const dark = gradeFilters({ y: 62, u: 140, v: 128, sat: 40, ylow: 20, yhigh: 150 }).join(',');
   assert.match(dark, /eq=gamma=1\.\d+/);
-  assert.match(dark, /colorbalance=rm=0:bm=-0\.084/);
+  assert.match(dark, /colorbalance=rm=0:bm=-0\.05/);
   assert.match(dark, /hqdn3d/);
   const good = gradeFilters({ y: 118, u: 128, v: 128, sat: 90, ylow: 30, yhigh: 220 });
-  assert.deepEqual(good, ['eq=gamma=1:contrast=1:saturation=1.04']);
+  assert.deepEqual(good, ['eq=gamma=1:contrast=1:saturation=1.02']);
+  // A strongly green scene (a forest) is the scene, not a cast — no colour correction at all.
+  const forest = gradeFilters({ y: 110, u: 105, v: 112, sat: 70, ylow: 30, yhigh: 200 });
+  assert.ok(!forest.some((f) => f.startsWith('colorbalance')), forest.join(','));
 });

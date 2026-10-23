@@ -1493,6 +1493,45 @@ async function start(reusePlan) {
   }
 }
 $('#go').addEventListener('click', () => start(false));
+
+// ---- "Tell Claude what to fix" after a render --------------------------------------
+$('#fixForm').addEventListener('submit', async (e) => {
+  e.preventDefault();
+  const remarks = $('#fixText').value.trim();
+  if (!remarks) { $('#fixText').focus(); return; }
+  $('#fixGo').disabled = true;
+  try {
+    await api('/api/edit', {
+      method: 'POST',
+      body: { jobId: state.jobId, prompt: $('#prompt').value, clips: state.clips.map((c) => c.id), settings: readSettings(), revise: remarks },
+    });
+    $('#fixMsg').textContent = 'Claude is re-editing with your notes…';
+    subscribe();
+    loadProjects();
+    announce('Re-editing with your remarks.');
+  } catch (err) {
+    toast(err.message, 'error');
+  } finally {
+    $('#fixGo').disabled = false;
+  }
+});
+
+/** After a revision, mirror the settings Claude changed (polish off, no music…) in the controls. */
+function syncChangedSettings(r) {
+  const s = r.settings || {};
+  if (!r.revision) return;
+  for (const k of ['polish', 'beatSync', 'proAudio']) if (typeof s[k] === 'boolean' && $('#' + k)) $('#' + k).checked = s[k];
+  for (const [k, on] of [['motion', s.motion], ['sfx', s.sfx], ['tighten', s.tighten]]) if (on && $('#' + k)) $('#' + k).checked = on !== 'off';
+  if (s.captions) setSeg('captions', s.captions);
+  if (s.framing) setSeg('framing', s.framing);
+  if (s.musicLevel) setSeg('musicLevel', s.musicLevel);
+  if (s.music === 'off') { state.musicWanted = 'off'; renderMusicSelect(); }
+  if (s.voiceover && $('#voiceover')) $('#voiceover').value = s.voiceover;
+  $('#fixText').value = '';
+  $('#fixMsg').textContent = `Fixed: “${r.revision.slice(0, 120)}”. Not there yet? Tell Claude what else to change.`;
+  remember();
+}
+
 $('#rerender').addEventListener('click', () => start(true));
 $('#cancel').addEventListener('click', () => fetch(`/api/cancel/${state.jobId}`, { method: 'POST' }));
 
@@ -1573,6 +1612,7 @@ async function showResult(r) {
     </div>`;
   }).join('');
   $('#warns').innerHTML = (r.warnings || []).map((w) => `⚠ ${esc(w)}`).join('<br>');
+  syncChangedSettings(r);
   const rv = r.review;
   $('#review').classList.toggle('hidden', !rv);
   if (rv) {

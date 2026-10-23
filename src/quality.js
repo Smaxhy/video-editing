@@ -37,7 +37,7 @@ export async function measureQuality(file, { hasAudio, work, signal }) {
   try {
     const frames = await run('ffmpeg', [
       '-hide_banner', '-v', 'error', '-i', file, '-an',
-      '-vf', "select='not(mod(n\\,15))',scale=480:-2,blurdetect,signalstats,metadata=print:file=-", '-f', 'null', '-',
+      '-vf', "select='not(mod(n\\,15))',scale=480:-2,format=yuv420p,blurdetect,signalstats,metadata=print:file=-", '-f', 'null', '-',
     ], { signal, timeoutMs: 20 * 60_000 });
     const avg = (key) => {
       const v = [...frames.stdout.matchAll(new RegExp(`lavfi\\.${key}=([\\d.]+)`, 'g'))].map((m) => Number(m[1]));

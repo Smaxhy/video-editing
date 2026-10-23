@@ -70,6 +70,66 @@ const PLAN_SCHEMA = `{
   ]
 }`;
 
+/** Settings a revision may change (e.g. "no green filter" → polish off), with their allowed values. */
+export const REVISABLE = {
+  polish: [true, false],
+  look: ['natural', 'warm', 'cool', 'moody', 'vibrant', 'film'],
+  captions: ['bold', 'pop', 'clean', 'off'],
+  captionPos: ['bottom', 'middle'],
+  motion: ['off', 'subtle', 'punchy'],
+  sfx: ['off', 'subtle', 'full'],
+  music: ['off'],
+  musicLevel: ['low', 'medium', 'high'],
+  tighten: ['off', 'natural', 'tight'],
+  voiceover: ['off', 'auto', 'on'],
+  beatSync: [true, false],
+  framing: ['smart', 'blur', 'crop', 'fit'],
+  proAudio: [true, false],
+};
+const SETTING_HELP = {
+  polish: 'automatic colour/exposure correction, stabilisation and sharpening',
+  look: 'colour grade on top',
+  captions: 'caption style (off removes them)',
+  captionPos: 'where captions sit',
+  motion: 'automatic zooms / punch-ins',
+  sfx: 'whoosh/pop sound effects',
+  music: '"off" removes the background music',
+  musicLevel: 'music volume',
+  tighten: 'how hard pauses are cut',
+  voiceover: 'AI narrator',
+  beatSync: 'cuts snapped to the music beat',
+  framing: 'how wide shots fit the vertical frame',
+  proAudio: 'voice clean-up / levelling',
+};
+
+function revisionSection({ remarks, previous, current }) {
+  const keys = Object.entries(REVISABLE)
+    .map(([k, v]) => `- "${k}": ${v.map((x) => JSON.stringify(x)).join(' | ')} — ${SETTING_HELP[k]}${current[k] !== undefined ? ` (now ${JSON.stringify(current[k])})` : ''}`)
+    .join('\n');
+  return `
+## REVISION — the user watched the last render and wants changes
+Their remarks (highest authority — above the original request):
+"""
+${remarks}
+"""
+Start from the previous edit below and change ONLY what the remarks ask for (plus what those changes require). Keep every other scene, cut point, text, timing and the music exactly as they were. Record each remark and what you changed in "checklist".
+If a remark is about the look, sound or captions rather than the cut (e.g. "the colours look green", "no music", "captions too big"), change the render settings by adding "settings" to your response with ONLY the keys you change:
+${keys}
+
+Previous edit (JSON):
+${previous}
+`;
+}
+
+/** Keep only allowed setting changes from a revision response. Exported for tests. */
+export function normalizeSettingChanges(raw) {
+  const out = {};
+  for (const [k, allowed] of Object.entries(REVISABLE)) {
+    if (raw && Object.prototype.hasOwnProperty.call(raw, k) && allowed.includes(raw[k])) out[k] = raw[k];
+  }
+  return out;
+}
+
 function versionLine(id) {
   if (id === 'full') return `- "full": the complete edit — length is whatever the user's request implies (no artificial limit).`;
   return `- "${id}": at most ${id} seconds of output (aim for ${Math.round(Number(id) * 0.9)}-${id}s). If the usable footage is shorter, use what there is.`;
@@ -153,6 +213,7 @@ The user's request below is the highest authority. Follow every instruction lite
 ${userPrompt}
 """
 
+${options.revision ? revisionSection(options.revision) : ''}
 ## Deliverables
 Produce one version per id below. Each version is a complete, standalone edit of the same story (shorter versions keep only the strongest moments):
 ${options.versions.map(versionLine).join('\n')}
@@ -344,7 +405,9 @@ export function normalizeResponse(raw, clips, options) {
     .filter((e) => e.word)
     .slice(0, 20);
 
-  return { title: String(raw.title || 'ClipForge edit').slice(0, 120), checklist, versions, warnings, music, emphasis };
+  const settingsChanges = options.revision ? normalizeSettingChanges(raw.settings) : {};
+
+  return { title: String(raw.title || 'ClipForge edit').slice(0, 120), checklist, versions, warnings, music, emphasis, settingsChanges };
 }
 
 /** Output length of a normalized plan (sum of scene lengths minus transition overlaps). */

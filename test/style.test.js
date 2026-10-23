@@ -65,3 +65,18 @@ test('captions never overlap a title in the same part of the frame', () => {
   });
   assert.ok(captions.every((c) => c.start >= 1.2 || c.end <= 0), JSON.stringify(captions));
 });
+
+import { normalizeSettingChanges, buildPrompt } from '../src/editor.js';
+
+test('revision remarks can only change known settings to allowed values', () => {
+  assert.deepEqual(normalizeSettingChanges({ polish: false, look: 'neon', captions: 'clean', music: 'off', hack: 1, musicLevel: 'loud' }), { polish: false, captions: 'clean', music: 'off' });
+  assert.deepEqual(normalizeSettingChanges(null), {});
+  const p = buildPrompt({
+    clips: [{ id: 'clip1', name: 'a.mp4', duration: 5, width: 1080, height: 1920, hasAudio: false, transcript: null }],
+    userPrompt: 'tree video',
+    options: { goal: 'social', versions: ['15'], formats: [{ label: '9:16', width: 1080, height: 1920 }], captions: 'bold', revision: { remarks: 'everything looks green', previous: '{"versions":[]}', current: { polish: true } } },
+  });
+  assert.match(p, /REVISION/);
+  assert.match(p, /everything looks green/);
+  assert.match(p, /"polish": true \| false .*\(now true\)/);
+});

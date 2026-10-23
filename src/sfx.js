@@ -10,6 +10,8 @@ import { run, round } from './util.js';
  *   impact — sub "boom" + noise burst (title cards)
  *   riser  — rising tone + noise (build-up into the call to action)
  *   tick   — tiny click (text / lower-third entrances)
+ *   hit    — tight punchy thump (punch / flash cuts, camera shakes)
+ *   glitch — crushed digital stutter (glitch cuts)
  */
 const SOUNDS = {
   whoosh: {
@@ -29,9 +31,19 @@ const SOUNDS = {
     graph: '[0]highpass=f=150,afade=t=out:st=1.42:d=0.08',
   },
   tick: { d: 0.06, inputs: ["aevalsrc='0.7*sin(2*PI*2600*t)*exp(-t*95)':s=48000:d=0.06"] },
+  hit: {
+    d: 0.45,
+    inputs: ["aevalsrc='0.95*sin(2*PI*t*(55+140*exp(-t*28)))*exp(-t*9)+0.35*(random(0)*2-1)*exp(-t*60)':s=48000:d=0.45"],
+    graph: '[0]lowpass=f=6000,acompressor=threshold=0.3:ratio=4:attack=1:release=60',
+  },
+  glitch: {
+    d: 0.3,
+    inputs: ["aevalsrc='(0.6*sin(2*PI*t*(300+900*floor(mod(t*37,4))))+0.5*(random(0)*2-1))*lt(mod(t*30,1),0.6)*exp(-t*5)':s=48000:d=0.3"],
+    graph: '[0]acrusher=bits=6:samples=6:mix=0.8,highpass=f=200',
+  },
 };
-export const SFX_VOLUME = { whoosh: 0.5, pop: 0.45, impact: 0.55, riser: 0.45, tick: 0.35 };
-const VERSION = 'v1';
+export const SFX_VOLUME = { whoosh: 0.5, pop: 0.45, impact: 0.55, riser: 0.45, tick: 0.35, hit: 0.5, glitch: 0.4 };
+const VERSION = 'v2';
 
 let pending = null;
 
@@ -67,7 +79,11 @@ export function ensureSfx(toolsDir) {
 export function sfxCues({ timeline, overlays, emojiTimes = [], level = 'full' }) {
   const cues = [];
   for (const s of timeline.scenes) {
-    if (s.index > 0 && s.transition !== 'cut') cues.push({ name: 'whoosh', start: s.tlStart - 0.3, prio: 2 });
+    if (s.effect === 'shake') cues.push({ name: 'hit', start: s.tlStart, prio: 2 });
+    if (s.index === 0 || s.transition === 'cut') continue;
+    if (s.transition === 'punch' || s.transition === 'flash') cues.push({ name: 'hit', start: s.tlStart, prio: 2 });
+    else if (s.transition === 'glitch') cues.push({ name: 'glitch', start: s.tlStart, prio: 2 });
+    else cues.push({ name: 'whoosh', start: s.tlStart - 0.3, prio: 2 });
   }
   for (const o of overlays) {
     if (o.type === 'hook') cues.push({ name: 'pop', start: o.start, prio: 3 });

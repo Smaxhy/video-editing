@@ -10,7 +10,9 @@ import { fileURLToPath } from 'node:url';
 import { transcribe, WHISPER_MODELS, ENGINES } from './transcriber.js';
 import { analyzeClip, isolateVoice, cutoutImage } from './analysis.js';
 import { detectTools, onPath, OPTIONAL_TOOLS } from './tools.js';
-import { generateEditPlans, GOALS, LENGTHS, PLANNER_MODELS, REVISABLE, beatGrid } from './editor.js';
+import { generateEditPlans, GOALS, LENGTHS, PLANNER_MODELS, REVISABLE, INTENSITIES, beatGrid } from './editor.js';
+import { spicePlan } from './spice.js';
+import { smoothSlowMo, rampSlowMo, SLOW } from './slowmo.js';
 import {
   writeProject, renderProject, makeBlurBackground, aspectMismatch, ensureSeekable, layoutTimeline, prepareMusic,
   FORMATS, CAPTION_STYLES, FRAMINGS,
@@ -32,7 +34,8 @@ import { ensureSfx } from './sfx.js';
 import { reviewVideo } from './review.js';
 import { VOICES, VOICEOVER_MODES, synthesize, scheduleLines, estimateWords, mixNarration } from './tts.js';
 import { createMl } from './ml.js';
-import { musicLine, alignedStart } from './musicscan.js';
+import { musicLine, alignedStart, scanMusic } from './musicscan.js';
+import { generateMusic } from './musicgen.js';
 import { ensureYunet } from './reframe.js';
 import { createStyles, styleGuideText } from './style.js';
 import { Server as TusServer } from '@tus/server';
@@ -508,7 +511,7 @@ async function runPipeline(job, { prompt, clipIds, settings, reusePlan, revise =
     setStep(job, 'plan', 'active', 'Claude is planning the edit…', 0.32);
     // Trending-sound mode: nothing is mixed — the creator adds the sound in the app when posting.
     const mus = musicOptions(settings.trendingSound ? 'off' : settings.music);
-    if (!settings.trendingSound && settings.music === 'auto' && !mus.byKey.size) notes.push('No music in your library — drop MP3/WAV files into the Library to get background music.');
+    if (!settings.trendingSound && settings.music === 'auto' && !mus.byKey.size && !settings.aiMusic) notes.push('No music in your library — drop MP3/WAV files into the Library, or turn on "AI music", to get background music.');
     const options = {
       goal: settings.goal,
       versions: settings.lengths,
@@ -521,6 +524,8 @@ async function runPipeline(job, { prompt, clipIds, settings, reusePlan, revise =
       style: settings.style && styles.get(settings.style) ? styleGuideText(styles.get(settings.style)) : null,
       model: settings.plannerModel,
       trendingSound: settings.trendingSound,
+      aiMusic: !settings.trendingSound && settings.music === 'auto' && settings.aiMusic,
+      intensity: settings.intensity,
     };
     // Revision: the user watched the last render and said what to fix — Claude edits that plan.
     if (revise) {
@@ -584,6 +589,27 @@ async function runPipeline(job, { prompt, clipIds, settings, reusePlan, revise =
     if (removed >= 0.3) notes.push(`Auto-tighten removed ${removed.toFixed(1)} s of pauses and filler words.`);
   }
   if (settings.trendingSound) planned.music = null;
+  // No usable music in the library: compose a track for the vibe on this machine (MusicGen, no API)
+  // and keep it in the library for next time.
+  if (!planned.music && settings.music === 'auto' && !settings.trendingSound && settings.aiMusic) {
+    const longest = Math.max(...planned.versions.map((v) => layoutTimeline(v.plan).total));
+    setStep(job, 'plan', 'active', 'Composing music for the vibe with local AI (the first time also downloads the model)…', 0.36);
+    try {
+      const out = path.join(ws, 'ai-music.m4a');
+      const made = await generateMusic({ toolsDir: TOOLS_DIR, sound: planned.sound, seconds: longest + 1, outFile: out, signal });
+      const vibe = planned.sound?.vibe || 'background';
+      const asset = await library.ingest(out, { name: `AI music — ${vibe}.m4a`, size: (await fs.stat(out)).size });
+      await library.setFields(asset.id, {
+        tags: { title: `AI music — ${vibe}`, artist: 'ClipForge AI (MusicGen)', genre: planned.sound?.style || '' },
+        music: await scanMusic(library.sourcePath(asset.id)).catch(() => null),
+      });
+      planned.music = { assetId: asset.id, start: 0 };
+      notes.push(`No music track fit, so ClipForge composed one on this machine: "${made.prompt}" (MusicGen, free for non-commercial use). It's saved in your music library.`);
+    } catch (err) {
+      if (signal.aborted) throw err;
+      notes.push(`Could not compose AI music (${err.message}). Add MP3s to your library for background music.`);
+    }
+  }
   const musicAsset = planned.music && library.get(planned.music.assetId);
   // Beat sync: B-roll/POV cuts land on the music's downbeats; montage shots pulse on the beat. In
   // trending-sound mode the grid comes from a sound the creator saved (timing only, not mixed) or
@@ -621,6 +647,27 @@ async function runPipeline(job, { prompt, clipIds, settings, reusePlan, revise =
     } catch (err) {
       notes.push(`Could not find the beat (${err.message}) — cuts left as planned.`);
     }
+  }
+  // Styling pass: styled transitions on beat-landing B-roll cuts, punch-ins between sentences, and a
+  // flash + shake on the peak — so "creator"/"max" edits never come out as plain cuts.
+  if (settings.intensity !== 'clean') {
+    const talking = (sc) => (transcripts[sc.clip]?.words || []).filter((w) => w.end > sc.start && w.start < sc.end).length >= 3;
+    const clipDuration = (id) => clips.find((c) => c.id === id)?.duration || 0;
+    const energy = musicAsset?.music?.energy || planned.sound?.energy || 'medium';
+    let added = 0;
+    planned.versions = planned.versions.map((v) => {
+      const r = spicePlan(v.plan, { intensity: settings.intensity, energy, downbeats: v.downbeats || [], talking, clipDuration, layout: layoutTimeline });
+      added += r.added;
+      return { ...v, plan: r.plan };
+    });
+    if (added) notes.push(`Styled ${added} cut${added > 1 ? 's' : ''} (${settings.intensity} intensity, ${energy} energy): transitions on the beat, punch-ins and a hit on the peak.`);
+    let ramps = 0;
+    planned.versions = planned.versions.map((v) => {
+      const r = rampSlowMo(v.plan, { talking, clipDuration });
+      ramps += r.ramps;
+      return { ...v, plan: r.plan };
+    });
+    if (ramps) notes.push(`Speed-ramped into ${ramps} slow-motion moment${ramps > 1 ? 's' : ''}.`);
   }
   // AI voiceover: Kokoro reads the planner's narration lines; they become one mixed track + captions.
   if (settings.voiceover !== 'off') {
@@ -732,6 +779,7 @@ async function runPipeline(job, { prompt, clipIds, settings, reusePlan, revise =
 
   const variants = [];
   const musicPaths = {};
+  const slowMo = {};
   const jobsList = planned.versions.flatMap((v) => formats.map((f) => ({ v, f })));
   for (const [k, { v, f }] of jobsList.entries()) {
     const id = `${v.id}-${f.key}`;
@@ -751,19 +799,52 @@ async function runPipeline(job, { prompt, clipIds, settings, reusePlan, revise =
         signal,
       });
     }
+    const clipEntry = (c) => ({
+      ...c,
+      path: renderPaths[c.id],
+      blurPath: blurPaths[c.id] || null,
+      voicePath: voiceTracks[c.id]?.path || null,
+      voiceOffset: voiceTracks[c.id]?.offset || 0,
+      videoOffset: videoOffsets[c.id] || 0,
+      faces: analysis[c.id]?.faces || null,
+      track: analysis[c.id]?.track || null,
+    });
+    // Smooth slow motion: slowed scenes play from a motion-interpolated copy (once per length).
+    if (!slowMo[v.id]) {
+      slowMo[v.id] = { plan: v.plan, extra: [] };
+      let budget = 10; // seconds of source to interpolate per version (it is slow on CPU)
+      const scenes = [];
+      for (const [n, sc] of v.plan.scenes.entries()) {
+        const c = clips.find((x) => x.id === sc.clip);
+        if (!c || sc.speed > SLOW || budget <= 0 || sc.end - sc.start > budget) {
+          scenes.push(sc);
+          continue;
+        }
+        try {
+          setStep(job, 'render', 'active', `${prefix}Rendering smooth slow motion (frame interpolation)…`, base);
+          const file = await smoothSlowMo(renderPaths[c.id], cache(c, 'slowmo', `-${sc.start}-${sc.end}-${sc.speed}-${settings.polish ? settings.look : 'raw'}.mp4`), {
+            start: sc.start, end: sc.end, speed: sc.speed, offset: videoOffsets[c.id] || 0, signal,
+          });
+          if (!file) {
+            scenes.push(sc);
+            continue;
+          }
+          budget -= sc.end - sc.start;
+          const sid = `${c.id}_sm${n}`;
+          slowMo[v.id].extra.push({ ...clipEntry(c), id: sid, file: `${sid}.mp4`, path: file, videoOffset: sc.start });
+          scenes.push({ ...sc, clip: sid });
+        } catch (err) {
+          if (signal.aborted) throw new PipelineError('Cancelled.');
+          scenes.push(sc);
+        }
+      }
+      slowMo[v.id].plan = { ...v.plan, scenes };
+      if (slowMo[v.id].extra.length && f === formats[0]) notes.push(`Smoothed ${slowMo[v.id].extra.length} slow-motion shot${slowMo[v.id].extra.length > 1 ? 's' : ''} with frame interpolation.`);
+    }
     const { total, captions, srt } = await writeProject({
       projectDir,
-      plan: { ...v.plan, title: planned.title },
-      clips: clips.map((c) => ({
-        ...c,
-        path: renderPaths[c.id],
-        blurPath: blurPaths[c.id] || null,
-        voicePath: voiceTracks[c.id]?.path || null,
-        voiceOffset: voiceTracks[c.id]?.offset || 0,
-        videoOffset: videoOffsets[c.id] || 0,
-        faces: analysis[c.id]?.faces || null,
-        track: analysis[c.id]?.track || null,
-      })),
+      plan: { ...slowMo[v.id].plan, title: planned.title },
+      clips: [...clips.map(clipEntry), ...slowMo[v.id].extra],
       transcripts,
       settings: {
         width: f.width,
@@ -1519,15 +1600,18 @@ function editSettings(s = {}, autoFind = false) {
     cleanVoice: s.cleanVoice === true,
     proAudio: s.proAudio !== false,
     trendingSound: s.trendingSound === true,
+    aiMusic: s.aiMusic !== false,
+    // Edit intensity: clean (documentary), creator (default — styled like a top creator), max (hype).
+    intensity: INTENSITIES.includes(s.intensity) ? s.intensity : prof?.intensity || 'creator',
     tighten: level(s.tighten, prof?.tighten, 'natural'),
     polish: s.polish !== false,
     beatSync: s.beatSync !== false,
-    sfx: level(s.sfx, prof?.sfx, 'subtle'),
+    sfx: level(s.sfx, prof?.sfx, s.intensity === 'max' ? 'full' : 'subtle'),
     voiceover: prof ? prof.voiceover : VOICEOVER_MODES.includes(s.voiceover) ? s.voiceover : 'auto',
     voice: VOICES[s.voice] ? s.voice : 'am_michael',
     selfReview: s.selfReview !== false,
     autoFix: s.autoFix !== false,
-    motion: level(s.motion, prof?.motion, 'subtle'),
+    motion: level(s.motion, prof?.motion, s.intensity === 'clean' ? 'subtle' : 'punchy'),
     useLogo: s.useLogo !== false,
     watermark: s.watermark === true,
     plannerModel: PLANNER_MODELS.includes(s.plannerModel) ? s.plannerModel : 'sonnet',

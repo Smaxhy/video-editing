@@ -127,12 +127,13 @@ Reply with ONLY this JSON:
  "captions": {"style": "bold|pop|clean|off", "case": "upper|sentence", "position": "bottom|middle", "highlight": "#rrggbb or null"},
  "motion": "off|subtle|punchy",
  "sfx": "off|subtle|full",
+ "intensity": "clean|creator|max",
  "tighten": "natural|tight",
  "look": "natural|warm|cool|moody|vibrant|film",
  "music": "off|low|medium|high",
  "voiceover": "off|auto|on",
  "guide": ["8-14 short, concrete instructions for the editor to recreate this style — pacing in seconds, how to open, text rules, what to avoid"]}
-Choices: bold = 2-3 word karaoke captions with an outline, pop = one big word at a time, clean = small subtitles in a box. motion: off = locked shots, subtle = only hiding jump cuts / gentle pushes, punchy = zooms on key words and beat pulses. sfx: whooshes/pops — off unless you can see heavy transitions. tighten: natural keeps breaths and pauses, tight removes every pause.`;
+Choices: bold = 2-3 word karaoke captions with an outline, pop = one big word at a time, clean = small subtitles in a box. motion: off = locked shots, subtle = only hiding jump cuts / gentle pushes, punchy = zooms on key words and beat pulses. sfx: whooshes/pops — off unless you can see heavy transitions. tighten: natural keeps breaths and pauses, tight removes every pause. intensity: clean = straight cuts, creator = a styled transition (punch-in cut, whip, zoom, flash, light leak) every few seconds, max = styled cuts on most beats with shakes and speed ramps.`;
 }
 
 const pick = (v, list, d) => (list.includes(v) ? v : d);
@@ -154,6 +155,7 @@ export function normalizeProfile(raw, measures) {
     },
     motion: pick(raw?.motion, ['off', 'subtle', 'punchy'], 'subtle'),
     sfx: pick(raw?.sfx, ['off', 'subtle', 'full'], 'subtle'),
+    intensity: pick(raw?.intensity, ['clean', 'creator', 'max'], 'creator'),
     tighten: pick(raw?.tighten, ['natural', 'tight'], 'natural'),
     look: pick(raw?.look, ['natural', 'warm', 'cool', 'moody', 'vibrant', 'film'], 'natural'),
     music: pick(raw?.music, ['off', 'low', 'medium', 'high'], 'medium'),

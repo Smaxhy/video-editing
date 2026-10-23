@@ -24,7 +24,7 @@ test('normalizePlan clamps times, drops bad scenes and fixes the opening transit
       scenes: [
         scene('clip1', -2, 5, { transition: 'crossfade' }),
         scene('nope', 0, 3),
-        scene('clip2', 4, 99, { speed: 10, transition: 'spin' }),
+        scene('clip2', 4, 99, { speed: 10, transition: 'teleport' }),
         scene('clip1', 6, 6.05),
       ],
       overlays: [{ type: 'hook', text: 'Watch this', start: 0, end: 2 }, { text: '' }],

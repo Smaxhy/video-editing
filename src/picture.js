@@ -74,19 +74,21 @@ export function gradeFilters(st) {
   // Exposure: gamma moves the average toward ~118 (mid-grey in video range) without clipping.
   const mean = clamp((st.y - 16) / 219, 0.02, 0.98);
   const target = 0.47;
-  const gamma = Math.abs(mean - target) > 0.06 ? clamp(Math.log(target) / Math.log(mean), 0.75, 1.45) : 1;
-  // Contrast: flat / hazy footage (narrow 10–90% spread) gets up to +12%.
+  const gamma = Math.abs(mean - target) > 0.08 ? clamp(Math.log(target) / Math.log(mean), 0.85, 1.2) : 1;
+  // Contrast: flat / hazy footage (narrow 10–90% spread) gets up to +8%.
   const spread = (st.yhigh - st.ylow) / 219;
-  const contrast = spread < 0.55 ? clamp(0.62 / Math.max(spread, 0.2), 1, 1.12) : 1;
+  const contrast = spread < 0.5 ? clamp(0.55 / Math.max(spread, 0.2), 1, 1.08) : 1;
   // Saturation: a little pop, more for washed-out footage, none for already vivid shots.
-  const saturation = st.sat < 25 ? 1.18 : st.sat < 60 ? 1.1 : 1.04;
+  const saturation = st.sat < 25 ? 1.1 : st.sat < 60 ? 1.06 : 1.02;
   f.push(`eq=gamma=${round(1 / gamma, 3)}:contrast=${round(contrast, 3)}:saturation=${saturation}`);
-  // White balance: correct half of the cast (U = blue-yellow, V = red-cyan; 128 = neutral).
+  // White balance: gently correct a mild cast (U = blue-yellow, V = red-cyan; 128 = neutral). A strong
+  // cast is usually the scene itself (a forest, a sunset) — left alone; corrections stay small.
   const du = (st.u - 128) / 128;
   const dv = (st.v - 128) / 128;
-  if (Math.abs(du) > 0.025 || Math.abs(dv) > 0.025) {
-    const bm = clamp(-du * 0.9, -0.15, 0.15);
-    const rm = clamp(-dv * 0.9, -0.15, 0.15);
+  const cast = Math.max(Math.abs(du), Math.abs(dv));
+  if (cast > 0.025 && cast < 0.12) {
+    const bm = clamp(-du * 0.6, -0.05, 0.05);
+    const rm = clamp(-dv * 0.6, -0.05, 0.05);
     f.push(`colorbalance=rm=${round(rm, 3)}:bm=${round(bm, 3)}:gm=${round(-(rm + bm) / 2, 3)}`);
   }
   // Dark footage is noisy: light temporal denoise before sharpening.
@@ -94,12 +96,22 @@ export function gradeFilters(st) {
   return f;
 }
 
-/** Measure colour/exposure and shake of [start, end) of a clip. */
-export async function measureClip(src, { start = 0, end, work, signal }) {
+/** HDR (PQ / HLG — most iPhone and many Android videos) → SDR BT.709, so colours look right. */
+export const TONEMAP = 'zscale=t=linear:npl=100,format=gbrpf32le,zscale=p=bt709,tonemap=tonemap=hable:desat=0,zscale=t=bt709:m=bt709:r=tv,format=yuv420p';
+
+/** True when the video is HDR (PQ or HLG transfer). */
+export async function isHdr(src) {
+  const r = await run('ffprobe', ['-v', 'error', '-select_streams', 'v:0', '-show_entries', 'stream=color_transfer', '-of', 'csv=p=0', src]);
+  return /smpte2084|arib-std-b67/.test(r.stdout);
+}
+
+/** Measure colour/exposure and shake of [start, end) of a clip (always as 8-bit SDR values). */
+export async function measureClip(src, { start = 0, end, work, signal, hdr = false }) {
   const span = ['-ss', String(round(start, 3)), ...(end ? ['-t', String(round(end - start, 3))] : [])];
   const stats = await run('ffmpeg', [
     '-hide_banner', '-v', 'error', ...span, '-i', src, '-an',
-    '-vf', `select='not(mod(n\\,15))',scale=${SAMPLE_W}:-2,signalstats,metadata=print:file=-`, '-f', 'null', '-',
+    // format=yuv420p: 10-bit footage otherwise reports 0–1023 values, which read as a huge colour cast.
+    '-vf', `select='not(mod(n\\,15))',${hdr ? `${TONEMAP},` : ''}scale=${SAMPLE_W}:-2,format=yuv420p,signalstats,metadata=print:file=-`, '-f', 'null', '-',
   ], { signal, timeoutMs: 10 * 60_000 });
   const trf = path.join(work, 'motion.trf');
   const det = await run('ffmpeg', [
@@ -136,10 +148,15 @@ export async function preparePicture(src, out, { start = 0, end, grade = true, s
   await fs.rm(work, { recursive: true, force: true });
   await fs.mkdir(work, { recursive: true });
   try {
-    const { stats, shake } = await measureClip(src, { start, end, work, signal });
+    const hdr = await isHdr(src);
+    const { stats, shake } = await measureClip(src, { start, end, work, signal, hdr });
     const span = ['-ss', String(round(start, 3)), ...(end ? ['-t', String(round(end - start, 3))] : [])];
     const vf = [];
     const applied = [];
+    if (hdr) {
+      vf.push(TONEMAP);
+      applied.push('HDR converted');
+    }
     if (stabilize && shake > SHAKY) {
       const trf = path.join(work, 'full.trf');
       const det = await run('ffmpeg', ['-hide_banner', '-v', 'error', ...span, '-i', src, '-an',

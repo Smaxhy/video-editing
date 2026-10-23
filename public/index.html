@@ -447,6 +447,12 @@
             <h2><span id="resultTitle">Videos</span> <span class="meta" id="resultMeta"></span></h2>
             <div class="variants" id="variants"></div>
             <div class="review hidden" id="review" role="note"></div>
+            <form class="fixbox" id="fixForm">
+              <label class="lbl" for="fixText">Not quite right? Tell Claude what to fix</label>
+              <textarea class="field" id="fixText" rows="2" maxlength="2000" placeholder="e.g. No green filter — keep the natural colours. Open on the tree falling. Captions smaller, no sound effects."></textarea>
+              <div class="fixrow"><span class="hint-line grow" id="fixMsg">Claude keeps everything else the same and only changes what you ask — cuts, text, music, captions or the look.</span>
+                <button class="btn" type="submit" id="fixGo">Fix it</button></div>
+            </form>
             <div class="warns" id="warns"></div>
           </section>
 

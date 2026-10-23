@@ -10,7 +10,7 @@ import { fileURLToPath } from 'node:url';
 import { transcribe, WHISPER_MODELS, ENGINES } from './transcriber.js';
 import { analyzeClip, isolateVoice, cutoutImage } from './analysis.js';
 import { detectTools, onPath, OPTIONAL_TOOLS } from './tools.js';
-import { generateEditPlans, GOALS, LENGTHS, PLANNER_MODELS } from './editor.js';
+import { generateEditPlans, GOALS, LENGTHS, PLANNER_MODELS, REVISABLE } from './editor.js';
 import {
   writeProject, renderProject, makeBlurBackground, aspectMismatch, ensureSeekable, layoutTimeline, prepareMusic,
   FORMATS, CAPTION_STYLES, FRAMINGS,
@@ -372,7 +372,7 @@ function musicOptions(setting) {
   return { options: { mode: fixed ? 'fixed' : 'auto', fixed, tracks: list }, byKey };
 }
 
-async function runPipeline(job, { prompt, clipIds, settings, reusePlan }) {
+async function runPipeline(job, { prompt, clipIds, settings, reusePlan, revise = null }) {
   const ws = path.join(DIRS.workspace, job.id);
   const outDir = path.join(DIRS.output, job.id);
   const signal = job.abort.signal;
@@ -490,6 +490,17 @@ async function runPipeline(job, { prompt, clipIds, settings, reusePlan }) {
       style: settings.style && styles.get(settings.style) ? styleGuideText(styles.get(settings.style)) : null,
       model: settings.plannerModel,
     };
+    // Revision: the user watched the last render and said what to fix — Claude edits that plan.
+    if (revise) {
+      const saved = JSON.parse(await fs.readFile(planFile, 'utf8').catch(() => 'null'));
+      if (!saved) throw new PipelineError('There is no previous edit to fix yet.', { hint: 'Make the video first, then tell Claude what to change.' });
+      options.revision = {
+        remarks: revise,
+        previous: JSON.stringify({ title: saved.title, versions: saved.versions, music: saved.music, emphasis: saved.emphasis }),
+        current: Object.fromEntries(Object.keys(REVISABLE).map((k) => [k, settings[k]])),
+      };
+      setStep(job, 'plan', 'active', 'Claude is applying your remarks…', 0.32);
+    }
     // Library clips come with Claude's earlier look at them, plus their frame grid to look at again.
     const sheets = {};
     for (const c of clips.slice(0, 20)) {
@@ -521,6 +532,13 @@ async function runPipeline(job, { prompt, clipIds, settings, reusePlan }) {
       planFile,
       JSON.stringify({ title: planned.title, checklist: planned.checklist, versions: planned.versions, music: planned.music, emphasis: planned.emphasis }, null, 2),
     );
+  }
+  // Setting changes from a revision ("the colours look green" → picture polish off, …).
+  const changes = planned.settingsChanges || {};
+  if (Object.keys(changes).length) {
+    settings = { ...settings, ...changes };
+    if (changes.music === 'off') planned.music = null;
+    notes.push(`Changed for your remarks: ${Object.entries(changes).map(([k, v]) => `${k} → ${v}`).join(', ')}.`);
   }
   // Auto-tighten: cut pauses and "um"s inside talking scenes (B-roll and POV stay as planned).
   if (settings.tighten !== 'off') {
@@ -597,7 +615,7 @@ async function runPipeline(job, { prompt, clipIds, settings, reusePlan }) {
       const [from, to] = pictureWindows[c.id];
       setStep(job, 'render', 'active', `Polishing the picture of clip ${k + 1}/${clips.length} (colour, exposure, stabilisation)…`, 0.38);
       try {
-        const r = await preparePicture(c.path, cache(c, 'picture', `-${from}-${to}-${settings.look}-v1.mp4`), { start: from, end: to, look: settings.look, signal });
+        const r = await preparePicture(c.path, cache(c, 'picture', `-${from}-${to}-${settings.look}-v2.mp4`), { start: from, end: to, look: settings.look, signal });
         renderPaths[c.id] = r.path;
         videoOffsets[c.id] = r.offset;
         if (r.applied.some((a) => a.startsWith('stabilised'))) notes.push(`Stabilised the shaky footage in ${c.name}.`);
@@ -801,6 +819,7 @@ async function runPipeline(job, { prompt, clipIds, settings, reusePlan }) {
     totalSize: variants.reduce((s, x) => s + x.size, 0),
     music: musicAsset ? { name: musicAsset.name, start: planned.music.start } : null,
     review,
+    revision: revise || null,
     clipIds: clips.map((c) => c.id),
     settings,
   };
@@ -814,7 +833,8 @@ async function runPipeline(job, { prompt, clipIds, settings, reusePlan }) {
  */
 async function maybeReedit(job, opts, first) {
   const s = opts.settings;
-  if (!s.selfReview || !s.autoFix || opts.reusePlan || !first.review || first.review.score >= 7 || !first.review.fixes) return first;
+  // A user's own remarks are never overridden by an automatic re-edit.
+  if (!s.selfReview || !s.autoFix || opts.reusePlan || opts.revise || !first.review || first.review.score >= 7 || !first.review.fixes) return first;
   const outDir = path.join(DIRS.output, job.id);
   const ws = path.join(DIRS.workspace, job.id);
   const prevOut = `${outDir}-prev`;
@@ -1453,12 +1473,14 @@ function editSettings(s = {}, autoFind = false) {
 // POST /api/edit — { jobId, prompt, clips?: [clipId…], settings?: {...} }
 app.post('/api/edit', async (req, res) => {
   const { jobId, prompt, clips: clipIds, settings: s = {}, reusePlan = false } = req.body || {};
+  const revise = cleanText(req.body?.revise, 2000) || null;
   const job = await getJob(jobId);
   if (!job) return res.status(404).json({ error: 'Unknown project — upload clips first.' });
   if (job.state === 'running') return res.status(409).json({ error: 'This project is already rendering.' });
-  if (!reusePlan && (!prompt || !String(prompt).trim())) return res.status(400).json({ error: 'Describe how you want the video edited.' });
+  if (!reusePlan && !revise && (!prompt || !String(prompt).trim())) return res.status(400).json({ error: 'Describe how you want the video edited.' });
 
-  const autoFind = s.autoFind === true && !reusePlan;
+  // A revision keeps the clips of the edit it fixes.
+  const autoFind = s.autoFind === true && !reusePlan && !revise;
   const ids = Array.isArray(clipIds) && clipIds.length ? clipIds : job.clips.map((c) => c.id);
   const missing = ids.filter((id) => !job.clips.some((c) => c.id === id));
   if (missing.length) return res.status(400).json({ error: `Unknown clip(s): ${missing.join(', ')}` });
@@ -1470,7 +1492,7 @@ app.post('/api/edit', async (req, res) => {
     return res.status(400).json({ error: `That's ${count} videos — pick at most ${MAX_VARIANTS} format × length combinations.` });
   }
 
-  startPipeline(job, { prompt: String(prompt || '').slice(0, 8000), clipIds: ids, settings, reusePlan: Boolean(reusePlan) });
+  startPipeline(job, { prompt: String(prompt || job.result?.revision || '').slice(0, 8000), clipIds: revise && job.result?.clipIds?.length ? job.result.clipIds.filter((id) => job.clips.some((c) => c.id === id)) : ids, settings, reusePlan: Boolean(reusePlan) && !revise, revise });
   res.status(202).json({ jobId: job.id, statusUrl: `/api/status/${job.id}`, videos: count });
 });
 

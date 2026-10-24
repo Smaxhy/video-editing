@@ -1785,6 +1785,42 @@ $('#soundTip').addEventListener('click', async (e) => {
   catch { toast(b.dataset.copySound); }
 });
 
+/** "Put one of your sounds under this video": your music, newest first. */
+function renderSoundPick() {
+  const mine = state.assets.filter((a) => a.status === 'ready' && ((a.kind === 'audio' && !a.generated) || (a.kind === 'video' && a.useAsMusic)))
+    .sort((x, y) => y.createdAt - x.createdAt);
+  $('#soundPick').innerHTML = mine.length
+    ? mine.map((a) => `<option value="${a.id}">${esc(assetTitle(a))} (${fmtTime(a.duration)}${a.music?.bpm ? ` · ${a.music.bpm} BPM` : ''})</option>`).join('')
+    : '<option value="">No sounds yet — upload songs or “Add from links” → Sound only</option>';
+  $('#soundGo').disabled = !mine.length;
+}
+$('#soundForm').addEventListener('submit', async (e) => {
+  e.preventDefault();
+  const id = $('#soundPick').value;
+  const a = state.assets.find((x) => x.id === id);
+  if (!a) return;
+  $('#soundGo').disabled = true;
+  try {
+    const settings = { ...readSettings(), music: id, trendingSound: false, ...($('#soundOnly').checked ? { clipAudio: 'off' } : {}) };
+    await api('/api/edit', {
+      method: 'POST',
+      body: {
+        jobId: state.jobId, prompt: $('#prompt').value, clips: state.clips.map((c) => c.id), settings,
+        revise: `Put the sound "${assetTitle(a)}" under this video and re-cut it to match the sound: cuts on its beat, the best moment on its drop.${$('#soundOnly').checked ? ' Music only — mute the clips.' : ''}`,
+      },
+    });
+    state.musicWanted = id;
+    renderMusicSelect();
+    subscribe();
+    loadProjects();
+    announce(`Re-cutting the video to ${assetTitle(a)}.`);
+  } catch (err) {
+    toast(err.message, 'error');
+  } finally {
+    $('#soundGo').disabled = false;
+  }
+});
+
 $('#fixForm').addEventListener('submit', async (e) => {
   e.preventDefault();
   const remarks = $('#fixText').value.trim();
@@ -1920,6 +1956,7 @@ async function showResult(r) {
       </div>
     </div>`;
   }).join('');
+  renderSoundPick();
   const musicNote = (r.warnings || []).find((w) => w.startsWith('🎵'));
   $('#warns').innerHTML = (musicNote ? `<div class="music-used">${esc(musicNote)}</div>` : r.music ? `<div class="music-used">🎵 Music: ${esc(r.music.name)}</div>` : '') +
     (r.warnings || []).filter((w) => w !== musicNote).map((w) => `⚠ ${esc(w)}`).join('<br>');

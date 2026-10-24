@@ -519,9 +519,18 @@
             <div class="variants" id="variants"></div>
             <div class="sound-tip hidden" id="soundTip" role="note"></div>
             <div class="review hidden" id="review" role="note"></div>
+            <form class="fixbox addsound" id="soundForm">
+              <label class="lbl" for="soundPick">🎵 Put one of your sounds under this video</label>
+              <div class="fixrow">
+                <select class="field grow" id="soundPick"></select>
+                <label class="tg" style="align-items:center"><input type="checkbox" id="soundOnly" /><span>Music only</span></label>
+                <button class="btn" type="submit" id="soundGo">Cut to this sound</button>
+              </div>
+              <small class="hint-line">Claude re-cuts the video to the sound — cuts on its beat, the best moment on its drop. You can also just type it below, e.g. “put my summer song under this”.</small>
+            </form>
             <form class="fixbox" id="fixForm">
               <label class="lbl" for="fixText">Not quite right? Tell Claude what to fix</label>
-              <textarea class="field" id="fixText" rows="2" maxlength="2000" placeholder="e.g. No green filter — keep the natural colours. Open on the tree falling. Captions smaller, no sound effects."></textarea>
+              <textarea class="field" id="fixText" rows="2" maxlength="2000" placeholder="e.g. Put my summer song under this and cut to the beat. Open on the tree falling. Captions smaller."></textarea>
               <div class="fixrow"><span class="hint-line grow" id="fixMsg">Claude keeps everything else the same and only changes what you ask — cuts, text, music, captions or the look.</span>
                 <button class="btn" type="submit" id="fixGo">Fix it</button></div>
             </form>

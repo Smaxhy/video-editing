@@ -160,7 +160,7 @@ Their remarks (highest authority — above the original request):
 """
 ${remarks}
 """
-Start from the previous edit below and change ONLY what the remarks ask for (plus what those changes require). Keep every other scene, cut point, text, timing and the music exactly as they were. Record each remark and what you changed in "checklist".
+Start from the previous edit below and change ONLY what the remarks ask for (plus what those changes require). Keep every other scene, cut point, text, timing and the music exactly as they were — unless the remarks ask for a different sound/song: then use the track given in the Music section and re-time the cut to it (B-roll cuts on its beat, the peak on its drop). Record each remark and what you changed in "checklist".
 If a remark is about the look, sound or captions rather than the cut (e.g. "the colours look green", "no music", "captions too big"), change the render settings by adding "settings" to your response with ONLY the keys you change:
 ${keys}
 

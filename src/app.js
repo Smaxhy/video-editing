@@ -13,6 +13,7 @@ import { detectTools, onPath, OPTIONAL_TOOLS } from './tools.js';
 import { generateEditPlans, GOALS, LENGTHS, PLANNER_MODELS, REVISABLE, INTENSITIES, beatGrid } from './editor.js';
 import { spicePlan } from './spice.js';
 import { beatEdit } from './beatedit.js';
+import { trackFromText } from './soundpick.js';
 import { createFolders } from './folders.js';
 import { createLinkImports, LINK_MODES } from './links.js';
 import { smoothSlowMo, rampSlowMo, SLOW } from './slowmo.js';
@@ -677,7 +678,7 @@ async function runPipeline(job, { prompt, clipIds, settings, reusePlan, revise =
     }
   }
   const musicAsset = planned.music && library.get(planned.music.assetId);
-  if (musicAsset) notes.unshift(`🎵 Music: "${musicName(musicAsset)}"${musicAsset.generated ? ' (made by ClipForge)' : ' from your library'}.`);
+  if (musicAsset) notes.unshift(`🎵 Music: "${musicName(musicAsset)}"${settings.soundRequest?.id === musicAsset.id ? ` — ${settings.soundRequest.why}, and the cuts follow it` : musicAsset.generated ? ' (made by ClipForge)' : ' from your library'}.`);
   else if (settings.trendingSound) notes.unshift('🎵 No music mixed in — trending-sound mode is on (you add the sound in TikTok/Instagram). Turn it off to get your music in the video.');
   else if (settings.music === 'off') notes.unshift('🎵 No music — “No music” is selected.');
   else notes.unshift(`🎵 No music — ${musicCandidates().length ? 'none of your tracks could be used' : 'your library has no music yet (upload songs or use “Add from links” → Sound only)'}.`);
@@ -1855,7 +1856,12 @@ app.post('/api/edit', async (req, res) => {
   if (missing.length) return res.status(400).json({ error: `Unknown clip(s): ${missing.join(', ')}` });
   if (!ids.length && !autoFind) return res.status(400).json({ error: 'Add at least one clip, or turn on "Let Claude find the clips".' });
 
-  const settings = editSettings(s, autoFind);
+  let settings = editSettings(s, autoFind);
+  // "Put <sound> under this" / "use the sound I imported": the request names one of their sounds →
+  // use exactly that track (and cut to it), whatever the music menu says.
+  const asked = trackFromText(revise || prompt, musicCandidates().map((a) => ({ id: a.id, name: musicName(a), title: a.tags?.title, createdAt: a.createdAt, heard: musicLine(a.music, a.musicTags), tags: a.tags?.genre })));
+  if (asked && settings.music !== asked.id) settings = { ...settings, music: asked.id, trendingSound: false, soundRequest: asked };
+  else if (asked) settings = { ...settings, trendingSound: false, soundRequest: asked };
   const count = settings.formats.length * settings.lengths.length;
   if (count > MAX_VARIANTS) {
     return res.status(400).json({ error: `That's ${count} videos — pick at most ${MAX_VARIANTS} format × length combinations.` });

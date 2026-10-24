@@ -135,6 +135,9 @@ export function createLibrary({ dir, onChange = () => {}, onReady = () => {}, is
       embedded: a.embedded || null,
       styleRef: Boolean(a.styleRef),
       folder: a.folder || null,
+      // Tracks ClipForge produced itself (never picked over the creator's own music).
+      generated: Boolean(a.generated) || /^ClipForge\b/.test(a.tags?.artist || '') || /^(ClipForge |AI music — )/.test(a.name || ''),
+      useAsMusic: Boolean(a.useAsMusic),
       shrunk: a.shrunk && a.shrunk !== 'failed' ? a.shrunk.from : null,
       thumbnail: `/api/library/${a.id}/thumb?v=${v}`,
       sprite: a.preview.sprite ? { url: `/api/library/${a.id}/sprite?v=${v}`, ...a.preview.sprite } : null,

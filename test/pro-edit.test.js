@@ -105,3 +105,11 @@ test('slow motion is interpolated to a smooth frame rate', { skip: !HAS_FFMPEG }
   assert.equal(await smoothSlowMo(out, path.join(dir, 'again.mp4'), { start: 0, end: 1, speed: 0.5 }), null); // already 60 fps
   await fs.rm(dir, { recursive: true, force: true });
 });
+
+test('tiny slow-motion steps are not interpolated (they could come out with no video)', { skip: !HAS_FFMPEG }, async () => {
+  const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'cf-slowmo2-'));
+  const src = path.join(dir, 'src.mp4');
+  execFileSync('ffmpeg', ['-v', 'error', '-f', 'lavfi', '-i', 'testsrc2=s=320x240:r=30:d=3', '-c:v', 'libx264', '-pix_fmt', 'yuv420p', src]);
+  assert.equal(await smoothSlowMo(src, path.join(dir, 'tiny.mp4'), { start: 1, end: 1.15, speed: 0.65 }), null);
+  await fs.rm(dir, { recursive: true, force: true });
+});

@@ -677,6 +677,10 @@ async function runPipeline(job, { prompt, clipIds, settings, reusePlan, revise =
     }
   }
   const musicAsset = planned.music && library.get(planned.music.assetId);
+  if (musicAsset) notes.unshift(`🎵 Music: "${musicName(musicAsset)}"${musicAsset.generated ? ' (made by ClipForge)' : ' from your library'}.`);
+  else if (settings.trendingSound) notes.unshift('🎵 No music mixed in — trending-sound mode is on (you add the sound in TikTok/Instagram). Turn it off to get your music in the video.');
+  else if (settings.music === 'off') notes.unshift('🎵 No music — “No music” is selected.');
+  else notes.unshift(`🎵 No music — ${musicCandidates().length ? 'none of your tracks could be used' : 'your library has no music yet (upload songs or use “Add from links” → Sound only)'}.`);
   // Beat sync: B-roll/POV cuts land on the music's downbeats; montage shots pulse on the beat. In
   // trending-sound mode the grid comes from a sound the creator saved (timing only, not mixed) or
   // from the tempo Claude chose for the sound to add in the app.

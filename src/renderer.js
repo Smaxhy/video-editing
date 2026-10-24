@@ -615,10 +615,13 @@ export function buildComposition({ plan, clips, transcripts, settings, gsapSrc =
   // Background music: one track under the whole video, ducked wherever an audible scene has speech.
   const music = [];
   if (settings.musicFile) {
-    const audibleScenes = laid.scenes.filter((sc) => sc.volume > 0 && clipById.get(sc.clip)?.hasAudio);
+    // Duck only under real talking (3+ words in the shot) — noisy footage (saws, wind) often makes the
+    // transcriber "hear" a few words, which used to push the music down for the whole video.
+    const words = (sc) => (transcripts[sc.clip]?.words || []).filter((w) => w.end > sc.srcStart && w.start < sc.srcEnd).length;
+    const audibleScenes = laid.scenes.filter((sc) => sc.volume > 0.15 && clipById.get(sc.clip)?.hasAudio && words(sc) >= 3);
     const speech = [...buildCaptions({ scenes: audibleScenes }, transcripts, 'clean'), ...(settings.narration?.segments || [])];
     const base = clamp(Number(settings.musicVolume) || 0.8, 0, 1.5);
-    const automation = JSON.stringify({ version: 1, lanes: [{ target: 'volume', points: musicAutomation(speech, total, base, round(base * 0.22, 3)) }] });
+    const automation = JSON.stringify({ version: 1, lanes: [{ target: 'volume', points: musicAutomation(speech, total, base, round(base * 0.32, 3)) }] });
     music.push(`    <audio id="music" src="media/${escapeHtml(settings.musicFile)}" data-start="0" data-duration="${total}" data-track-index="50" data-volume="1" data-automation='${automation}'></audio>`);
   }
   // AI voiceover: one mixed narration track under everything (already level-matched).

@@ -381,6 +381,7 @@ export function createLibrary({ dir, onChange = () => {}, onReady = () => {}, is
           assets.set(a.id, a);
           if (a.preview?.proxy === 'encoding') a.preview.proxy = 'pending'; // interrupted by a restart
           if (a.preview?.step === 'shrinking') a.preview = { ...a.preview, step: null, progress: 0 };
+          if (a.kind === 'audio' && a.status !== 'ready') a.status = 'ready'; // never stuck behind video previews
           if (a.status !== 'ready') enqueue(a.id);
           else if (needsHeavy(a)) enqueueHeavy(a.id);
         } catch {
@@ -487,7 +488,8 @@ export function createLibrary({ dir, onChange = () => {}, onReady = () => {}, is
         updatedAt: Date.now(),
         ...meta,
         ai: { status: 'none' },
-        status: 'processing',
+        // Music needs no previews: usable at once (its tempo / drop scan runs in the background).
+        status: kind === 'audio' ? 'ready' : 'processing',
         preview: { sprite: null, proxyReason: reason, proxy: reason ? 'pending' : 'none', progress: 0, step: null },
       };
       await save(a);

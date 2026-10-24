@@ -1920,13 +1920,15 @@ async function showResult(r) {
       </div>
     </div>`;
   }).join('');
-  $('#warns').innerHTML = (r.warnings || []).map((w) => `⚠ ${esc(w)}`).join('<br>');
+  const musicNote = (r.warnings || []).find((w) => w.startsWith('🎵'));
+  $('#warns').innerHTML = (musicNote ? `<div class="music-used">${esc(musicNote)}</div>` : r.music ? `<div class="music-used">🎵 Music: ${esc(r.music.name)}</div>` : '') +
+    (r.warnings || []).filter((w) => w !== musicNote).map((w) => `⚠ ${esc(w)}`).join('<br>');
   syncChangedSettings(r);
   const snd = r.sound;
   $('#soundTip').classList.toggle('hidden', !snd);
   if (snd) {
     const alts = (snd.options || []).filter((o) => !snd.search.includes(o.search));
-    $('#soundTip').innerHTML = `<div><strong>🎵 ${r.trendingSound ? 'Add this sound when you post' : 'Sound idea for posting'}</strong>${snd.vibe ? ` — fits the <em>${esc(snd.vibe)}</em> vibe${snd.energy ? ` (${esc(snd.energy)} energy)` : ''}` : ''}</div>
+    $('#soundTip').innerHTML = `<div><strong>${r.trendingSound ? '🎵 Add this sound when you post' : r.music ? 'Optional: a trending sound you could swap in when posting' : '🎵 Sound idea for posting'}</strong>${snd.vibe ? ` — fits the <em>${esc(snd.vibe)}</em> vibe${snd.energy ? ` (${esc(snd.energy)} energy)` : ''}` : ''}</div>
       <div class="hint-line">${[snd.style, snd.bpm ? `~${snd.bpm} BPM` : ''].filter(Boolean).map(esc).join(' · ')}</div>
       ${snd.search.length ? `<div class="chips">Search in the app: ${snd.search.map((q) => `<button type="button" class="chip" data-copy-sound="${esc(q)}" title="Copy">${esc(q)}</button>`).join('')}</div>` : ''}
       ${alts.length ? `<div class="chips">Other options: ${alts.map((o) => `<button type="button" class="chip" data-copy-sound="${esc(o.search)}" title="${esc(o.style || 'Copy')}">${esc(o.search)}</button>`).join('')}</div>` : ''}
@@ -2244,7 +2246,7 @@ function ideaHtml(b, i) {
   const label = `${i.length}s`;
   return `<article class="variant idea" aria-label="${esc(i.title)}">
     ${media}
-    <div class="vm"><div><div class="vl">${esc(i.title)}${i.review ? `<span class="stars" title="${esc(i.review.summary)}">★ ${i.review.score}/10</span>` : ''}</div><div class="vs">${label}${i.size ? ` · ${fmtSize(i.size)}` : ''}${i.format ? ` · ${esc(i.format)}` : ''}${i.vibe ? ` · <span class="vibe">${esc(i.vibe)}</span>` : ''}</div>${i.musicName ? `<div class="vs">🎵 ${esc(i.musicName)}</div>` : ''}</div></div>
+    <div class="vm"><div><div class="vl">${esc(i.title)}${i.review ? `<span class="stars" title="${esc(i.review.summary)}">★ ${i.review.score}/10</span>` : ''}</div><div class="vs">${label}${i.size ? ` · ${fmtSize(i.size)}` : ''}${i.format ? ` · ${esc(i.format)}` : ''}${i.vibe ? ` · <span class="vibe">${esc(i.vibe)}</span>` : ''}</div>${i.notes?.find((n) => n.startsWith('🎵')) ? `<div class="vs music-used">${esc(i.notes.find((n) => n.startsWith('🎵')))}</div>` : i.musicName ? `<div class="vs">🎵 ${esc(i.musicName)}</div>` : ''}</div></div>
     ${i.sound ? `<div class="cap snd-line">🎵 ${esc(i.sound.search[0] || i.sound.style)}${i.sound.style && i.sound.search[0] ? ` <span class="hint-line">(${esc(i.sound.style)})</span>` : ''}</div>` : ''}
     ${i.notes?.length ? `<details class="notes"><summary>What ClipForge did (${i.notes.length})</summary><ul>${i.notes.map((n) => `<li>${esc(n)}</li>`).join('')}</ul></details>` : ''}
     <div class="cap">${esc(i.caption)}${i.hashtags.length ? `\n<span class="tags">${esc(i.hashtags.join(' '))}</span>` : ''}</div>

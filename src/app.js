@@ -12,6 +12,7 @@ import { analyzeClip, isolateVoice, cutoutImage } from './analysis.js';
 import { detectTools, onPath, OPTIONAL_TOOLS } from './tools.js';
 import { generateEditPlans, GOALS, LENGTHS, PLANNER_MODELS, REVISABLE, INTENSITIES, beatGrid } from './editor.js';
 import { spicePlan } from './spice.js';
+import { beatEdit } from './beatedit.js';
 import { createFolders } from './folders.js';
 import { createLinkImports, LINK_MODES } from './links.js';
 import { smoothSlowMo, rampSlowMo, SLOW } from './slowmo.js';
@@ -699,16 +700,31 @@ async function runPipeline(job, { prompt, clipIds, settings, reusePlan, revise =
       const ref = musicAsset || timingAsset;
       const beats = ref ? await beatsFor(library.sourcePath(ref.id), path.join(library.cacheDir(ref.id), 'beats-v1.json')) : null;
       let moved = 0;
+      let beatShots = 0;
+      // A music-only edit has no talking to protect.
+      const speaks = settings.clipAudio === 'off' ? () => false : talking;
+      const energy = musicAsset?.music?.energy || planned.sound?.energy || 'medium';
       planned.versions = planned.versions.map((v) => {
         const offset = musicAsset ? musicStart[v.id] : 0;
         const shift = (list) => list.map((b) => round(b - offset, 3)).filter((b) => b > 0.1);
         const out = beats ? { beats: shift(beats.beats), downbeats: shift(beats.downbeats) } : beatGrid(planned.sound?.bpm || 120, layoutTimeline(v.plan).total + 5);
-        const r = snapCutsToBeats(v.plan, out, { talking, clipDuration, layout: layoutTimeline });
+        // Music edits (montage / no talking): cut the whole video to the song — rhythm from the beat
+        // grid, slow-motion hero shot on the drop. Talking videos keep their word-accurate cuts.
+        if (beats && musicAsset && settings.intensity !== 'clean') {
+          const dropAt = musicAsset.music?.drop != null ? round(musicAsset.music.drop - offset, 3) : null;
+          const be = beatEdit(v.plan, { beats: out.beats, drop: dropAt > 1.5 ? dropAt : null, talking: speaks, clipDuration, energy, total: layoutTimeline(v.plan).total });
+          if (be.shots) {
+            beatShots += be.shots;
+            return { ...v, plan: be.plan, downbeats: out.downbeats };
+          }
+        }
+        const r = snapCutsToBeats(v.plan, out, { talking: speaks, clipDuration, layout: layoutTimeline });
         moved += r.moved;
         return { ...v, plan: r.plan, downbeats: out.downbeats };
       });
       const what = ref ? `"${ref.name}" (${beats.bpm} BPM)` : `${planned.sound?.bpm || 120} BPM for the sound you'll add`;
       if (moved) notes.push(`Synced ${moved} cut${moved > 1 ? 's' : ''} to the beat of ${what}.`);
+      if (beatShots) notes.push(`Cut a music edit to ${what}: ${beatShots} shots on the beat, a build-up into the drop and a slow-motion hit on it.`);
     } catch (err) {
       notes.push(`Could not find the beat (${err.message}) — cuts left as planned.`);
     }
@@ -822,7 +838,7 @@ async function runPipeline(job, { prompt, clipIds, settings, reusePlan, revise =
   // Studio sound: denoise + EQ + compression + level matching on the part of each clip the edit uses.
   const voiceTracks = {}; // clipId → { path, offset } — offset = source second the track starts at
   for (const [id, p] of Object.entries(voicePaths)) voiceTracks[id] = { path: p, offset: 0 };
-  if (settings.proAudio) {
+  if (settings.proAudio && settings.clipAudio !== 'off') { // muted clips need no studio sound
     const windows = usedWindows(planned.versions);
     const withAudio = clips.filter((c) => c.hasAudio && windows[c.id]);
     const deepFilter = withAudio.length ? await ensureDeepFilter(TOOLS_DIR) : null;

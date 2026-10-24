@@ -94,6 +94,7 @@
             <option value="size">Largest first</option>
             <option value="long">Longest first</option>
           </select>
+          <button class="btn ghost" type="button" id="openLinks"><svg width="18" height="18" aria-hidden="true"><use href="#i-plus"/></svg>Add from links</button>
           <button class="btn ghost" type="button" id="openImport"><svg width="18" height="18" aria-hidden="true"><use href="#i-cloud"/></svg>Import from Google Drive</button>
           <button class="btn" type="button" data-pick-files><svg width="18" height="18" aria-hidden="true"><use href="#i-upload"/></svg>Upload</button>
         </div>
@@ -122,6 +123,7 @@
         <label class="switch" title="Every video you upload or import also adds its sound to the library as a music track — handy for saved reels and sounds you want to edit to"><input type="checkbox" id="extractAudio" role="switch" /><span>Also save the sound of new videos as music</span></label>
       </section>
       <ul class="jobs" id="importJobs" aria-label="Imports"></ul>
+      <ul class="jobs" id="linkJobs" aria-label="Link downloads"></ul>
 
       <div class="card hidden" id="resumeNote" role="note" style="margin-top:16px"></div>
       <ul class="grid" id="uploadGrid" aria-label="Uploads in progress"></ul>
@@ -197,6 +199,13 @@
               <option value="creator">Creator — styled transitions, punch-ins, sound design</option>
               <option value="max">Max — hype edit, styled cuts on most beats</option>
               <option value="clean">Clean — straight cuts</option>
+            </select>
+          </label>
+          <label>Clips' own sound
+            <select class="field" id="autoClipAudio">
+              <option value="auto">Auto — Claude decides per shot</option>
+              <option value="low">Low — quiet under the music</option>
+              <option value="off">Off — music only (a music edit)</option>
             </select>
           </label>
           <label>Music when the library has none that fits
@@ -319,6 +328,14 @@
                   <button type="button" data-v="low">Quiet</button>
                   <button type="button" data-v="medium" aria-pressed="true">Medium</button>
                   <button type="button" data-v="high">Loud</button>
+                </div>
+                <div class="clip-audio" style="width:100%">
+                  <span class="hint-line">Clips' own sound</span>
+                  <div class="seg" data-name="clipAudio" data-single role="group" aria-label="Clips' own sound">
+                    <button type="button" data-v="auto" aria-pressed="true">Auto</button>
+                    <button type="button" data-v="low">Low</button>
+                    <button type="button" data-v="off">Off — music only</button>
+                  </div>
                 </div>
                 <label class="tg" style="align-items:center;width:100%"><input type="checkbox" id="aiMusic" checked /><span>Make music when nothing fits
                   <small>No track in your library that fits the vibe? ClipForge produces one for this edit — drop on the peak, saved to your music.</small></span></label>
@@ -583,6 +600,34 @@
     <h3 class="lbl" style="margin-top:18px">Your styles</h3>
     <ul class="st-list" id="stList"></ul>
   </div>
+</dialog>
+
+<!-- Add from links -->
+<dialog id="linkDlg" aria-labelledby="lkTitle">
+  <form method="dialog" id="linkForm">
+    <div class="dlg-h">
+      <h2 id="lkTitle">Add from links</h2>
+      <button class="icon-btn" type="button" data-close aria-label="Close"><svg><use href="#i-x"/></svg></button>
+    </div>
+    <div class="dlg-b">
+      <label class="lbl" for="lkUrls">Links — TikTok, Instagram, YouTube, X… one per line</label>
+      <textarea class="field" id="lkUrls" rows="4" placeholder="https://www.tiktok.com/@…/video/…&#10;https://www.youtube.com/shorts/…" required></textarea>
+      <div class="lbl" style="margin-top:12px">Save as</div>
+      <div class="link-modes" role="radiogroup" aria-label="Save as">
+        <label class="tg"><input type="radio" name="lkMode" value="video" checked /><span>Video<small>Footage for your edits</small></span></label>
+        <label class="tg"><input type="radio" name="lkMode" value="sound" /><span>Sound only<small>Saved to your music — edits use it as the song</small></span></label>
+        <label class="tg"><input type="radio" name="lkMode" value="both" /><span>Video + sound<small>The video, plus its sound as a music track</small></span></label>
+        <label class="tg"><input type="radio" name="lkMode" value="reference" /><span>Edit reference — learn this style<small>Edits you love: ClipForge studies their cuts, text, effects and pacing and edits like that</small></span></label>
+      </div>
+      <label class="lbl" for="lkFolder" style="margin-top:12px;display:block">Folder</label>
+      <select class="field" id="lkFolder" style="width:100%"></select>
+      <small class="hint-line">Instagram often blocks downloads without a login — if a link fails, save it to your phone and upload it instead.</small>
+      <div class="dlg-f" style="padding:14px 0 0;border:0">
+        <span class="grow hint-line" id="lkMsg" aria-live="polite"></span>
+        <button class="btn" type="submit" id="lkGo">Save links</button>
+      </div>
+    </div>
+  </form>
 </dialog>
 
 <!-- New / edit folder -->

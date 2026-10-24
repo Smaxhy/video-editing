@@ -344,7 +344,13 @@ ${options.style}
 
 Generic advice (only where the style above says nothing):
 ` : ''}${GOAL_GUIDE[options.goal]}
-${CRAFT}
+${CRAFT}${options.clipAudio === 'off' ? `
+## Music-only edit
+The clips' own sound is MUTED — only the music plays (plus sound effects). This is a music edit: choose shots purely for how they look and move, cut them to the music's beat and energy (shorter shots in the build, the best shot on the drop), and never rely on speech; set every scene "volume" to 0.
+` : options.clipAudio === 'low' ? `
+## Clip sound low
+The clips' own sound plays quietly under the music (talking stays clear). Let the music carry the edit.
+` : ''}
 ## Edit intensity
 ${INTENSITY_GUIDE[options.intensity] || INTENSITY_GUIDE.creator}
 Transition reference: "cut"/"punch"/"flash"/"glitch" keep the cut on time; "crossfade", "light-leak", "zoom-through", "whip", "spin" blend the shots over "transitionDuration" (whip 0.2-0.3, zoom-through/spin 0.3-0.4, light-leak 0.5-0.8).

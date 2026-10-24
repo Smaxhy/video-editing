@@ -35,6 +35,7 @@ export const DEFAULT_SETTINGS = {
   style: null,
   trendingSound: false,
   intensity: 'creator',
+  clipAudio: 'auto',
   aiMusic: true,
   musicEngine: 'beat',
 };
@@ -58,6 +59,7 @@ export function normalizeSettings(s = {}, prev = DEFAULT_SETTINGS) {
     voice: VOICE_IDS.includes(s.voice) ? s.voice : prev.voice || 'am_michael',
     trendingSound: typeof s.trendingSound === 'boolean' ? s.trendingSound : prev.trendingSound ?? false,
     intensity: ['clean', 'creator', 'max'].includes(s.intensity) ? s.intensity : prev.intensity || 'creator',
+    clipAudio: ['auto', 'low', 'off'].includes(s.clipAudio) ? s.clipAudio : prev.clipAudio || 'auto',
     aiMusic: typeof s.aiMusic === 'boolean' ? s.aiMusic : prev.aiMusic ?? true,
     musicEngine: ['beat', 'musicgen'].includes(s.musicEngine) ? s.musicEngine : prev.musicEngine || 'beat',
     style: s.style === undefined ? prev.style ?? null : /^[a-z0-9-]{1,40}$/i.test(s.style || '') ? s.style : null,
@@ -391,6 +393,7 @@ export function createAutopilot({ dir, library, scanner, renderIdea, otherWork =
           // A proper edit: styled cuts, sound design and music every time.
           intensity: data.settings.intensity === 'clean' ? 'clean' : idea.intensity || data.settings.intensity || 'creator',
           aiMusic: data.settings.aiMusic !== false,
+          clipAudio: data.settings.clipAudio || 'auto',
           musicEngine: data.settings.musicEngine || 'beat',
         };
         let last = 0;

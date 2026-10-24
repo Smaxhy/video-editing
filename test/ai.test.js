@@ -80,8 +80,10 @@ test('normalizeResponse keeps a valid music pick and falls back for a fixed trac
   assert.deepEqual(auto.music, { track: 'm2', start: 25 });
   const fixed = normalizeResponse(base, clips, { versions: ['15'], music: { mode: 'fixed', fixed: 'm1', tracks } });
   assert.deepEqual(fixed.music, { track: 'm1', start: 0 });
-  const none = normalizeResponse({ ...base, music: { track: 'zzz' } }, clips, { versions: ['15'], music: { mode: 'auto', tracks } });
-  assert.equal(none.music, null);
+  // No valid pick: the user's own music still plays — the track matching the planned energy.
+  const energetic = [{ ...tracks[0], sound: '70 BPM · low energy' }, { ...tracks[1], sound: '140 BPM · high energy' }];
+  const none = normalizeResponse({ ...base, music: { track: 'zzz' }, sound: { energy: 'high', search: ['x'] } }, clips, { versions: ['15'], music: { mode: 'auto', tracks: energetic } });
+  assert.deepEqual(none.music, { track: 'm2', start: 0 });
   assert.match(none.warnings.join(' '), /music/);
 });
 

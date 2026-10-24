@@ -191,11 +191,14 @@ export function createLibrary({ dir, onChange = () => {}, onReady = () => {}, is
     changed(a);
   }
 
+  // Videos whose sound is music (saved reels, edits) are usable as music too, so they get the same scan.
+  const musicVideo = (a) => a.kind === 'video' && a.hasAudio && ((Array.isArray(a.sounds) && a.sounds.includes('music')) || /(^|[^a-z])(music|songs?|sounds?|soundtrack|audio|beats?|remix|instrumental|tracks?|bgm)([^a-z]|$)/i.test(a.name || ''));
   const needsHeavy = (a) =>
     a.kind === 'audio' ? a.music?.v !== MUSIC_VERSION :
     ((settings.shrinkLarge && !a.shrunk && shouldShrink(a, a.size)) ||
       (a.preview.proxyReason && !['ready', 'failed'].includes(a.preview.proxy)) ||
-      a.quality?.v !== QUALITY_VERSION);
+      a.quality?.v !== QUALITY_VERSION ||
+      (musicVideo(a) && a.music?.v !== MUSIC_VERSION));
 
   async function makePreviews(a) {
     const src = file(a.id, a.file);
@@ -236,6 +239,13 @@ export function createLibrary({ dir, onChange = () => {}, onReady = () => {}, is
         changed(a);
       });
       await update(a, { preview: { ...a.preview, proxy: ok ? 'ready' : 'failed', progress: ok ? 1 : 0 } });
+    }
+    if (musicVideo(a) && a.music?.v !== MUSIC_VERSION && assets.has(a.id)) {
+      try {
+        await update(a, { music: (await scanMusic(file(a.id, a.file))) || { v: MUSIC_VERSION, error: 'too short' } });
+      } catch (err) {
+        await update(a, { music: { v: MUSIC_VERSION, error: err.message } });
+      }
     }
     // Quality score (sharpness, exposure, shake, sound level) — so bad clips are never picked.
     if (a.quality?.v !== QUALITY_VERSION && assets.has(a.id)) {
@@ -410,7 +420,10 @@ export function createLibrary({ dir, onChange = () => {}, onReady = () => {}, is
     /** Store extra analysis fields (sound tags, embedding marker…). */
     async setFields(id, patch) {
       const a = assets.get(id);
-      if (a) await update(a, patch);
+      if (!a) return;
+      await update(a, patch);
+      // New sound tags may reveal music in a video → measure its tempo / drop in the background.
+      if (patch.sounds && a.status === 'ready' && needsHeavy(a)) enqueueHeavy(a.id);
     },
     assetDir,
     /** Already imported? Matches the cloud file id, else path + size. */

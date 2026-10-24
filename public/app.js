@@ -2154,7 +2154,7 @@ function ideaHtml(b, i) {
   const label = `${i.length}s`;
   return `<article class="variant idea" aria-label="${esc(i.title)}">
     ${media}
-    <div class="vm"><div><div class="vl">${esc(i.title)}${i.review ? `<span class="stars" title="${esc(i.review.summary)}">★ ${i.review.score}/10</span>` : ''}</div><div class="vs">${label}${i.size ? ` · ${fmtSize(i.size)}` : ''}${i.vibe ? ` · <span class="vibe">${esc(i.vibe)}</span>` : ''}</div></div></div>
+    <div class="vm"><div><div class="vl">${esc(i.title)}${i.review ? `<span class="stars" title="${esc(i.review.summary)}">★ ${i.review.score}/10</span>` : ''}</div><div class="vs">${label}${i.size ? ` · ${fmtSize(i.size)}` : ''}${i.format ? ` · ${esc(i.format)}` : ''}${i.vibe ? ` · <span class="vibe">${esc(i.vibe)}</span>` : ''}</div>${i.musicName ? `<div class="vs">🎵 ${esc(i.musicName)}</div>` : ''}</div></div>
     ${i.sound ? `<div class="cap snd-line">🎵 ${esc(i.sound.search[0] || i.sound.style)}${i.sound.style && i.sound.search[0] ? ` <span class="hint-line">(${esc(i.sound.style)})</span>` : ''}</div>` : ''}
     ${i.notes?.length ? `<details class="notes"><summary>What ClipForge did (${i.notes.length})</summary><ul>${i.notes.map((n) => `<li>${esc(n)}</li>`).join('')}</ul></details>` : ''}
     <div class="cap">${esc(i.caption)}${i.hashtags.length ? `\n<span class="tags">${esc(i.hashtags.join(' '))}</span>` : ''}</div>

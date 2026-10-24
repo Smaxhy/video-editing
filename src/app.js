@@ -396,14 +396,26 @@ async function findFootage(job, prompt, settings, { signal, ws, notes }) {
   return job.clips.map((c) => c.id);
 }
 
+/**
+ * Everything usable as music: the library's music tracks, plus videos whose sound was tagged as music
+ * (saved reels, edits, sounds recorded with a video). Music files first, newest first.
+ */
+const MUSIC_NAME = /(^|[^a-z])(music|songs?|sounds?|soundtrack|audio|beats?|remix|instrumental|tracks?|bgm)([^a-z]|$)/i;
+const isMusicVideo = (a) => a.kind === 'video' && a.hasAudio && !a.styleRef && ((Array.isArray(a.sounds) && a.sounds.includes('music')) || MUSIC_NAME.test(a.name || ''));
+function musicCandidates() {
+  const all = library.list().filter((a) => a.status === 'ready');
+  return [...all.filter((a) => a.kind === 'audio'), ...all.filter(isMusicVideo)];
+}
+const musicName = (a) => (a.kind === 'video' ? `sound of video "${a.name}"` : a.tags?.title || a.name);
+
 /** Music catalog for the planner (m1, m2… → library assets) and the chosen mode. */
 function musicOptions(setting) {
   if (setting === 'off') return { options: { mode: 'off', tracks: [] }, byKey: new Map() };
-  const tracks = library.list().filter((a) => a.kind === 'audio' && a.status === 'ready').slice(0, 80);
+  const tracks = musicCandidates().slice(0, 80);
   const byKey = new Map(tracks.map((a, i) => [`m${i + 1}`, a]));
   const list = [...byKey].map(([id, a]) => ({
     id,
-    name: a.name,
+    name: musicName(a),
     duration: a.duration,
     tags: [a.tags.title, a.tags.artist, a.tags.genre].filter(Boolean).join(' · '),
     // What ClipForge heard: tempo, energy, drop, loud parts, genre & mood.
@@ -652,7 +664,7 @@ async function runPipeline(job, { prompt, clipIds, settings, reusePlan, revise =
   // Beat sync: B-roll/POV cuts land on the music's downbeats; montage shots pulse on the beat. In
   // trending-sound mode the grid comes from a sound the creator saved (timing only, not mixed) or
   // from the tempo Claude chose for the sound to add in the app.
-  const timingAsset = settings.trendingSound && library.get(settings.music)?.kind === 'audio' ? library.get(settings.music) : null;
+  const timingAsset = settings.trendingSound && library.get(settings.music) && (library.get(settings.music).kind === 'audio' || isMusicVideo(library.get(settings.music))) ? library.get(settings.music) : null;
   // Drop on the peak: each version starts the track so its drop hits the cut Claude marked "peak".
   const musicStart = {};
   if (musicAsset) {
@@ -894,8 +906,10 @@ async function runPipeline(job, { prompt, clipIds, settings, reusePlan, revise =
         watermark: settings.watermark,
         musicPath: musicPaths[v.id] || null,
         musicVolume: MUSIC_LEVEL[settings.musicLevel],
-        fontPaths: settings.captions === 'off' ? null : await ensureFonts(TOOLS_DIR),
+        fontPaths: await ensureFonts(TOOLS_DIR), // captions, hook and title type
         motion: settings.motion,
+        look: settings.look,
+        intensity: settings.intensity,
         downbeats: v.downbeats || null,
         narration: v.narration || null,
         sfxDir: settings.sfx !== 'off' ? await ensureSfx(TOOLS_DIR).catch(() => null) : null,
@@ -1131,6 +1145,7 @@ const autopilot = createAutopilot({
   otherWork: () => ([...jobs.values()].some((j) => j.state === 'running') && 'another video render') || false,
   onChange: broadcast,
   styleGuide: (id) => (id && styles.get(id) ? styleGuideText(styles.get(id)) : null),
+  musicTracks: () => musicCandidates().slice(0, 60).map((a) => ({ id: a.id, name: musicName(a), duration: a.duration, heard: musicLine(a.music, a.musicTags), tags: [a.tags?.genre, a.tags?.artist].filter(Boolean).join(' · ') })),
 });
 
 // ---------------------------------------------------------------------------
@@ -1701,7 +1716,6 @@ function editSettings(s = {}, autoFind = false) {
   const level = (on, fromStyle, d) => (on === false ? 'off' : fromStyle || d);
   return {
     style: prof ? s.style : null,
-    look: prof?.look || 'natural',
     captionCase: prof?.captions.case || null,
     captionPos: prof?.captions.position || 'bottom',
     captionColor: prof?.captions.highlight || null,
@@ -1738,7 +1752,8 @@ function editSettings(s = {}, autoFind = false) {
     brand: cleanText(s.brand, 60),
     cta: cleanText(s.cta, 60),
     autoFind,
-    music: prof?.music === 'off' ? 'off' : s.music === 'auto' || (library.get(s.music)?.kind === 'audio') ? s.music : 'off',
+    music: prof?.music === 'off' || s.music === 'off' ? 'off' : s.music === 'auto' || !s.music ? 'auto' : library.get(s.music) && (library.get(s.music).kind === 'audio' || isMusicVideo(library.get(s.music))) ? s.music : 'auto',
+    look: prof?.look || (['natural', 'warm', 'cool', 'moody', 'vibrant', 'film'].includes(s.look) ? s.look : 'natural'),
     musicLevel: prof && MUSIC_LEVEL[prof.music] ? prof.music : MUSIC_LEVEL[s.musicLevel] ? s.musicLevel : 'medium',
   };
 }

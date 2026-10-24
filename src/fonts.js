@@ -3,13 +3,15 @@ import fsSync from 'node:fs';
 import path from 'node:path';
 
 /**
- * Caption fonts, downloaded once from Google Fonts' GitHub repo. Both are SIL Open Font License —
+ * Caption fonts, downloaded once from Google Fonts' GitHub repo. All are SIL Open Font License —
  * free to use in commercial videos. Anton is the tall condensed "viral caption" face, Montserrat
  * (variable, 100–900) covers the heavy karaoke style and clean subtitles.
  */
 const SOURCES = {
   display: { file: 'Anton-Regular.ttf', url: 'https://raw.githubusercontent.com/google/fonts/main/ofl/anton/Anton-Regular.ttf' },
   body: { file: 'Montserrat-Variable.ttf', url: 'https://raw.githubusercontent.com/google/fonts/main/ofl/montserrat/Montserrat%5Bwght%5D.ttf' },
+  // Elegant italic serif for cinematic / aesthetic titles.
+  serif: { file: 'PlayfairDisplay-Italic-Variable.ttf', url: 'https://raw.githubusercontent.com/google/fonts/main/ofl/playfairdisplay/PlayfairDisplay-Italic%5Bwght%5D.ttf' },
 };
 
 let pending = null;

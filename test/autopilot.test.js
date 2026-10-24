@@ -153,3 +153,20 @@ test('a failed render keeps the other videos', async () => {
   await ap.settled();
   fs.rmSync(dir, { recursive: true, force: true });
 });
+
+test('autopilot ideas get a song from the creator\'s music, a format, a look and an intensity', () => {
+  const tracks = [{ id: 'aud1', name: 'calm piano', duration: 120, heard: '72 BPM · low energy' }, { id: 'vid9', name: 'sound of video "edit.mp4"', duration: 30, heard: '140 BPM · high energy' }];
+  const p = buildPlanPrompt({
+    assets: [{ id: 'a1', name: 'a.mp4', duration: 10, width: 1080, height: 1920, ai: { status: 'done', summary: 'tree', tags: [] } }],
+    settings: { ...DEFAULT_SETTINGS, lengths: ['30'] }, count: 2, recent: [], tracks,
+  });
+  assert.match(p, /s1: "calm piano"/);
+  assert.match(p, /s2: "sound of video/);
+  assert.match(p, /"hype edit"/);
+  assert.match(p, /at most ONE "satisfying" idea/);
+  const out = normalizePlan({ ideas: [{ title: 'Hype', clips: ['a1'], music: 's2', format: 'Hype Edit', look: 'vibrant', intensity: 'max' }] }, { known: new Set(['a1']), lengths: ['30'], count: 1, tracks });
+  const idea = out.ideas[0];
+  assert.deepEqual([idea.musicId, idea.musicName, idea.format, idea.look, idea.intensity], ['vid9', 'sound of video "edit.mp4"', 'hype edit', 'vibrant', 'max']);
+  const plain = normalizePlan({ ideas: [{ title: 'x', clips: ['a1'], music: 's7', look: 'neon' }] }, { known: new Set(['a1']), lengths: ['30'], count: 1, tracks }).ideas[0];
+  assert.deepEqual([plain.musicId, plain.look], [null, null]);
+});

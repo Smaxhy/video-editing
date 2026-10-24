@@ -286,9 +286,16 @@ export function buildComposition({ plan, clips, transcripts, settings, gsapSrc =
   const fontFaces = [
     settings.fontFiles?.display && `    @font-face { font-family: "CF Display"; src: url("fonts/${settings.fontFiles.display}"); }`,
     settings.fontFiles?.body && `    @font-face { font-family: "CF Body"; src: url("fonts/${settings.fontFiles.body}"); font-weight: 100 900; }`,
+    settings.fontFiles?.serif && `    @font-face { font-family: "CF Serif"; src: url("fonts/${settings.fontFiles.serif}"); font-weight: 400 900; font-style: italic; }`,
   ].filter(Boolean).join('\n');
   const displayFont = `${settings.fontFiles?.display ? '"CF Display", ' : ''}Impact, "Arial Narrow Bold", sans-serif`;
   const bodyFont = `${settings.fontFiles?.body ? '"CF Body", ' : ''}system-ui, "Segoe UI", Roboto, Arial, sans-serif`;
+  const serifFont = `${settings.fontFiles?.serif ? '"CF Serif", ' : ''}Georgia, "Times New Roman", serif`;
+  // Aesthetic finishing follows the edit: styled edits get kinetic text and an opening hit; film /
+  // moody / cinematic looks get grain, a vignette and serif titles.
+  const styled = settings.intensity && settings.intensity !== 'clean';
+  const filmic = ['film', 'moody'].includes(settings.look);
+  const serifTitles = filmic || settings.look === 'warm' || settings.look === 'cool';
   const clipById = new Map(clips.map((c) => [c.id, c]));
 
   const laid = layoutTimeline(plan);
@@ -519,7 +526,16 @@ export function buildComposition({ plan, clips, transcripts, settings, gsapSrc =
     const inD = round(Math.min(0.45, dur / 3), 3);
     const outD = round(Math.min(0.3, dur / 4), 3);
     const at = (t) => round(t, 3);
-    if (o.type === 'hook' || o.type === 'cta') {
+    const words = String(o.text).split(/\s+/).filter(Boolean);
+    const kinetic = styled && ['hook', 'text', 'title'].includes(o.type) && words.length > 1 && words.length <= 9;
+    if (kinetic) {
+      // Kinetic type: the box lands, then each word slams in on its own beat.
+      const step = round(Math.min(0.11, (dur * 0.35) / words.length), 3);
+      tweens.push(`tl.fromTo("#${id}i", { opacity: 0, scale: ${o.type === 'title' ? 1 : 0.85} }, { opacity: 1, scale: 1, duration: 0.18, ease: "back.out(2)" }, ${o.start});`);
+      words.forEach((_, k) => {
+        tweens.push(`tl.fromTo("#${id}w${k}", { opacity: 0, scale: 1.7, y: ${Math.round(-18 * u)}, filter: "blur(${Math.round(8 * u)}px)" }, { opacity: 1, scale: 1, y: 0, filter: "blur(0px)", duration: 0.22, ease: "expo.out" }, ${at(o.start + 0.04 + k * step)});`);
+      });
+    } else if (o.type === 'hook' || o.type === 'cta') {
       // Pop in with a little overshoot — the social-native feel.
       tweens.push(`tl.fromTo("#${id}i", { opacity: 0, scale: 0.8 }, { opacity: 1, scale: 1, duration: ${Math.min(inD, 0.3)}, ease: "back.out(2.2)" }, ${o.start});`);
     } else if (o.type === 'lower-third') {
@@ -539,7 +555,7 @@ export function buildComposition({ plan, clips, transcripts, settings, gsapSrc =
         `tl.fromTo("#${id}i", { opacity: 1 }, { opacity: 0, duration: ${outD}, ease: "power1.in", immediateRender: false }, ${at(o.end - outD - 0.04)});`,
       );
     }
-    const text = escapeHtml(o.text);
+    const text = kinetic ? words.map((w, k) => `<span id="${id}w${k}" class="kw">${escapeHtml(w)}</span>`).join(' ') : escapeHtml(o.text);
     const sub = o.subtext ? `<div class="sub">${escapeHtml(o.subtext)}</div>` : '';
     const body =
       o.type === 'cta'
@@ -626,6 +642,17 @@ export function buildComposition({ plan, clips, transcripts, settings, gsapSrc =
 
   // Transition light: white flashes, film light leaks, glitch bars — above the picture, below text.
   const fxHtml = [];
+  // Opening hit: the first frame punches in from a zoom with a flash, so the scroll stops.
+  if (styled && laid.scenes.length) {
+    tweens.push(`tl.fromTo("#s0", { scale: 1.2, filter: "blur(${Math.round(6 * u)}px)" }, { scale: 1, filter: "blur(0px)", duration: 0.5, ease: "expo.out" }, 0);`);
+    flashes.unshift(0);
+  }
+  // Film finish: animated grain and a soft vignette (cinematic looks); a light vignette otherwise.
+  if (filmic) {
+    fxHtml.push(`    <div id="grain" class="grain"></div>`);
+    tweens.push(`tl.to("#grain", { keyframes: Array.from({ length: 8 }, (_, k) => ({ backgroundPosition: \`\${(k * 37) % 100}% \${(k * 61) % 100}%\`, duration: 0.0833 })), repeat: ${Math.max(0, Math.ceil(total / 0.67))}, ease: "none" }, 0);`);
+  }
+  if (filmic || styled) fxHtml.push(`    <div class="vignette${filmic ? ' strong' : ''}"></div>`);
   if (whip.size) {
     fxHtml.push(`    <svg width="0" height="0" style="position:absolute"><defs>${[...whip].filter((k) => k >= 0).map((k) => `<filter id="mb${k}" x="-25%" y="0" width="150%" height="100%"><feGaussianBlur id="mb${k}g" stdDeviation="0 0" /></filter>`).join('')}</defs></svg>`);
   }
@@ -661,6 +688,12 @@ ${fontFaces}
     .scene video { position: absolute; left: 0; top: 0; width: 100%; height: 100%; }
     .fx { position: absolute; inset: 0; pointer-events: none; opacity: 0; }
     .fx-flash { background: #fff; }
+    .grain { position: absolute; inset: 0; pointer-events: none; opacity: .13; mix-blend-mode: overlay;
+      background-image: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='240' height='240'><filter id='n'><feTurbulence type='fractalNoise' baseFrequency='.9' numOctaves='2' stitchTiles='stitch'/></filter><rect width='100%' height='100%' filter='url(%23n)'/></svg>");
+      background-size: 240px 240px; }
+    .vignette { position: absolute; inset: 0; pointer-events: none; background: radial-gradient(ellipse 80% 70% at 50% 50%, rgba(0,0,0,0) 55%, rgba(0,0,0,.28) 100%); }
+    .vignette.strong { background: radial-gradient(ellipse 75% 65% at 50% 48%, rgba(0,0,0,0) 45%, rgba(0,0,0,.5) 100%); }
+    .kw { display: inline-block; }
     .fx-leak { inset: -20%; mix-blend-mode: screen; background:
       radial-gradient(ellipse 45% 60% at 30% 40%, rgba(255,150,60,.95), rgba(255,90,40,.45) 45%, rgba(255,60,90,0) 75%),
       radial-gradient(ellipse 35% 50% at 75% 65%, rgba(255,210,120,.8), rgba(255,120,80,0) 70%); }
@@ -685,7 +718,7 @@ ${fontFaces}
     .ov-hook .sub { margin-top: ${px(14)}; font-size: ${px(40)}; font-weight: 700; text-shadow: 0 ${px(2)} ${px(12)} rgba(0,0,0,.7); }
 
     .ov-title .ov-inner { background: radial-gradient(ellipse at center, rgba(0,0,0,.55), rgba(0,0,0,0) 70%); padding: ${px(40)} ${px(60)}; }
-    .ov-title .main { font-size: ${px(100)}; font-weight: 800; letter-spacing: -0.02em; line-height: 1.05; text-shadow: 0 ${px(4)} ${px(24)} rgba(0,0,0,.6); }
+    .ov-title .main { font-family: ${serifTitles ? serifFont : 'inherit'}; font-style: ${serifTitles ? 'italic' : 'normal'}; font-size: ${px(serifTitles ? 112 : 100)}; font-weight: ${serifTitles ? 600 : 800}; letter-spacing: -0.02em; line-height: 1.05; text-shadow: 0 ${px(4)} ${px(24)} rgba(0,0,0,.6); }
     .ov-title .sub { margin-top: ${px(18)}; font-size: ${px(40)}; font-weight: 500; opacity: .9; text-shadow: 0 ${px(2)} ${px(12)} rgba(0,0,0,.6); }
 
     /* On-screen text: big, heavy and outlined so it reads on any background (the creator look). */

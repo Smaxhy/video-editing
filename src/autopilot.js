@@ -95,7 +95,20 @@ export function normalizeHashtags(list) {
   return out;
 }
 
-export function buildPlanPrompt({ assets, settings, count, recent, candidates = count, styleGuide = null }) {
+/** Formats a batch mixes so it never turns into the same video three times. */
+export const IDEA_FORMATS = {
+  'hype edit': 'fast, beat-driven montage of the best moments, styled cuts on the beat, slow-mo on the peak, big text hits',
+  cinematic: 'moody, slow, beautiful — wide shots, slow motion, film look, minimal elegant text, an emotional track',
+  transformation: 'before → after reveal: tease the result, show the process fast, land the reveal on the drop',
+  story: 'a mini story or day-in-the-life with a clear beginning, tension and payoff; text or voiceover carries it',
+  'tips / how-to': 'teach one thing fast: numbered on-screen steps, punchy, value in every second',
+  funny: 'comedic timing, meme-style text, quirky music, reaction moments, a twist ending',
+  pov: 'first-person "POV:" framing, immersive, text sets the scene, natural sound + music',
+  satisfying: 'satisfying / ASMR — clean shots, natural sound up front, gentle music under it',
+};
+export const IDEA_LOOKS = ['natural', 'warm', 'cool', 'moody', 'vibrant', 'film'];
+
+export function buildPlanPrompt({ assets, settings, count, recent, candidates = count, styleGuide = null, tracks = [] }) {
   return `You are the content strategist and video producer for a short-form creator (Instagram Reels / TikTok / Shorts).
 Below is their whole footage library — an AI watched every clip and described it. Plan the next batch of ${count} short vertical videos made ONLY from this footage.
 Brainstorm ${candidates} candidate ideas and give each a "score" (1-10): how likely it is to stop the scroll and get watched to the end, judged by the strength of the hook and how well the footage supports it. Only the ${count} best-scoring ideas will be made, so be critical.
@@ -104,7 +117,11 @@ Brainstorm ${candidates} candidate ideas and give each a "score" (1-10): how lik
 ${settings.direction ? `"""\n${settings.direction}\n"""` : '(No direction given — work out what the footage is about and what would perform well with it.)'}
 ${styleGuide ? `\n## The creator's style (copied from reference videos they love — every idea must fit it)\n${styleGuide}\n` : ''}${settings.brand ? `Brand / account name: ${settings.brand}\n` : ''}${settings.cta ? `Call to action they like: ${settings.cta}\n` : ''}
 ## Rules
-- ${candidates} ideas, each a DIFFERENT vibe (for example: cinematic & calm, hype & fast cuts, satisfying ASMR, educational / how-to, funny, story / day-in-the-life, motivational). No two ideas should feel alike.
+- ${candidates} ideas, each a DIFFERENT "format" from this list (no two ideas in the same format; at most ONE "satisfying" idea per batch unless the creator asks for ASMR):
+${Object.entries(IDEA_FORMATS).map(([k, v]) => `  - "${k}": ${v}`).join('\n')}
+- Make them eye-catching and aesthetic, the way the best accounts in this niche edit: a hook that stops the scroll in the first second (the most striking shot + bold text), constant visual change, a payoff, and a strong ending (a loop back to the start, a reveal or a punchline — never a slow fade).
+- "look": the colour grade that makes the idea look its best — ${IDEA_LOOKS.map((l) => `"${l}"`).join(', ')} (film/moody for cinematic, vibrant for hype/funny, warm for lifestyle/story).
+- "intensity": "max" for hype / transformation / funny, "creator" for most others, "clean" only for calm tips.
 - Each idea uses 2–${MAX_IDEA_CLIPS} clips from the library (by id) that genuinely fit it, in story order. Different ideas may reuse a clip, but vary them where you can. Prefer good-quality clips.
 - Length per idea: one of ${settings.lengths.map((l) => `"${l}"`).join(', ')} seconds — pick what suits the idea and the amount of fitting footage.
 - "brief" is the instruction for the video editor: the hook in the first 2 seconds, pacing, what on-screen text/subtitles to show, the mood of the music, how it ends. Concrete, 2–5 sentences.
@@ -113,18 +130,23 @@ ${styleGuide ? `\n## The creator's style (copied from reference videos they love
 - "hashtags": 8–15 relevant hashtags, mixing broad and niche.
 - "captionStyle": "bold" (big punchy subtitles), "clean" (small tidy subtitles) or "off" (no subtitles — only for purely visual vibes).
 - "accent": a hex colour for on-screen text that matches the vibe.
+${tracks.length ? `- "music": the id of the ONE song from the music library below whose vibe matches the idea (energy, mood, genre). The creator wants their own music used — every idea gets a song; use different songs for different ideas where you can.` : ''}
 ${recent.length ? `- These were made recently — do NOT repeat them, find fresh angles:\n${recent.map((r) => `  - ${r}`).join('\n')}\n` : ''}
 ## Library (${assets.length} clips)
 ${assets.map(indexLine).join('\n')}
+${tracks.length ? `
+## Music library (${tracks.length} songs — what ClipForge heard in each)
+${tracks.map((t, i) => `- s${i + 1}: "${t.name}" · ${Math.round(t.duration || 0)}s${t.tags ? ` · ${t.tags}` : ''}${t.heard ? ` · ${t.heard}` : ''}`).join('\n')}
+` : ''}
 
 ## Response
 Reply with ONLY this JSON (no prose):
 {"plan":"2–4 sentences: the content strategy for this batch and why it fits the footage",
- "ideas":[{"title":"short title","score":8,"vibe":"2–4 words","hook":"…","brief":"…","clips":["<clip id>",…],"length":"30","captionStyle":"bold","accent":"#ffcc00","caption":"…","hashtags":["#…",…]}]}`;
+ "ideas":[{"title":"short title","score":8,"format":"hype edit","vibe":"2–4 words","hook":"…","brief":"…","clips":["<clip id>",…],"length":"30","captionStyle":"bold","accent":"#ffcc00","look":"vibrant","intensity":"max",${tracks.length ? '"music":"s1",' : ''}"caption":"…","hashtags":["#…",…]}]}`;
 }
 
 /** Validate Claude's plan against the library: real clip ids only, allowed lengths, tidy text. */
-export function normalizePlan(raw, { known, lengths, count }) {
+export function normalizePlan(raw, { known, lengths, count, tracks = [] }) {
   const ideas = [];
   // Best first: Claude scored every candidate; only the top `count` are made.
   const ranked = (Array.isArray(raw?.ideas) ? raw.ideas : [])
@@ -148,6 +170,11 @@ export function normalizePlan(raw, { known, lengths, count }) {
       assetIds,
       length: lengths.includes(length) ? length : lengths[Math.min(1, lengths.length - 1)] || '30',
       captionStyle: AUTOPILOT_CAPTIONS.includes(it?.captionStyle) ? it.captionStyle : 'bold',
+      format: IDEA_FORMATS[String(it?.format || '').toLowerCase()] ? String(it.format).toLowerCase() : null,
+      look: IDEA_LOOKS.includes(it?.look) ? it.look : null,
+      intensity: ['clean', 'creator', 'max'].includes(it?.intensity) ? it.intensity : null,
+      musicId: tracks[Number(String(it?.music || '').replace(/^s/i, '')) - 1]?.id || null,
+      musicName: tracks[Number(String(it?.music || '').replace(/^s/i, '')) - 1]?.name || null,
       accent: /^#[0-9a-f]{6}$/i.test(it?.accent || '') ? it.accent : null,
       caption: String(it?.caption || '').trim().slice(0, 2000),
       hashtags: normalizeHashtags(it?.hashtags),
@@ -163,6 +190,7 @@ export function normalizePlan(raw, { known, lengths, count }) {
 export function ideaPrompt(idea, settings) {
   return [
     `Make a ${idea.length}-second vertical social video: "${idea.title}".`,
+    idea.format && `Format: ${idea.format} — ${IDEA_FORMATS[idea.format]}.`,
     idea.vibe && `Vibe: ${idea.vibe}.`,
     idea.hook && `Open with this on-screen hook: "${idea.hook}".`,
     idea.brief,
@@ -200,7 +228,7 @@ async function linkOrCopy(from, to) {
  * @param {Function} o.onChange       broadcast (type 'autopilot')
  * @param {Function} [o.plan]         injectable Claude call for tests
  */
-export function createAutopilot({ dir, library, scanner, renderIdea, otherWork = () => false, onChange = () => {}, plan = callClaude, now = Date.now, styleGuide = () => null }) {
+export function createAutopilot({ dir, library, scanner, renderIdea, otherWork = () => false, onChange = () => {}, plan = callClaude, now = Date.now, styleGuide = () => null, musicTracks = () => [] }) {
   const file = path.join(dir, 'autopilot.json');
   let data = { settings: { ...DEFAULT_SETTINGS }, lastRun: null, failedAt: null, batches: [] };
   let current = null; // { batchId, abort, phase, message }
@@ -230,6 +258,8 @@ export function createAutopilot({ dir, library, scanner, renderIdea, otherWork =
     title: i.title,
     vibe: i.vibe,
     hook: i.hook,
+    format: i.format || null,
+    musicName: i.musicName || null,
     length: i.length,
     caption: i.caption,
     hashtags: i.hashtags,
@@ -300,7 +330,10 @@ export function createAutopilot({ dir, library, scanner, renderIdea, otherWork =
       .flatMap((b) => b.ideas || [])
       .slice(0, 30)
       .map((i) => `${i.title}${i.vibe ? ` (${i.vibe})` : ''}`);
+    // The creator's songs (none in trending-sound mode: those videos go out without music).
+    const tracks = data.settings.trendingSound ? [] : musicTracks();
     const prompt = buildPlanPrompt({
+      tracks,
       assets: shortlist(scanned, data.settings.direction, 300),
       settings: data.settings,
       count: data.settings.perBatch,
@@ -311,7 +344,7 @@ export function createAutopilot({ dir, library, scanner, renderIdea, otherWork =
     const cwd = batchDir(batch);
     await fs.mkdir(cwd, { recursive: true });
     const raw = extractJson(await plan(prompt, { cwd, signal, model: data.settings.plannerModel }));
-    const out = normalizePlan(raw, { known: new Set(scanned.map((a) => a.id)), lengths: data.settings.lengths, count: data.settings.perBatch });
+    const out = normalizePlan(raw, { known: new Set(scanned.map((a) => a.id)), lengths: data.settings.lengths, count: data.settings.perBatch, tracks });
     if (!out.ideas.length) throw new PipelineError('Claude did not come up with usable video ideas.', { hint: 'Add a direction in the Autopilot settings, or add more footage.' });
     batch.plan = out.plan;
     batch.ideas = out.ideas;
@@ -345,7 +378,9 @@ export function createAutopilot({ dir, library, scanner, renderIdea, otherWork =
           lengths: [idea.length],
           captions: idea.captionStyle,
           accent: idea.accent || undefined,
-          music: 'auto',
+          // The song Claude matched to this idea (else the editor picks from the library).
+          music: idea.musicId && library.get(idea.musicId) ? idea.musicId : 'auto',
+          look: idea.look || undefined,
           brand: data.settings.brand,
           cta: data.settings.cta,
           plannerModel: data.settings.plannerModel,
@@ -354,7 +389,7 @@ export function createAutopilot({ dir, library, scanner, renderIdea, otherWork =
           style: data.settings.style,
           trendingSound: data.settings.trendingSound,
           // A proper edit: styled cuts, sound design and music every time.
-          intensity: data.settings.intensity || 'creator',
+          intensity: data.settings.intensity === 'clean' ? 'clean' : idea.intensity || data.settings.intensity || 'creator',
           aiMusic: data.settings.aiMusic !== false,
           musicEngine: data.settings.musicEngine || 'beat',
         };

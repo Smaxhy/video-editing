@@ -310,7 +310,7 @@ ${vo.mode === 'on'
 ## Music
 ${music.mode === 'fixed'
     ? `The user chose track ${music.fixed} (listed below). Set "music": { "track": "${music.fixed}", "start": <seconds into the track where the best part begins> }.`
-    : `Pick ONE background track from the user's music library and set "music": { "track": "<id>", "start": <seconds into the track to begin> }.${options.aiMusic ? ' If NO track fits the vibe, set "music": { "track": "ai" } instead — ClipForge then composes a fresh track from "sound.prompt".' : heard ? '' : ' Choose from the names/tags; if none fits, still pick the closest.'}`}
+    : `Pick ONE song from the user's music library below — the one whose vibe best matches this video — and set "music": { "track": "<id>", "start": <seconds into the track to begin> }. The user wants THEIR music used: always pick one of these tracks (the closest match if none is perfect), never leave the video without music.`}
 ${heard ? `ClipForge listened to the tracks: tempo, energy, genre and mood, the drop (where the track lifts hardest), its loud parts and an energy curve.
 ${music.mode === 'fixed' ? '' : `- Match the VIBE first: the mood of the track must be the mood of the video (calm satisfying craft → calm lo-fi / acoustic / ambient; hype, sport, glow-up, transformation → energetic drill / phonk / trap / EDM; emotional story → sad piano / cinematic; epic reveal → cinematic or slowed phonk; funny → quirky / meme). Then match energy and tempo to the pacing you cut. Never put a sad track on a happy video or a hype track on a calm one. Say which track you chose and why in "checklist".
 `}- Cut to the tempo: one beat = 60 / BPM seconds. Make B-roll / montage shots last whole numbers of beats (1, 2 or 4) — ClipForge snaps the cuts onto the beat afterwards.
@@ -576,9 +576,12 @@ export function normalizeResponse(raw, clips, options) {
     if (track) {
       const start = Number(raw.music?.start);
       music = { track: track.id, start: Number.isFinite(start) ? clamp(start, 0, Math.max(0, track.duration - 5)) : 0 };
-    } else if (!(options.aiMusic && want === 'ai')) {
-      // With AI music on, "no track" means: compose one for the vibe.
-      if (!options.aiMusic) warnings.push('Claude did not choose a music track — the video has no music.');
+    } else {
+      // The user's own music always wins: fall back to the track whose energy fits the planned vibe.
+      const energy = raw.sound?.energy;
+      const pick = m.tracks.find((t) => energy && new RegExp(`${energy} energy`).test(t.sound || '')) || m.tracks[0];
+      music = { track: pick.id, start: 0 };
+      warnings.push(`Claude did not name a music track — used "${pick.name}" from your library.`);
     }
   }
 

@@ -24,7 +24,9 @@ export async function sourceFps(file) {
  * at `speed` at 30 fps. Returns the path, or null when the source already has enough frames.
  */
 export async function smoothSlowMo(src, out, { start, end, speed, offset = 0, signal }) {
-  if (await exists(out)) return out;
+  // Ramp steps of a fraction of a second gain nothing visible (and can come out with no frames).
+  if (end - start < 0.4) return null;
+  if ((await exists(out)) && (await hasVideoFrames(out))) return out;
   const target = Math.min(120, Math.ceil(30 / speed));
   if ((await sourceFps(src)) >= target * 0.95) return null;
   await fs.mkdir(path.dirname(out), { recursive: true });
@@ -37,8 +39,19 @@ export async function smoothSlowMo(src, out, { start, end, speed, offset = 0, si
     '-c:a', 'aac', '-b:a', '192k', '-movflags', '+faststart', tmp,
   ], { signal, timeoutMs: 30 * 60_000 });
   if (r.code !== 0) throw new PipelineError('Could not interpolate the slow motion.', { detail: tail(r.stderr) });
+  // Only a file with real video frames may replace the shot (else the render rejects it).
+  if (!(await hasVideoFrames(tmp))) {
+    await fs.rm(tmp, { force: true });
+    return null;
+  }
   await fs.rename(tmp, out);
   return out;
+}
+
+/** True when the file has a video stream with at least one decoded frame. */
+export async function hasVideoFrames(file) {
+  const r = await run('ffprobe', ['-v', 'error', '-select_streams', 'v:0', '-count_packets', '-show_entries', 'stream=nb_read_packets', '-of', 'csv=p=0', file]);
+  return r.code === 0 && Number(r.stdout.trim()) > 0;
 }
 
 /**

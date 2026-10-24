@@ -49,6 +49,10 @@
   <nav class="sidebar" id="sidebar" aria-label="Library and projects">
     <a class="nav-item" href="#/library" id="navLibrary"><svg aria-hidden="true"><use href="#i-lib"/></svg>Library <span class="count" id="libCount"></span></a>
     <a class="nav-item" href="#/autopilot" id="navAuto"><svg aria-hidden="true"><use href="#i-auto"/></svg>Autopilot <span class="count" id="autoBadge"></span></a>
+    <div class="nav-head"><span id="folderHead">Folders</span>
+      <button class="btn xs ghost" id="newFolder" type="button"><svg width="14" height="14" aria-hidden="true"><use href="#i-plus"/></svg>New</button>
+    </div>
+    <ul class="folders" id="folderList" aria-labelledby="folderHead"></ul>
     <div class="nav-head"><span id="projHead">Projects</span>
       <button class="btn xs ghost" id="newProject" type="button"><svg width="14" height="14" aria-hidden="true"><use href="#i-plus"/></svg>New</button>
     </div>
@@ -65,7 +69,12 @@
       <div class="view-head">
         <div>
           <h1 id="libTitle">Library</h1>
-          <p>Everything you upload or import stays here. Claude watches each video so you can search by what's in it — and let it pick clips for you.</p>
+          <p id="libIntro">Everything you upload or import stays here. Claude watches each video so you can search by what's in it — and let it pick clips for you.</p>
+          <div class="folder-acts hidden" id="folderActs">
+            <button class="btn sm" type="button" id="folderNewProject"><svg width="14" height="14" aria-hidden="true"><use href="#i-plus"/></svg>New project here</button>
+            <button class="btn sm ghost" type="button" id="folderEdit">Rename / colour</button>
+            <button class="btn sm ghost danger" type="button" id="folderDelete">Delete folder</button>
+          </div>
         </div>
         <div class="toolbar">
           <label class="sr-only" for="libSearch">Search by name or by what's in the video</label>
@@ -89,6 +98,11 @@
           <button class="btn" type="button" data-pick-files><svg width="18" height="18" aria-hidden="true"><use href="#i-upload"/></svg>Upload</button>
         </div>
       </div>
+
+      <section class="folder-projects hidden" id="folderProjects" aria-labelledby="fpH">
+        <h2 class="lbl" id="fpH">Projects in this folder</h2>
+        <ul class="fp-grid" id="fpGrid"></ul>
+      </section>
 
       <button class="drop" type="button" id="libDrop" data-pick-files>
         <svg aria-hidden="true"><use href="#i-upload"/></svg>
@@ -119,6 +133,9 @@
         <label class="sr-only" for="selProject">Project to add to</label>
         <select class="field" id="selProject"></select>
         <button class="btn sm" type="button" id="selAdd">Add to project</button>
+        <label class="sr-only" for="selFolder">Folder to move to</label>
+        <select class="field" id="selFolder"></select>
+        <button class="btn sm ghost" type="button" id="selMove">Move to folder</button>
         <button class="btn sm ghost" type="button" id="selExtract" title="Save the sound of the selected videos as music tracks">Extract audio</button>
         <button class="btn sm danger" type="button" id="selDelete">Delete</button>
         <button class="btn sm ghost" type="button" id="selClear">Clear selection</button>
@@ -210,6 +227,7 @@
           <h1 class="sr-only" id="projH1">Project</h1>
           <label class="sr-only" for="projName" id="projTitleLbl">Project name</label>
           <input class="title-input" id="projName" maxlength="80" placeholder="Untitled project" autocomplete="off" />
+          <label class="proj-folder"><span>Folder</span><select class="field" id="projFolder"></select></label>
         </div>
         <span class="state-badge" id="stateBadge">Not rendered yet</span>
       </div>
@@ -564,6 +582,26 @@
     <h3 class="lbl" style="margin-top:18px">Your styles</h3>
     <ul class="st-list" id="stList"></ul>
   </div>
+</dialog>
+
+<!-- New / edit folder -->
+<dialog id="folderDlg" aria-labelledby="fdTitle">
+  <form method="dialog" id="folderForm">
+    <div class="dlg-h">
+      <h2 id="fdTitle">New folder</h2>
+      <button class="icon-btn" type="button" data-close aria-label="Close"><svg><use href="#i-x"/></svg></button>
+    </div>
+    <div class="dlg-b">
+      <label class="lbl" for="fdName">Name</label>
+      <input class="field" id="fdName" maxlength="60" placeholder="e.g. Client: Oak Tree Co · Summer reels" autocomplete="off" style="width:100%" required />
+      <div class="lbl" style="margin-top:12px">Colour</div>
+      <div class="swatches" id="fdColors" role="radiogroup" aria-label="Folder colour"></div>
+      <div class="dlg-f" style="padding:14px 0 0;border:0">
+        <span class="grow hint-line" id="fdMsg" aria-live="polite"></span>
+        <button class="btn" type="submit" id="fdSave">Create folder</button>
+      </div>
+    </div>
+  </form>
 </dialog>
 
 <!-- Library picker for a project -->

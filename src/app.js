@@ -403,8 +403,12 @@ async function findFootage(job, prompt, settings, { signal, ws, notes }) {
 const MUSIC_NAME = /(^|[^a-z])(music|songs?|sounds?|soundtrack|audio|beats?|remix|instrumental|tracks?|bgm)([^a-z]|$)/i;
 const isMusicVideo = (a) => a.kind === 'video' && a.hasAudio && !a.styleRef && ((Array.isArray(a.sounds) && a.sounds.includes('music')) || MUSIC_NAME.test(a.name || ''));
 function musicCandidates() {
-  const all = library.list().filter((a) => a.status === 'ready');
-  return [...all.filter((a) => a.kind === 'audio'), ...all.filter(isMusicVideo)];
+  const all = library.list().filter((a) => a.status === 'ready' && !a.styleRef);
+  // The creator's own music only: tracks they uploaded (or extracted) and videos they marked
+  // "use as music". Tracks ClipForge made are never in the running.
+  const mine = all.filter((a) => (a.kind === 'audio' && !a.generated) || (a.kind === 'video' && a.useAsMusic && a.hasAudio));
+  if (mine.length) return mine;
+  return all.filter((a) => isMusicVideo(a) && !a.generated);
 }
 const musicName = (a) => (a.kind === 'video' ? `sound of video "${a.name}"` : a.tags?.title || a.name);
 
@@ -523,7 +527,15 @@ async function runPipeline(job, { prompt, clipIds, settings, reusePlan, revise =
     }
     // Music: keep the saved pick, switch to a newly chosen track, or drop it.
     let music = null;
-    if (settings.music === 'auto') music = saved.music || null;
+    if (settings.music === 'auto') {
+      music = saved.music || null;
+      // An older render used a track ClipForge made — switch to the creator's own music when there is some.
+      const mine = musicCandidates();
+      if (mine.length && (!music || library.get(music.assetId)?.generated)) {
+        const pick = mine.find((a) => a.music?.energy && a.music.energy === saved.sound?.energy) || mine[0];
+        music = { assetId: pick.id, start: 0 };
+      }
+    }
     else if (settings.music !== 'off' && library.get(settings.music)) {
       music = { assetId: settings.music, start: saved.music?.assetId === settings.music ? saved.music.start : 0 };
     }
@@ -621,7 +633,7 @@ async function runPipeline(job, { prompt, clipIds, settings, reusePlan, revise =
     const vibe = planned.sound?.vibe || 'background';
     const keep = async (file, tags, music, beats) => {
       const asset = await library.ingest(file, { name: `${tags.title}.m4a`, size: (await fs.stat(file)).size });
-      await library.setFields(asset.id, { tags, music });
+      await library.setFields(asset.id, { tags, music, generated: true });
       if (beats) {
         await fs.mkdir(library.cacheDir(asset.id), { recursive: true });
         await fs.writeFile(path.join(library.cacheDir(asset.id), 'beats-v1.json'), JSON.stringify(beats));
@@ -664,7 +676,7 @@ async function runPipeline(job, { prompt, clipIds, settings, reusePlan, revise =
   // Beat sync: B-roll/POV cuts land on the music's downbeats; montage shots pulse on the beat. In
   // trending-sound mode the grid comes from a sound the creator saved (timing only, not mixed) or
   // from the tempo Claude chose for the sound to add in the app.
-  const timingAsset = settings.trendingSound && library.get(settings.music) && (library.get(settings.music).kind === 'audio' || isMusicVideo(library.get(settings.music))) ? library.get(settings.music) : null;
+  const timingAsset = settings.trendingSound && library.get(settings.music)?.hasAudio ? library.get(settings.music) : null;
   // Drop on the peak: each version starts the track so its drop hits the cut Claude marked "peak".
   const musicStart = {};
   if (musicAsset) {
@@ -1377,6 +1389,11 @@ app.get('/api/library/:assetId/stream', withAsset((_req, res, a) => {
 app.get('/api/library/:assetId/download', withAsset((_req, res, a) => res.download(library.sourcePath(a.id), a.name)));
 
 app.patch('/api/library/:assetId', withAsset(async (req, res, a) => {
+  // "Use as music": a video whose sound is a song the creator wants edits cut to.
+  if (typeof req.body?.useAsMusic === 'boolean' && req.body.name === undefined) {
+    await library.setFields(a.id, { useAsMusic: req.body.useAsMusic });
+    return res.json({ asset: library.get(a.id) });
+  }
   const name = cleanText(req.body?.name, 200);
   if (!name) return res.status(400).json({ error: 'Give the video a name.' });
   res.json({ asset: await library.rename(a.id, name) });
@@ -1752,7 +1769,7 @@ function editSettings(s = {}, autoFind = false) {
     brand: cleanText(s.brand, 60),
     cta: cleanText(s.cta, 60),
     autoFind,
-    music: prof?.music === 'off' || s.music === 'off' ? 'off' : s.music === 'auto' || !s.music ? 'auto' : library.get(s.music) && (library.get(s.music).kind === 'audio' || isMusicVideo(library.get(s.music))) ? s.music : 'auto',
+    music: prof?.music === 'off' || s.music === 'off' ? 'off' : s.music === 'auto' || !s.music ? 'auto' : library.get(s.music)?.hasAudio ? s.music : 'auto',
     look: prof?.look || (['natural', 'warm', 'cool', 'moody', 'vibrant', 'film'].includes(s.look) ? s.look : 'natural'),
     musicLevel: prof && MUSIC_LEVEL[prof.music] ? prof.music : MUSIC_LEVEL[s.musicLevel] ? s.musicLevel : 'medium',
   };

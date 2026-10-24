@@ -147,6 +147,7 @@ function aiHtml(a) {
     const m = a.music;
     const t = a.musicTags;
     const chips = [
+      a.generated ? '<span class="tag" title="Produced by ClipForge — never picked over your own music">Made by ClipForge</span>' : '',
       m?.bpm ? `<span class="tag snd" title="Tempo">♩ ${m.bpm} BPM</span>` : '',
       m?.energy ? `<span class="tag ${m.energy === 'high' ? 'q-good' : m.energy === 'medium' ? 'q-ok' : ''}" title="Energy">⚡ ${m.energy}</span>` : '',
       ...(t?.genres || []).slice(0, 1).map((g) => `<span class="tag">${esc(g)}</span>`),
@@ -159,6 +160,7 @@ function aiHtml(a) {
     ? `<span class="tag ${a.quality.score >= 60 ? 'q-good' : a.quality.score >= 35 ? 'q-ok' : 'q-bad'}" title="Measured quality: sharpness, exposure, shake, sound${a.quality.flags.length ? ` — ${esc(a.quality.flags.join(', '))}` : ''}">★ ${a.quality.score}${a.quality.flags.length ? ` · ${esc(a.quality.flags[0])}` : ''}</span>`
     : '';
   const sounds = (a.styleRef ? '<span class="tag ref" title="Used as a style reference — never used as footage">Style reference</span>' : '') +
+    (a.useAsMusic ? '<span class="tag snd" title="Edits can use this video\'s sound as their song">🎵 Used as music</span>' : '') +
     (a.sounds || []).map((x) => `<span class="tag snd" title="Heard in the clip">🔊 ${esc(x)}</span>`).join('');
   if (a.ai.status !== 'done') return q || sounds ? `<div class="tagrow">${q}${sounds}</div>` : '';
   return `<div class="ai-line" title="${esc(a.ai.summary)}">${esc(a.ai.summary)}</div>
@@ -1072,7 +1074,8 @@ function renderViewerActions(a) {
     <span class="spacer"></span>
     ${a && a.kind !== 'audio' && !inProject ? `<label class="sr-only" for="vProject">Project</label><select class="field" id="vProject">${projectOptions(state.jobId || store.get('clipforge:last'))}</select>
       <button class="btn sm" type="button" data-v="add">Add to project</button>` : ''}
-    ${a && a.kind !== 'audio' && a.hasAudio && !inProject ? `<button class="btn sm ghost" type="button" data-v="extract" title="Save this video's sound as a music track in your library">Extract audio → Music</button>` : ''}
+    ${a && a.kind !== 'audio' && a.hasAudio && !inProject ? `<button class="btn sm ghost" type="button" data-v="extract" title="Save this video's sound as a music track in your library">Extract audio → Music</button>
+      <button class="btn sm ${a.useAsMusic ? '' : 'ghost'}" type="button" data-v="music" aria-pressed="${a.useAsMusic}" title="Edits can use this video's sound as their song">${a.useAsMusic ? '🎵 Used as music' : 'Use as music'}</button>` : ''}
     ${a ? `<a class="btn sm ghost" href="${esc(a.downloadUrl)}" download>Download original</a>` : ''}
     ${inProject ? `<button class="btn sm danger" type="button" data-v="unclip">Remove from project</button>` : ''}
     ${a && !inProject ? `<button class="btn sm danger" type="button" data-v="delete">Delete</button>` : ''}`;
@@ -1083,6 +1086,14 @@ $('#vActions').addEventListener('click', async (e) => {
   if (!act) return;
   const a = state.assets.find((x) => x.id === viewer.assetId);
   try {
+    if (act === 'music') {
+      const { asset } = await api(`/api/library/${a.id}`, { method: 'PATCH', body: { useAsMusic: !a.useAsMusic } });
+      Object.assign(a, asset);
+      renderViewerActions(a);
+      renderLibrary();
+      toast(a.useAsMusic ? 'Edits can now use this video\'s sound as their song.' : 'No longer used as music.', 'ok');
+      return;
+    }
     if (act === 'rename') {
       const name = $('#vName').value.trim();
       if (!name || name === a.name) return;
@@ -1669,10 +1680,14 @@ $('#style').addEventListener('change', () => {
 function renderMusicSelect() {
   const sel = $('#music');
   if (!sel) return;
-  const tracks = state.assets.filter((a) => a.kind === 'audio' && a.status === 'ready');
+  const ready = state.assets.filter((a) => a.status === 'ready' && ((a.kind === 'audio' && !a.generated) || (a.kind === 'video' && a.useAsMusic)));
+  const made = state.assets.filter((a) => a.status === 'ready' && a.kind === 'audio' && a.generated);
+  const tracks = ready;
   const want = state.musicWanted || sel.value || 'auto';
+  const opt = (a) => `<option value="${a.id}">${esc(assetTitle(a))}${a.tags.artist && !a.generated ? ` — ${esc(a.tags.artist)}` : ''} (${fmtTime(a.duration)}${a.music?.bpm ? ` · ${a.music.bpm} BPM` : ''})</option>`;
   sel.innerHTML = `<option value="auto">Claude picks from my music (${tracks.length})</option><option value="off">No music</option>` +
-    (tracks.length ? `<optgroup label="Use this track">${tracks.map((a) => `<option value="${a.id}">${esc(assetTitle(a))}${a.tags.artist ? ` — ${esc(a.tags.artist)}` : ''} (${fmtTime(a.duration)}${a.music?.bpm ? ` · ${a.music.bpm} BPM` : ''}${a.musicTags?.moods?.[0] ? ` · ${esc(a.musicTags.moods[0])}` : ''})</option>`).join('')}</optgroup>` : '');
+    (tracks.length ? `<optgroup label="My music">${tracks.map((a) => `<option value="${a.id}">${esc(assetTitle(a))}${a.tags.artist ? ` — ${esc(a.tags.artist)}` : ''} (${fmtTime(a.duration)}${a.music?.bpm ? ` · ${a.music.bpm} BPM` : ''}${a.musicTags?.moods?.[0] ? ` · ${esc(a.musicTags.moods[0])}` : ''})</option>`).join('')}</optgroup>` : '') +
+    (made.length ? `<optgroup label="Made by ClipForge">${made.map(opt).join('')}</optgroup>` : '');
   sel.value = [...sel.options].some((o) => o.value === want) ? want : 'auto';
   $('#musicHint').textContent = sel.value === 'auto' && !tracks.length
     ? ($('#aiMusic')?.checked ? 'No music in your library yet — ClipForge will compose a track for each video (or drop MP3/WAV files on the Library page).' : 'Your library has no music yet — drop MP3/WAV files on the Library page (or import a Drive folder with music).')

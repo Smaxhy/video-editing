@@ -15,6 +15,7 @@ export const PRESETS = {
   lofi: { bpm: 86, swing: 0.6, scale: 'major', prog: [[0, 4, 7, 11], [9, 12, 16, 19], [2, 5, 9, 12], [7, 11, 14, 17]], pattern: 'lofi', root: 57 },
   house: { bpm: 118, swing: 0.5, scale: 'minor', prog: [[0, 3, 7, 10], [8, 12, 15, 19], [3, 7, 10, 14], [10, 14, 17, 21]], pattern: 'house', root: 57 },
   trap: { bpm: 142, swing: 0.5, scale: 'minor', prog: [[0, 3, 7, 12], [8, 12, 15, 20], [5, 8, 12, 17], [7, 10, 14, 19]], pattern: 'trap', root: 53 },
+  quirky: { bpm: 112, swing: 0.56, scale: 'major', prog: [[0, 4, 7, 12], [5, 9, 12, 17], [7, 11, 14, 19], [0, 4, 7, 12]], pattern: 'quirky', root: 60 },
   cinematic: { bpm: 92, swing: 0.5, scale: 'minor', prog: [[0, 7, 12, 15], [8, 15, 20, 24], [3, 10, 15, 19], [10, 17, 22, 26]], pattern: 'cinematic', root: 50 },
 };
 
@@ -23,6 +24,7 @@ export function pickPreset(sound = {}) {
   const t = `${sound?.style || ''} ${sound?.vibe || ''} ${sound?.prompt || ''}`.toLowerCase();
   if (/cinematic|epic|orchestr|emotional|sad|piano|inspir|motivat|documentary|trailer/.test(t)) return 'cinematic';
   if (/trap|drill|phonk|hype|aggress|rap|hip ?hop|808|gym|sport|intense/.test(t)) return 'trap';
+  if (/quirky|funny|comed|meme|playful|silly|goofy|cartoon|pizzicato|mischiev/.test(t)) return 'quirky';
   if (/house|edm|dance|pop|upbeat|happy|energetic|funk|disco|summer|fun/.test(t)) return 'house';
   if (/lo-?fi|chill|calm|relax|cozy|cosy|satisf|soft|acoustic|ambient|study|aesthetic/.test(t)) return 'lofi';
   return sound?.energy === 'high' ? 'trap' : sound?.energy === 'low' ? 'lofi' : 'house';
@@ -145,6 +147,10 @@ export function composeBeat({ preset = 'house', seconds = 30, drop = null, seed 
       // Dark bell plucks on the 8ths.
       for (let k = 0; k < 8; k++) chord(buf, t0 + k * beat / 2, beat * 0.3, [notes[(k * 3) % 4] + 12], { gain: ig * (0.08), bright: 0.5, kind: 'sine', attack: 0.002, release: 0.25 });
       chord(buf, t0, bar, notes, { gain: ig * (full ? 0.05 : 0.07), bright: 0.12, attack: 0.3, release: 0.8 });
+    } else if (P.pattern === 'quirky') {
+      // Pizzicato-style staccato arpeggio, bouncing up and down the chord.
+      const arp = [0, 1, 2, 3, 2, 1, 2, 3];
+      for (let k = 0; k < 8; k++) chord(buf, t0 + k * beat / 2 + swing(k), beat * 0.12, [notes[arp[k]] + 12], { gain: ig * 0.06, bright: 0.6, kind: 'sine', attack: 0.002, release: 0.12 });
     } else {
       // House: off-beat chord stabs (pumping), pad underneath.
       for (let k = 0; k < 4; k++) chord(buf, t0 + k * beat + beat / 2, beat * 0.35, notes, { gain: ig * (full ? 0.09 : 0.06), bright: full ? 0.45 : 0.18, attack: 0.005, release: 0.12 });
@@ -191,6 +197,15 @@ export function composeBeat({ preset = 'house', seconds = 30, drop = null, seed 
         }
         break;
       }
+      case 'quirky':
+        // Boom-chick: bass root / fifth on 1 and 3, claps on 2 and 4, woodblock ticks.
+        kick(buf, t0, 0.7);
+        kick(buf, t0 + beat * 2, 0.6);
+        bass(buf, t0, beat * 0.45, notes[0] - 24, { gain: 0.32 });
+        bass(buf, t0 + beat * 2, beat * 0.45, notes[2] - 24, { gain: 0.3 });
+        [1, 3].forEach((q) => snare(buf, t0 + q * beat, 0.4, r, true));
+        for (let k = 0; k < 8; k++) if (k % 2) add(buf, t0 + k * beat / 2 + swing(k), 0.05, (t) => 0.12 * Math.sin(2 * Math.PI * 1800 * t) * Math.exp(-t * 90));
+        break;
       default: // cinematic: big low hits on 1 and the "and" of 2, toms building, a pulse on 8ths
         kick(buf, t0, 1, true);
         kick(buf, t0 + beat * 1.5, 0.7, true);

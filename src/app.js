@@ -15,11 +15,11 @@ import { spicePlan } from './spice.js';
 import { createFolders } from './folders.js';
 import { smoothSlowMo, rampSlowMo, SLOW } from './slowmo.js';
 import {
-  writeProject, renderProject, makeBlurBackground, aspectMismatch, ensureSeekable, layoutTimeline, prepareMusic,
+  writeProject, renderProject, killStrayRenderers, makeBlurBackground, aspectMismatch, ensureSeekable, layoutTimeline, prepareMusic,
   FORMATS, CAPTION_STYLES, FRAMINGS,
 } from './renderer.js';
 import { compressVideo, SIZE_PRESETS, RENDER_QUALITY } from './compress.js';
-import { run, exists, round, PipelineError } from './util.js';
+import { run, exists, round, PipelineError, killAllChildren } from './util.js';
 import { createAuth } from './auth.js';
 import { createLibrary, VIDEO_EXT, AUDIO_EXT } from './library.js';
 import { createScanner } from './scanner.js';
@@ -1805,6 +1805,10 @@ app.post('/api/cancel/:jobId', async (req, res) => {
   const job = await getJob(req.params.jobId);
   if (!job) return res.status(404).json({ error: 'Unknown project.' });
   job.abort?.abort();
+  // Once no other render is running, sweep render browsers the cancelled one left behind.
+  setTimeout(() => {
+    if (![...jobs.values()].some((j) => j.state === 'running') && !autopilot.busy()) killStrayRenderers();
+  }, 4000).unref();
   res.json({ ok: true });
 });
 
@@ -1985,6 +1989,38 @@ const updater = createUpdater({
 });
 await updater.start();
 autopilot.start();
+
+/** Stop EVERYTHING now: every render, Autopilot, style analysis and their whole process trees. */
+function forceStopAll() {
+  let stopped = 0;
+  for (const job of jobs.values()) {
+    if (job.state !== 'running') continue;
+    job.abort?.abort();
+    stopped++;
+  }
+  if (autopilot.busy()) {
+    autopilot.cancel();
+    stopped++;
+  }
+  const procs = killAllChildren();
+  setTimeout(() => killStrayRenderers(), 3500).unref();
+  return { stopped, processes: procs };
+}
+// POST /api/force-stop — the big red button when a render or Autopilot is stuck.
+app.post('/api/force-stop', (_req, res) => res.json({ ok: true, ...forceStopAll() }));
+// POST /api/update-now — stop everything, pull the newest version (if any) and restart.
+app.post('/api/update-now', async (_req, res) => {
+  forceStopAll();
+  res.json({ ok: true, message: 'Stopping everything and restarting with the newest version…' });
+  setTimeout(() => updater.check({ force: true, restartAnyway: true }).catch((err) => console.error('[update-now]', err.message)), 1500);
+});
+// Ctrl+C / codespace stop: take the render processes down with the server.
+for (const sig of ['SIGTERM', 'SIGINT']) {
+  process.on(sig, () => {
+    killAllChildren();
+    process.exit(0);
+  });
+}
 // Local AI indexing starts 3 minutes after boot, so a restart is never slowed down by it.
 setTimeout(() => ml.start().catch((err) => console.error('  AI index:', err.message)), 3 * 60_000).unref();
 

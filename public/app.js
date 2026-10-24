@@ -1785,7 +1785,25 @@ function syncChangedSettings(r) {
 }
 
 $('#rerender').addEventListener('click', () => start(true));
-$('#cancel').addEventListener('click', () => fetch(`/api/cancel/${state.jobId}`, { method: 'POST' }));
+$('#cancel').addEventListener('click', async () => {
+  const id = state.jobId;
+  $('#cancel').disabled = true;
+  $('#cancel').textContent = 'Cancelling…';
+  try { await api(`/api/cancel/${id}`, { method: 'POST' }); } catch (err) { toast(err.message, 'error'); }
+  // Still running a few seconds later? Offer the hard stop.
+  setTimeout(() => {
+    $('#cancel').disabled = false;
+    $('#cancel').textContent = 'Cancel';
+    if (state.jobId === id && state.running) $('#forceStop').classList.remove('hidden');
+  }, 6000);
+});
+async function forceStop() {
+  try {
+    const r = await api('/api/force-stop', { method: 'POST' });
+    toast(r.stopped || r.processes ? `Stopped everything (${r.processes} running process${r.processes === 1 ? '' : 'es'} killed).` : 'Nothing was running.', 'ok');
+  } catch (err) { toast(err.message, 'error'); }
+}
+$('#forceStop').addEventListener('click', forceStop);
 
 function subscribe() {
   state.es?.close();
@@ -1806,6 +1824,7 @@ function showStatus(s) {
   }
   updateGo();
   $('#cancel').classList.toggle('hidden', !state.running);
+  if (!state.running) $('#forceStop').classList.add('hidden');
   $('#idleCard').classList.toggle('hidden', s.state !== 'idle');
   $('#progressCard').classList.toggle('hidden', s.state !== 'running' && s.state !== 'error');
   const badge = $('#stateBadge');
@@ -2025,7 +2044,8 @@ async function checkVersion() {
   let v;
   try { v = await api('/api/version'); } catch { return; } // server restarting — try again next time
   $('#version').innerHTML = v.version
-    ? `Version ${esc(v.version)}${v.enabled ? ` · updates automatically <button class="btn xs ghost" type="button" id="updateNow">Update now</button>` : ''}${v.error ? `<br>${esc(v.error)}` : ''}`
+    ? `Version ${esc(v.version)}${v.enabled ? ` · updates automatically <button class="btn xs ghost" type="button" id="updateNow">Update now</button>` : ''}${v.error ? `<br>${esc(v.error)}` : ''}
+      <br><button class="btn xs ghost" type="button" id="forceUpdate" title="Stops every render and Autopilot, installs the newest version and restarts">${v.status === 'waiting' ? 'Stop everything &amp; update now' : 'Stop everything &amp; restart'}</button>`
     : '';
   if (!v.version) return;
   if (!runningVersion) { runningVersion = v.version; return; }
@@ -2036,6 +2056,22 @@ async function checkVersion() {
   toast('ClipForge was updated — reload the page when you’re ready to get the new version.', 'ok', 15000);
 }
 setInterval(checkVersion, 60_000);
+document.addEventListener('click', async (e) => {
+  if (!e.target.closest('#forceUpdate')) return;
+  if (!confirm('Stop every render and Autopilot job, install the newest version and restart ClipForge?')) return;
+  try {
+    const r = await api('/api/update-now', { method: 'POST' });
+    toast(r.message, 'ok', 12000);
+  } catch {
+    toast('Restarting — the page reloads in a moment.', 'ok');
+  }
+  // Reload once the server is back.
+  const t0 = Date.now();
+  const wait = setInterval(async () => {
+    if (Date.now() - t0 < 5000) return;
+    try { await api('/api/version'); clearInterval(wait); location.reload(); } catch { /* still restarting */ }
+  }, 2000);
+});
 document.addEventListener('click', async (e) => {
   const b = e.target.closest('#updateNow');
   if (!b) return;

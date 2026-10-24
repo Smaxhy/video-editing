@@ -937,6 +937,15 @@ export function renderWorkers(cpus = os.cpus().length) {
 /**
  * Render projectDir to outputPath with `npx hyperframes render`.
  */
+/**
+ * HyperFrames launches its headless Chrome in a process group of its own, so killing the render
+ * leaves those browsers behind. Sweep them (they are ClipForge's: Chrome from HyperFrames' cache).
+ */
+export async function killStrayRenderers() {
+  if (process.platform === 'win32') return;
+  await run('pkill', ['-KILL', '-f', 'hyperframes/chrome']).catch(() => null);
+}
+
 export async function renderProject({ projectDir, outputPath, quality = 'looks', onProgress, logPath, signal }) {
   await fs.mkdir(path.dirname(outputPath), { recursive: true });
   await fs.rm(outputPath, { force: true });

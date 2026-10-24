@@ -460,8 +460,9 @@ async function runPipeline(job, { prompt, clipIds, settings, reusePlan, revise =
   // Footage analysis: silent ranges (auto-editor / FFmpeg), shot changes (PySceneDetect),
   // face positions (OpenCV, only needed for face-tracked framing). Cached per clip.
   if (settings.framing === 'smart' && !tools.faces) {
-    notes.push('Smart reframing needs OpenCV (pip install "opencv-python-headless<5") — used blur-fill framing instead.');
-    settings = { ...settings, framing: 'blur' };
+    // A full-frame crop looks far more pro than a thin strip on a blurred background.
+    notes.push('Smart reframing needs OpenCV (pip install "opencv-python-headless<5") — used a centred full-frame crop instead.');
+    settings = { ...settings, framing: 'crop' };
   }
   const features = {
     silence: settings.silence,
@@ -626,7 +627,7 @@ async function runPipeline(job, { prompt, clipIds, settings, reusePlan, revise =
       try {
         const out = path.join(ws, 'clipforge-music.m4a');
         const made = await makeBeat({ sound: planned.sound, seconds: longest.total + 3, drop: peak, outFile: out, signal });
-        const label = { lofi: 'lo-fi', house: 'pop / house', trap: 'trap', cinematic: 'cinematic' }[made.preset];
+        const label = { lofi: 'lo-fi', house: 'pop / house', trap: 'trap', quirky: 'quirky / funny', cinematic: 'cinematic' }[made.preset];
         const scanned = await scanMusic(out).catch(() => null);
         await keep(out, { title: `ClipForge ${label} — ${vibe}`, artist: 'ClipForge', genre: label },
           { ...(scanned || { v: 1, energy: 'medium' }), bpm: made.bpm, drop: made.drop }, { bpm: made.bpm, beats: made.beats, downbeats: made.downbeats });

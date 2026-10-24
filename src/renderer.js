@@ -680,17 +680,19 @@ ${fontFaces}
     .pos-center { align-items: center; }
     .pos-bottom { align-items: flex-end; padding-bottom: ${safeBottom + Math.round(140 * u)}px; }
 
-    .ov-hook .main { display: inline-block; background: #fff; color: #0b0b0f; font-size: ${px(tall > 1.1 ? 78 : 70)}; font-weight: 900;
-      line-height: 1.08; letter-spacing: -0.02em; padding: ${px(14)} ${px(30)}; border-radius: ${px(18)}; box-shadow: 0 ${px(10)} ${px(40)} rgba(0,0,0,.35); }
+    .ov-hook .main { display: inline-block; background: #fff; color: #0b0b0f; font-family: ${bodyFont}; font-size: ${px(tall > 1.1 ? 88 : 74)}; font-weight: 900;
+      line-height: 1.06; letter-spacing: -0.02em; padding: ${px(16)} ${px(34)}; border-radius: ${px(20)}; box-shadow: 0 ${px(12)} ${px(44)} rgba(0,0,0,.4); }
     .ov-hook .sub { margin-top: ${px(14)}; font-size: ${px(40)}; font-weight: 700; text-shadow: 0 ${px(2)} ${px(12)} rgba(0,0,0,.7); }
 
     .ov-title .ov-inner { background: radial-gradient(ellipse at center, rgba(0,0,0,.55), rgba(0,0,0,0) 70%); padding: ${px(40)} ${px(60)}; }
     .ov-title .main { font-size: ${px(100)}; font-weight: 800; letter-spacing: -0.02em; line-height: 1.05; text-shadow: 0 ${px(4)} ${px(24)} rgba(0,0,0,.6); }
     .ov-title .sub { margin-top: ${px(18)}; font-size: ${px(40)}; font-weight: 500; opacity: .9; text-shadow: 0 ${px(2)} ${px(12)} rgba(0,0,0,.6); }
 
-    .ov-text .main, .ov-caption .main { display: inline-block; font-size: ${px(52)}; font-weight: 700; line-height: 1.2;
-      background: rgba(0,0,0,.6); padding: ${px(10)} ${px(22)}; border-radius: ${px(10)}; }
-    .ov-text .sub, .ov-caption .sub { margin-top: ${px(10)}; font-size: ${px(32)}; opacity: .9; }
+    /* On-screen text: big, heavy and outlined so it reads on any background (the creator look). */
+    .ov-text .main, .ov-caption .main { display: inline-block; font-family: ${bodyFont}; font-size: ${px(72)}; font-weight: 900; line-height: 1.08;
+      letter-spacing: -0.01em; color: #fff; -webkit-text-stroke: ${px(10)} #000; paint-order: stroke fill; text-shadow: 0 ${px(8)} ${px(24)} rgba(0,0,0,.55); }
+    .ov-text .sub, .ov-caption .sub { margin-top: ${px(12)}; font-family: ${bodyFont}; font-size: ${px(40)}; font-weight: 800; color: #fff;
+      -webkit-text-stroke: ${px(6)} #000; paint-order: stroke fill; }
 
     .ov-lower-third { justify-content: flex-start; align-items: flex-end; padding: 0 0 ${safeBottom + Math.round(200 * u)}px ${px(60)}; }
     .ov-lower-third .ov-inner { text-align: left; border-left: ${px(8)} solid ${accent}; background: linear-gradient(90deg, rgba(10,10,18,.88), rgba(10,10,18,.6));

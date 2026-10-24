@@ -10,6 +10,7 @@ test('the vibe picks a fitting music style', () => {
   assert.equal(pickPreset({ vibe: 'epic emotional story' }), 'cinematic');
   assert.equal(pickPreset({ style: 'upbeat pop' }), 'house');
   assert.equal(pickPreset({ energy: 'low' }), 'lofi');
+  assert.equal(pickPreset({ style: 'quirky pizzicato comedy groove', vibe: 'funny playful chaos' }), 'quirky');
   assert.equal(pickPreset(null), 'house');
 });
 

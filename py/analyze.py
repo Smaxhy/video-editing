@@ -161,7 +161,8 @@ def main():
             result["track"] = track_subject(a.video, 4.0, a.yunet)
         except Exception as e:  # noqa: BLE001
             result["errors"]["track"] = f"{type(e).__name__}: {e}"
-    json.dump(result, sys.stdout)
+    # numpy scalars (YuNet / newer OpenCV return float32) → plain numbers
+    json.dump(result, sys.stdout, default=lambda o: o.item() if hasattr(o, "item") else str(o))
 
 
 if __name__ == "__main__":

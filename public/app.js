@@ -301,6 +301,16 @@ function listenLibrary() {
       if ($('#styleDlg').open) renderStyleDialog();
     } else if (evt.type === 'autopilot') {
       onAutopilot(evt.autopilot);
+    } else if (evt.type === 'links') {
+      const was = new Map((state.linkJobs || []).map((j) => [j.id, j.state]));
+      state.linkJobs = evt.jobs;
+      renderLinkJobs();
+      for (const j of evt.jobs) {
+        if (was.get(j.id) === 'running' && j.state === 'done') {
+          toast(`Saved ${plural(j.done, 'link')}${j.failed.length ? ` — ${j.failed.length} failed: ${j.failed[0].error}` : ''}.`, j.failed.length ? 'error' : 'ok');
+          refreshStorageSoon();
+        }
+      }
     } else if (evt.type === 'folders') {
       loadFolders();
     } else if (evt.type === 'projects') {
@@ -1280,6 +1290,33 @@ function renderFolderHead() {
   }
 }
 
+// ---- Add from links ----------------------------------------------------------
+function renderLinkJobs() {
+  const live = (state.linkJobs || []).filter((j) => j.state === 'running' || j.state === 'queued' || Date.now() - j.createdAt < 10 * 60_000);
+  $('#linkJobs').innerHTML = live.map((j) => `<li class="job"><strong>${j.mode === 'sound' ? 'Sounds' : j.mode === 'both' ? 'Videos + sounds' : 'Videos'} from links</strong>
+    <span class="hint-line">${j.state === 'done' ? `Done — ${j.done}/${j.total} saved${j.failed.length ? `, ${j.failed.length} failed (${esc(j.failed[0].error)})` : ''}` : j.state === 'cancelled' ? 'Cancelled' : esc(j.message || 'Working…')}</span>
+    ${j.state === 'running' ? `<div class="bar"><div style="width:${Math.max(4, (j.done / j.total) * 100)}%"></div></div>` : ''}</li>`).join('');
+}
+$('#openLinks').addEventListener('click', () => {
+  $('#lkFolder').innerHTML = folderOptions(state.folder, 'No folder');
+  $('#lkMsg').textContent = '';
+  $('#linkDlg').showModal();
+  setTimeout(() => $('#lkUrls').focus(), 30);
+});
+$('#linkDlg [data-close]').addEventListener('click', () => $('#linkDlg').close());
+$('#linkForm').addEventListener('submit', async (e) => {
+  e.preventDefault();
+  const mode = $('#linkForm input[name=lkMode]:checked').value;
+  try {
+    const r = await api('/api/library/links', { method: 'POST', body: { urls: $('#lkUrls').value, mode, folder: $('#lkFolder').value || null } });
+    $('#linkDlg').close();
+    $('#lkUrls').value = '';
+    toast(mode === 'reference'
+      ? 'Studying the editing style of those videos — when it’s ready, pick it under Style (it becomes Autopilot’s style too).'
+      : `Saving ${plural(r.job.total, 'link')}…`, 'ok');
+  } catch (err) { $('#lkMsg').textContent = err.message; }
+});
+
 // New / edit folder dialog
 let editingFolder = null;
 function openFolderDialog(folder = null) {
@@ -1623,6 +1660,7 @@ function readSettings() {
     style: $('#style').value || null,
     musicLevel: segValue('musicLevel')[0],
     intensity: segValue('intensity')[0] || 'creator',
+    clipAudio: segValue('clipAudio')[0] || 'auto',
   };
 }
 /** "Pro finishing" switches (all on by default); each maps 1:1 to a server setting. */
@@ -1630,7 +1668,7 @@ const PRO_TOGGLES = $$('#proToggles input[type=checkbox]').map((el) => el.id);
 function applySaved(saved) {
   $('#prompt').value = saved.prompt || '';
   const s = saved.settings || {};
-  for (const k of ['goal', 'formats', 'lengths', 'captions', 'framing', 'size', 'musicLevel', 'intensity']) if (s[k]) setSeg(k, s[k]);
+  for (const k of ['goal', 'formats', 'lengths', 'captions', 'framing', 'size', 'musicLevel', 'intensity', 'clipAudio']) if (s[k]) setSeg(k, s[k]);
   $('#autoFind').checked = s.autoFind === true;
   state.musicWanted = s.music || 'auto';
   renderMusicSelect();
@@ -2142,6 +2180,7 @@ function fillAutoForm(s) {
   $('#autoTrending').checked = s.trendingSound === true;
   $('#autoTrendingWarn').classList.toggle('hidden', s.trendingSound !== true);
   $('#autoIntensity').value = s.intensity || 'creator';
+  $('#autoClipAudio').value = s.clipAudio || 'auto';
   $('#autoMusicEngine').value = s.aiMusic === false ? 'off' : s.musicEngine || 'beat';
   state.autoStyleWanted = s.style || '';
   renderStyleSelects();
@@ -2265,6 +2304,7 @@ async function saveAutopilot() {
         style: $('#autoStyle').value || null,
         trendingSound: $('#autoTrending').checked,
         intensity: $('#autoIntensity').value,
+        clipAudio: $('#autoClipAudio').value,
         aiMusic: $('#autoMusicEngine').value !== 'off',
         musicEngine: $('#autoMusicEngine').value === 'off' ? undefined : $('#autoMusicEngine').value,
       },

@@ -13,6 +13,7 @@ import { detectTools, onPath, OPTIONAL_TOOLS } from './tools.js';
 import { generateEditPlans, GOALS, LENGTHS, PLANNER_MODELS, REVISABLE, INTENSITIES, beatGrid } from './editor.js';
 import { spicePlan } from './spice.js';
 import { createFolders } from './folders.js';
+import { createLinkImports, LINK_MODES } from './links.js';
 import { smoothSlowMo, rampSlowMo, SLOW } from './slowmo.js';
 import {
   writeProject, renderProject, killStrayRenderers, makeBlurBackground, aspectMismatch, ensureSeekable, layoutTimeline, prepareMusic,
@@ -130,6 +131,7 @@ async function extractAudio(id) {
 await library.load();
 const folders = createFolders({ file: path.join(DIRS.library, '.folders.json') });
 await folders.load();
+const links = createLinkImports({ library, toolsDir: TOOLS_DIR, work: path.join(DIRS.workspace, '_links'), onChange: broadcast });
 ml = createMl({
   toolsDir: TOOLS_DIR,
   library,
@@ -560,6 +562,7 @@ async function runPipeline(job, { prompt, clipIds, settings, reusePlan, revise =
       trendingSound: settings.trendingSound,
       aiMusic: !settings.trendingSound && settings.music === 'auto' && settings.aiMusic,
       intensity: settings.intensity,
+      clipAudio: settings.clipAudio,
     };
     // Revision: the user watched the last render and said what to fix — Claude edits that plan.
     if (revise) {
@@ -709,6 +712,16 @@ async function runPipeline(job, { prompt, clipIds, settings, reusePlan, revise =
     } catch (err) {
       notes.push(`Could not find the beat (${err.message}) — cuts left as planned.`);
     }
+  }
+  // Original sound: "off" = a music-only edit (every clip muted), "low" = clip sound as a quiet bed
+  // under the music (talking stays clear).
+  if (settings.clipAudio !== 'auto') {
+    const talkingScene = (sc) => (transcripts[sc.clip]?.words || []).filter((w) => w.end > sc.start && w.start < sc.end).length >= 3;
+    planned.versions = planned.versions.map((v) => ({
+      ...v,
+      plan: { ...v.plan, scenes: v.plan.scenes.map((sc) => ({ ...sc, volume: settings.clipAudio === 'off' ? 0 : talkingScene(sc) ? Math.max(sc.volume, 0.8) : Math.min(sc.volume, 0.12) })) },
+    }));
+    notes.push(settings.clipAudio === 'off' ? 'Music-only edit: every clip’s own sound is muted.' : 'Clip sound turned down under the music (talking kept clear).');
   }
   // Styling pass: styled transitions on beat-landing B-roll cuts, punch-ins between sentences, and a
   // flash + shake on the peak — so "creator"/"max" edits never come out as plain cuts.
@@ -1106,7 +1119,13 @@ async function startPipeline(job, opts) {
 // Each idea becomes its own project ("Autopilot · …") so it can be re-edited by hand later.
 // ---------------------------------------------------------------------------
 
+/** The newest ready style (learned from reference edits), or null. */
+function learnedStyleId() {
+  return styles.list().filter((s) => s.status === 'ready').sort((a, b) => b.createdAt - a.createdAt)[0]?.id || null;
+}
+
 async function renderAutopilotIdea(idea, { prompt, settings, signal, onJob, onProgress }) {
+  if (!settings.style || !styles.get(settings.style)) settings = { ...settings, style: learnedStyleId() };
   const assets = idea.assetIds.map((id) => library.get(id)).filter((a) => a?.kind === 'video' && a.status === 'ready');
   if (!assets.length) throw new PipelineError('The clips picked for this video were deleted from the library.');
   const job = newJob(undefined, cleanText(`Autopilot · ${idea.title}`, 80));
@@ -1156,7 +1175,11 @@ const autopilot = createAutopilot({
   renderIdea: renderAutopilotIdea,
   otherWork: () => ([...jobs.values()].some((j) => j.state === 'running') && 'another video render') || false,
   onChange: broadcast,
-  styleGuide: (id) => (id && styles.get(id) ? styleGuideText(styles.get(id)) : null),
+  // No style picked → the newest style ClipForge learned from the creator's reference edits.
+  styleGuide: (id) => {
+    const sid = (id && styles.get(id) && id) || learnedStyleId();
+    return sid ? styleGuideText(styles.get(sid)) : null;
+  },
   musicTracks: () => musicCandidates().slice(0, 60).map((a) => ({ id: a.id, name: musicName(a), duration: a.duration, heard: musicLine(a.music, a.musicTags), tags: [a.tags?.genre, a.tags?.artist].filter(Boolean).join(' · ') })),
 });
 
@@ -1332,6 +1355,25 @@ app.patch('/api/library/settings', async (req, res) => {
   if (typeof req.body?.shrinkLarge === 'boolean') patch.shrinkLarge = req.body.shrinkLarge;
   if (typeof req.body?.extractAudio === 'boolean') patch.extractAudio = req.body.extractAudio;
   res.json(await library.setSettings(patch));
+});
+
+// POST /api/library/links — { urls, mode: video|sound|both|reference, folder? } saves links into the
+// library (reference = study the editing style of those videos, see /api/styles).
+app.get('/api/library/links', (_req, res) => res.json({ jobs: links.jobs() }));
+app.post('/api/library/links', (req, res, next) => {
+  try {
+    const { urls, mode = 'video', folder = null, name } = req.body || {};
+    if (mode === 'reference') {
+      const list = String(Array.isArray(urls) ? urls.join('\n') : urls || '').match(/https?:\/\/\S+/g) || [];
+      if (!list.length) return res.status(400).json({ error: 'Paste at least one link (https://…).' });
+      return res.status(202).json({ style: styles.create({ name: cleanText(name, 40) || 'Learned from my references', urls: list, assetIds: [] }) });
+    }
+    if (!LINK_MODES.includes(mode)) return res.status(400).json({ error: 'Unknown link mode.' });
+    res.status(202).json({ job: links.add({ urls, mode, folder: folders.has(folder) ? folder : null }) });
+  } catch (err) {
+    if (err.status) return res.status(err.status).json({ error: err.message });
+    next(err);
+  }
 });
 
 // POST /api/library/extract-audio — { assetIds } → each video's sound saved as a music track.
@@ -1744,6 +1786,8 @@ function editSettings(s = {}, autoFind = false) {
     proAudio: s.proAudio !== false,
     trendingSound: s.trendingSound === true,
     aiMusic: s.aiMusic !== false,
+    // The clips' own sound: auto (planner decides per shot), low (a bed under the music), off (music only).
+    clipAudio: ['auto', 'low', 'off'].includes(s.clipAudio) ? s.clipAudio : 'auto',
     musicEngine: s.musicEngine === 'musicgen' ? 'musicgen' : 'beat',
     // Edit intensity: clean (documentary), creator (default — styled like a top creator), max (hype).
     intensity: INTENSITIES.includes(s.intensity) ? s.intensity : prof?.intensity || 'creator',
@@ -1976,6 +2020,7 @@ const updater = createUpdater({
     (cloud.jobs().some((j) => j.state === 'running') && 'a Google Drive import') ||
     (autopilot.busy() && 'Autopilot') ||
     (styles.busy() && 'a style analysis') ||
+    (links.busy() && 'a link download') ||
     false,
   beforeRestart: async () => {
     cloud.shutdown();
@@ -2000,6 +2045,10 @@ function forceStopAll() {
   }
   if (autopilot.busy()) {
     autopilot.cancel();
+    stopped++;
+  }
+  if (links.busy()) {
+    links.cancelAll();
     stopped++;
   }
   const procs = killAllChildren();

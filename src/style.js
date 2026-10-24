@@ -45,7 +45,7 @@ export async function downloadLink(url, dir, { toolsDir, signal }) {
   const r = await run(bin, [
     '--no-playlist', '--no-progress', '--restrict-filenames', '--max-filesize', '400M',
     '-f', 'bv*[ext=mp4][height<=1920]+ba[ext=m4a]/b[ext=mp4]/bv*+ba/b', '--merge-output-format', 'mp4',
-    '-o', path.join(dir, '%(uploader_id|uploader|id)s-%(id)s.%(ext)s'), url,
+    '-o', path.join(dir, '%(title).70B-%(id)s.%(ext)s'), url,
   ], { signal, timeoutMs: 10 * 60_000 });
   const files = (await fs.readdir(dir)).filter((f) => /\.(mp4|mkv|webm|mov)$/i.test(f) && !f.includes('.part'));
   if (r.code !== 0 || !files.length) {

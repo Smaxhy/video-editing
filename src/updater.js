@@ -28,8 +28,19 @@ export function createUpdater({ root, isBusy, beforeRestart, branch = 'main', in
     log(`  Auto-update skipped: ${why}`);
   }
 
-  async function check() {
-    if (!enabled || state.status === 'updating') return state;
+  /**
+   * force: update now even while something is busy (the caller has already stopped it);
+   * restartAnyway: restart even when there is nothing new (unsticks a misbehaving server).
+   */
+  async function check({ force = false, restartAnyway = false } = {}) {
+    if (state.status === 'updating') return state;
+    if (!enabled) {
+      if (restartAnyway) {
+        await beforeRestart();
+        restart();
+      }
+      return state;
+    }
     state.lastCheck = Date.now();
     const f = await git(['fetch', '--quiet', 'origin', branch]);
     if (f.code !== 0) {
@@ -39,6 +50,11 @@ export function createUpdater({ root, isBusy, beforeRestart, branch = 'main', in
     const head = (await git(['rev-parse', 'HEAD'])).stdout.trim();
     const remote = (await git(['rev-parse', `origin/${branch}`])).stdout.trim();
     if (!remote || head === remote || remote === badCommit) {
+      if (restartAnyway) {
+        log('\n  Restarting ClipForge (requested)…');
+        await beforeRestart();
+        restart();
+      }
       if (remote === badCommit) return state;
       state.status = 'idle';
       state.error = null;
@@ -49,7 +65,7 @@ export function createUpdater({ root, isBusy, beforeRestart, branch = 'main', in
       state.error = 'This copy has its own changes, so it is not updated automatically.';
       return state;
     }
-    const busy = isBusy(); // a reason string while something must not be interrupted, else falsy
+    const busy = !force && isBusy(); // a reason string while something must not be interrupted, else falsy
     if (busy) {
       state.status = 'waiting'; // try again next round
       state.error = `Update ready — waiting until ${busy} finishes.`;

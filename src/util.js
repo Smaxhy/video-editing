@@ -17,6 +17,33 @@ export class PipelineError extends Error {
  * onLine is called with every stdout/stderr line as it arrives (for progress parsing).
  * Rejects with { code: 'ENOENT' } when the binary is missing.
  */
+/**
+ * Every running child, so cancel / force stop / shutdown can take down the WHOLE process tree
+ * (HyperFrames' Chrome workers, ffmpeg encoders, Python helpers) — not just the direct child.
+ */
+const live = new Set();
+const isWin = process.platform === 'win32';
+function killTree(child, sig) {
+  if (!child.pid || child.exitCode !== null) return;
+  try {
+    if (isWin) child.kill(sig);
+    else process.kill(-child.pid, sig); // the child leads its own process group
+  } catch {
+    try { child.kill(sig); } catch { /* already gone */ }
+  }
+}
+function stopTree(child) {
+  killTree(child, 'SIGTERM');
+  setTimeout(() => killTree(child, 'SIGKILL'), 3000).unref();
+}
+/** Stop every running child process tree (force stop / update / shutdown). Returns how many. */
+export function killAllChildren() {
+  const n = live.size;
+  for (const c of live) stopTree(c);
+  return n;
+}
+process.on('exit', () => { for (const c of live) killTree(c, 'SIGKILL'); });
+
 export function run(cmd, args, { cwd, input, env, unsetEnv = [], onLine, timeoutMs, signal } = {}) {
   return new Promise((resolve, reject) => {
     const childEnv = { ...process.env, ...env };
@@ -25,7 +52,9 @@ export function run(cmd, args, { cwd, input, env, unsetEnv = [], onLine, timeout
       cwd,
       env: childEnv,
       stdio: ['pipe', 'pipe', 'pipe'],
+      detached: !isWin, // own process group → the whole tree can be stopped
     });
+    live.add(child);
 
     let stdout = '';
     let stderr = '';
@@ -50,20 +79,24 @@ export function run(cmd, args, { cwd, input, env, unsetEnv = [], onLine, timeout
     if (timeoutMs) {
       timer = setTimeout(() => {
         killedForTimeout = true;
-        child.kill('SIGTERM');
-        setTimeout(() => child.kill('SIGKILL'), 5000).unref();
+        stopTree(child);
       }, timeoutMs);
     }
+    const onAbort = () => stopTree(child);
     if (signal) {
-      signal.addEventListener('abort', () => child.kill('SIGTERM'), { once: true });
+      if (signal.aborted) onAbort();
+      else signal.addEventListener('abort', onAbort, { once: true });
     }
 
     child.on('error', (err) => {
       clearTimeout(timer);
+      live.delete(child);
       reject(err);
     });
     child.on('close', (code, sig) => {
       clearTimeout(timer);
+      live.delete(child);
+      signal?.removeEventListener('abort', onAbort);
       for (const stream of ['stdout', 'stderr']) {
         if (onLine && lineBuffers[stream].trim()) onLine(lineBuffers[stream], stream);
       }

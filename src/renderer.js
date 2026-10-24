@@ -722,7 +722,7 @@ ${fontFaces}
     .ov-title .sub { margin-top: ${px(18)}; font-size: ${px(40)}; font-weight: 500; opacity: .9; text-shadow: 0 ${px(2)} ${px(12)} rgba(0,0,0,.6); }
 
     /* On-screen text: big, heavy and outlined so it reads on any background (the creator look). */
-    .ov-text .main, .ov-caption .main { display: inline-block; font-family: ${bodyFont}; font-size: ${px(72)}; font-weight: 900; line-height: 1.08;
+    .ov-text .main, .ov-caption .main { display: inline-block; font-family: ${bodyFont}; font-size: ${px(86)}; font-weight: 900; line-height: 1.06;
       letter-spacing: -0.01em; color: #fff; -webkit-text-stroke: ${px(10)} #000; paint-order: stroke fill; text-shadow: 0 ${px(8)} ${px(24)} rgba(0,0,0,.55); }
     .ov-text .sub, .ov-caption .sub { margin-top: ${px(12)}; font-family: ${bodyFont}; font-size: ${px(40)}; font-weight: 800; color: #fff;
       -webkit-text-stroke: ${px(6)} #000; paint-order: stroke fill; }

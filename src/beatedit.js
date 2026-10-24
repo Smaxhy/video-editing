@@ -37,7 +37,12 @@ export function beatEdit(plan, { beats, drop = null, talking, clipDuration, ener
   if (!beats?.length || beats.length < 8) return { plan, shots: 0 };
   const moments = plan.scenes.filter((s) => !talking(s) && s.end - s.start >= 0.3);
   if (moments.length < 2 || moments.length < plan.scenes.length * 0.7) return { plan, shots: 0 };
-  const b = beatPeriod(beats);
+  // Above ~170 BPM count in half-time (every 2nd beat) — the shots would otherwise be frantic.
+  let b = beatPeriod(beats);
+  if (b < 0.35) {
+    b *= 2;
+    beats = beats.filter((_, i) => i % 2 === 0);
+  }
   const target = total ?? plan.scenes.reduce((n, s) => n + (s.end - s.start) / s.speed, 0);
   const peakIdx = Math.max(0, moments.findIndex((s) => s.peak));
   const hero = moments[peakIdx];

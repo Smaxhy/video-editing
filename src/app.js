@@ -12,6 +12,7 @@ import { analyzeClip, isolateVoice, cutoutImage } from './analysis.js';
 import { detectTools, onPath, OPTIONAL_TOOLS } from './tools.js';
 import { generateEditPlans, GOALS, LENGTHS, PLANNER_MODELS, REVISABLE, INTENSITIES, beatGrid } from './editor.js';
 import { spicePlan } from './spice.js';
+import { createFolders } from './folders.js';
 import { smoothSlowMo, rampSlowMo, SLOW } from './slowmo.js';
 import {
   writeProject, renderProject, makeBlurBackground, aspectMismatch, ensureSeekable, layoutTimeline, prepareMusic,
@@ -127,6 +128,8 @@ async function extractAudio(id) {
   return library.ingest(tmp, { name, size: (await fs.stat(tmp)).size, source: { type: 'extracted', from: id } });
 }
 await library.load();
+const folders = createFolders({ file: path.join(DIRS.library, '.folders.json') });
+await folders.load();
 ml = createMl({
   toolsDir: TOOLS_DIR,
   library,
@@ -183,6 +186,7 @@ function newJob(id = crypto.randomUUID().slice(0, 12), name = '') {
     listeners: new Set(),
     abort: null,
     lastProgressSent: -1,
+    folder: null,
   };
   jobs.set(id, job);
   return job;
@@ -211,6 +215,7 @@ async function getJob(id) {
   job.nextClip = saved.nextClip;
   job.logo = saved.logo || null;
   job.name = saved.name || '';
+  job.folder = saved.folder && folders.has(saved.folder) ? saved.folder : null;
   job.createdAt = saved.createdAt || (await fs.stat(manifest)).mtimeMs;
   if (await exists(resultFile(id))) {
     job.result = JSON.parse(await fs.readFile(resultFile(id), 'utf8'));
@@ -228,6 +233,7 @@ async function saveManifest(job) {
     JSON.stringify(
       {
         name: job.name || '',
+        folder: job.folder || null,
         createdAt: job.createdAt,
         clips: job.clips.map(({ path: _p, ...c }) => c),
         nextClip: job.nextClip,
@@ -268,6 +274,7 @@ const publicProject = (job) => ({
   thumbnail: job.clips[0] ? publicClip(job.id, job.clips[0]).thumbnail : null,
   state: job.state,
   videos: job.result?.variants?.length || 0,
+  folder: job.folder || null,
 });
 
 function snapshot(job) {
@@ -608,6 +615,9 @@ async function runPipeline(job, { prompt, clipIds, settings, reusePlan, revise =
         await fs.writeFile(path.join(library.cacheDir(asset.id), 'beats-v1.json'), JSON.stringify(beats));
       }
       planned.music = { assetId: asset.id, start: 0 };
+      // Remember it in the saved plan, so a re-render reuses this track instead of making another.
+      const saved = JSON.parse(await fs.readFile(planFile, 'utf8').catch(() => 'null'));
+      if (saved) await fs.writeFile(planFile, JSON.stringify({ ...saved, music: planned.music }, null, 2));
     };
     if (settings.musicEngine === 'musicgen' && !musicgenFailed) {
       setStep(job, 'plan', 'active', 'Composing music for the vibe with MusicGen (the first time also downloads the model)…', 0.36);
@@ -1074,6 +1084,8 @@ async function renderAutopilotIdea(idea, { prompt, settings, signal, onJob, onPr
   const assets = idea.assetIds.map((id) => library.get(id)).filter((a) => a?.kind === 'video' && a.status === 'ready');
   if (!assets.length) throw new PipelineError('The clips picked for this video were deleted from the library.');
   const job = newJob(undefined, cleanText(`Autopilot · ${idea.title}`, 80));
+  job.folder = (await folders.ensure('Autopilot', '#06b6d4')).id;
+  broadcast({ type: 'folders' });
   addAssetClips(job, assets);
   await saveManifest(job);
   onJob(job.id);
@@ -1453,6 +1465,7 @@ app.get('/api/projects', async (_req, res) => {
 
 app.post('/api/projects', async (req, res) => {
   const job = newJob(undefined, cleanText(req.body?.name, 80));
+  if (folders.has(req.body?.folder)) job.folder = req.body.folder;
   await saveManifest(job);
   res.status(201).json({ project: publicProject(job) });
 });
@@ -1460,9 +1473,79 @@ app.post('/api/projects', async (req, res) => {
 app.patch('/api/projects/:jobId', async (req, res) => {
   const job = await getJob(req.params.jobId);
   if (!job) return res.status(404).json({ error: 'Unknown project.' });
-  job.name = cleanText(req.body?.name, 80);
+  if (req.body?.name !== undefined) job.name = cleanText(req.body.name, 80);
+  if (req.body?.folder !== undefined) {
+    if (req.body.folder !== null && !folders.has(req.body.folder)) return res.status(400).json({ error: 'That folder no longer exists.' });
+    job.folder = req.body.folder;
+  }
   await saveManifest(job);
+  broadcast({ type: 'projects' });
   res.json({ project: publicProject(job) });
+});
+
+// ---- folders -------------------------------------------------------------------
+// A folder holds projects and library items; deleting one leaves its contents unfiled.
+
+async function folderList() {
+  const projects = await allProjects();
+  const assets = library.list();
+  return folders.list().map((f) => ({
+    ...f,
+    projects: projects.filter((j) => j.folder === f.id).length,
+    items: assets.filter((a) => a.folder === f.id).length,
+  }));
+}
+app.get('/api/folders', async (_req, res) => res.json({ folders: await folderList() }));
+app.post('/api/folders', async (req, res, next) => {
+  try {
+    const folder = await folders.create(req.body || {});
+    broadcast({ type: 'folders' });
+    res.status(201).json({ folder, folders: await folderList() });
+  } catch (err) {
+    if (err.status) return res.status(err.status).json({ error: err.message });
+    next(err);
+  }
+});
+app.patch('/api/folders/:id', async (req, res, next) => {
+  try {
+    const folder = await folders.update(req.params.id, req.body || {});
+    if (!folder) return res.status(404).json({ error: 'That folder no longer exists.' });
+    broadcast({ type: 'folders' });
+    res.json({ folder, folders: await folderList() });
+  } catch (err) {
+    if (err.status) return res.status(err.status).json({ error: err.message });
+    next(err);
+  }
+});
+app.delete('/api/folders/:id', async (req, res) => {
+  const id = req.params.id;
+  if (!(await folders.remove(id))) return res.status(404).json({ error: 'That folder no longer exists.' });
+  for (const job of await allProjects()) {
+    if (job.folder !== id) continue;
+    job.folder = null;
+    await saveManifest(job);
+  }
+  for (const a of library.list()) if (a.folder === id) await library.setFields(a.id, { folder: null });
+  broadcast({ type: 'folders' });
+  broadcast({ type: 'projects' });
+  res.json({ folders: await folderList() });
+});
+// POST /api/folders/move — { folder: id | null, projectIds?: [...], assetIds?: [...] }
+app.post('/api/folders/move', async (req, res) => {
+  const folder = req.body?.folder ?? null;
+  if (folder !== null && !folders.has(folder)) return res.status(400).json({ error: 'That folder no longer exists.' });
+  const projectIds = Array.isArray(req.body?.projectIds) ? req.body.projectIds.slice(0, 500) : [];
+  const assetIds = Array.isArray(req.body?.assetIds) ? req.body.assetIds.slice(0, 2000) : [];
+  for (const id of projectIds) {
+    const job = await getJob(id);
+    if (!job) continue;
+    job.folder = folder;
+    await saveManifest(job);
+  }
+  for (const id of assetIds) if (library.get(id)) await library.setFields(id, { folder });
+  broadcast({ type: 'folders' });
+  if (projectIds.length) broadcast({ type: 'projects' });
+  res.json({ folders: await folderList() });
 });
 
 // POST /api/projects/:jobId/clips — { assetIds: [...] } adds library videos (in that order).
@@ -1872,6 +1955,21 @@ await updater.start();
 autopilot.start();
 // Local AI indexing starts 3 minutes after boot, so a restart is never slowed down by it.
 setTimeout(() => ml.start().catch((err) => console.error('  AI index:', err.message)), 3 * 60_000).unref();
+
+// One-time: file the Autopilot projects made before folders existed into the "Autopilot" folder.
+(async () => {
+  const flag = path.join(DIRS.library, '.folders-autopilot-v1');
+  if (await exists(flag)) return;
+  const auto = (await allProjects()).filter((j) => !j.folder && /^Autopilot · /.test(j.name || ''));
+  if (auto.length) {
+    const f = await folders.ensure('Autopilot', '#06b6d4');
+    for (const j of auto) {
+      j.folder = f.id;
+      await saveManifest(j);
+    }
+  }
+  await fs.writeFile(flag, new Date().toISOString());
+})().catch((err) => console.error('[folders]', err.message));
 
 const server = app.listen(PORT, HOST, () => {
   console.log(`\n  ClipForge running at http://${LOOPBACK ? 'localhost' : '127.0.0.1'}:${PORT}`);

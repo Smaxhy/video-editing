@@ -31,6 +31,8 @@ const state = {
   assets: [],
   storage: null,
   projects: [],
+  folders: [],
+  folder: null, // the folder being viewed (#/folder/<id>)
   selected: new Set(),
   scanner: null,
   cloud: { available: false, remotes: [], connect: { status: 'idle' }, jobs: [] },
@@ -168,7 +170,7 @@ function assetCard(a) {
   return `<li class="asset${sel ? ' selected' : ''}" data-id="${a.id}">
     <label class="sel"><input type="checkbox" data-select ${sel ? 'checked' : ''} aria-label="Select ${esc(a.name)}" /></label>
     ${thumbHtml(a, { previewLabel: `Preview ${a.name}`, status: assetStatus(a) })}
-    <div class="info"><div class="name" title="${esc(a.name)}">${esc(assetTitle(a))}</div><div class="sub">${esc(assetSub(a))}</div>${aiHtml(a)}</div>
+    <div class="info"><div class="name" title="${esc(a.name)}">${esc(assetTitle(a))}</div><div class="sub">${esc(assetSub(a))}</div>${a.folder && !state.folder && folderName(a.folder) ? `<div class="in-folder"><span class="dot" style="background:${esc(state.folders.find((f) => f.id === a.folder).color)}" aria-hidden="true"></span>${esc(folderName(a.folder))}</div>` : ''}${aiHtml(a)}</div>
   </li>`;
 }
 
@@ -183,11 +185,12 @@ function visibleAssets(query, sort, filter = 'all') {
     audio: (a) => a.kind === 'audio',
     unscanned: (a) => a.kind === 'video' && a.ai.status !== 'done',
   }[filter] || (() => true);
-  const list = state.assets.filter((a) => keep(a) && words.every((w) => haystack(a).includes(w)));
+  const inFolder = (a) => !state.folder || state.view !== 'library' || a.folder === state.folder;
+  const list = state.assets.filter((a) => keep(a) && inFolder(a) && words.every((w) => haystack(a).includes(w)));
   // Search by meaning (local CLIP model): add the best visual matches and put them first.
   const sem = state.semantic?.q === query.trim() ? state.semantic.rank : null;
   if (sem) {
-    for (const a of state.assets) if (keep(a) && sem.has(a.id) && !list.includes(a)) list.push(a);
+    for (const a of state.assets) if (keep(a) && inFolder(a) && sem.has(a.id) && !list.includes(a)) list.push(a);
     return list.sort((x, y) => (sem.has(x.id) ? sem.get(x.id) : 1e9) - (sem.has(y.id) ? sem.get(y.id) : 1e9));
   }
   const by = {
@@ -201,6 +204,7 @@ function visibleAssets(query, sort, filter = 'all') {
 }
 
 function renderLibrary() {
+  renderFolderHead();
   const list = visibleAssets($('#libSearch').value, $('#libSort').value, $('#libFilter').value);
   const grid = $('#assetGrid');
   const focusId = document.activeElement?.closest?.('.asset')?.dataset.id;
@@ -208,6 +212,7 @@ function renderLibrary() {
   grid.innerHTML = list.map(assetCard).join('');
   if (focusId) $(`.asset[data-id="${focusId}"] ${focusSel}`, grid)?.focus();
   $('#libEmpty').classList.toggle('hidden', list.length > 0 || state.assets.length === 0);
+  $('#libEmpty').lastChild.textContent = state.folder ? 'Nothing in this folder yet — upload here, or select library items and “Move to folder”.' : 'No videos match.';
   $('#libDrop').classList.toggle('compact', state.assets.length > 0);
   $('#libDrop strong').textContent = state.assets.length ? 'Drop more videos or music anywhere on this page' : 'Drop videos or music anywhere on this page';
   $('#libCount').textContent = state.assets.length || '';
@@ -294,6 +299,10 @@ function listenLibrary() {
       if ($('#styleDlg').open) renderStyleDialog();
     } else if (evt.type === 'autopilot') {
       onAutopilot(evt.autopilot);
+    } else if (evt.type === 'folders') {
+      loadFolders();
+    } else if (evt.type === 'projects') {
+      loadProjects();
     } else if (evt.type === 'connect') {
       state.cloud.connect = evt.connect;
       if (evt.connect.status === 'done') loadCloud().then(() => toast('Google Drive connected.', 'ok'));
@@ -579,7 +588,20 @@ function renderSelbar() {
   if (!n) return;
   $('#selCount').textContent = `${plural(n, 'video')} selected`;
   $('#selProject').innerHTML = projectOptions(state.jobId || store.get('clipforge:last'));
+  $('#selFolder').innerHTML = folderOptions(state.folder, 'No folder');
 }
+$('#selMove').addEventListener('click', async () => {
+  const assetIds = [...state.selected];
+  const folder = $('#selFolder').value || null;
+  try {
+    const data = await api('/api/folders/move', { method: 'POST', body: { folder, assetIds } });
+    for (const a of state.assets) if (state.selected.has(a.id)) a.folder = folder;
+    state.selected.clear();
+    onFolders(data.folders);
+    renderLibrary();
+    toast(folder ? `Moved ${plural(assetIds.length, 'item')} to “${folderName(folder)}”.` : `Took ${plural(assetIds.length, 'item')} out of the folder.`, 'ok');
+  } catch (err) { toast(err.message, 'error'); }
+});
 $('#selClear').addEventListener('click', () => { state.selected.clear(); renderLibrary(); });
 $('#selAdd').addEventListener('click', async () => {
   const ids = visibleAssets('', $('#libSort').value, 'video').map((a) => a.id).filter((id) => state.selected.has(id));
@@ -668,7 +690,7 @@ function addFiles(fileList, projectId = null) {
   if (skipped.length) toast(`Skipped ${plural(skipped.length, 'file')} that aren't videos: ${skipped.slice(0, 5).map((f) => f.name).join(', ')}${skipped.length > 5 ? '…' : ''}`, 'error');
   if (!ok.length) return;
   for (const file of ok) {
-    const u = { key: `u${++uploadSeq}`, file, projectId, status: 'queued', sent: 0, rate: 0, poster: null, error: null, tus: null };
+    const u = { key: `u${++uploadSeq}`, file, projectId, folder: state.view === 'library' ? state.folder : state.project?.folder || null, status: 'queued', sent: 0, rate: 0, poster: null, error: null, tus: null };
     uploads.push(u);
     makePoster(u);
   }
@@ -753,6 +775,11 @@ function startUpload(u) {
 
 async function finishUpload(u, asset) {
   uploads.splice(uploads.indexOf(u), 1);
+  // Uploaded inside a folder (or into a project that lives in one): file it there.
+  if (asset && u.folder && state.folders.some((f) => f.id === u.folder)) {
+    asset.folder = u.folder;
+    api('/api/folders/move', { method: 'POST', body: { folder: u.folder, assetIds: [asset.id] } }).then((d) => onFolders(d.folders)).catch(() => {});
+  }
   if (asset && !state.assets.some((a) => a.id === asset.id)) state.assets.push(asset);
   renderLibrary();
   renderUploads();
@@ -1159,16 +1186,150 @@ async function loadProjects() {
   } catch { return; }
   renderProjects();
 }
-function renderProjects() {
-  const ul = $('#projectList');
-  ul.innerHTML = state.projects.length ? state.projects.map((p) => `
+const projectLink = (p) => `
     <li><a class="proj-link" href="#/project/${esc(p.id)}" ${p.id === state.jobId && state.view === 'project' ? 'aria-current="page"' : ''}>
       <span class="pt" aria-hidden="true" ${p.thumbnail ? `style="background-image:url('${esc(p.thumbnail)}')"` : ''}></span>
       <span style="min-width:0"><span class="pn" style="display:block">${esc(p.name)}</span>
         <span class="pm">${p.state === 'running' ? '<span class="live" aria-hidden="true"></span>Rendering' : `${plural(p.clips, 'clip')}${p.videos ? ` · ${plural(p.videos, 'video')}` : ''}`}</span></span>
-    </a></li>`).join('') : '<li class="empty-note">No projects yet.</li>';
+    </a></li>`;
+const filed = (p) => p.folder && state.folders.some((f) => f.id === p.folder);
+function renderProjects() {
+  const loose = state.projects.filter((p) => !filed(p));
+  $('#projectList').innerHTML = loose.length ? loose.map(projectLink).join('')
+    : `<li class="empty-note">${state.projects.length ? 'Every project is in a folder.' : 'No projects yet.'}</li>`;
+  renderFolders();
   if (state.selected.size) renderSelbar();
+  if (state.view === 'library' && state.folder) renderFolderHead();
 }
+
+// ---------------------------------------------------------------------------
+// Folders: organise projects and library items (videos, music)
+// ---------------------------------------------------------------------------
+const openFolders = new Set(store.get('clipforge:openFolders') || []);
+const folderName = (id) => state.folders.find((f) => f.id === id)?.name || '';
+function folderOptions(selected, none = 'No folder') {
+  return `<option value="">${esc(none)}</option>` + state.folders.map((f) => `<option value="${esc(f.id)}" ${f.id === selected ? 'selected' : ''}>${esc(f.name)}</option>`).join('');
+}
+async function loadFolders() {
+  try { onFolders((await api('/api/folders')).folders); } catch {}
+}
+function onFolders(list) {
+  state.folders = list;
+  renderProjects();
+  if (state.view === 'project' && state.project) $('#projFolder').innerHTML = folderOptions(state.project.folder);
+  if (state.selected.size) renderSelbar();
+  if (state.view === 'library' && state.folder && !list.some((f) => f.id === state.folder)) location.hash = '#/library';
+}
+function renderFolders() {
+  const ul = $('#folderList');
+  if (!ul) return;
+  ul.innerHTML = state.folders.length ? state.folders.map((f) => {
+    const inside = state.projects.filter((p) => p.folder === f.id);
+    const open = openFolders.has(f.id);
+    const here = state.view === 'library' && state.folder === f.id;
+    return `<li class="folder${open ? ' open' : ''}">
+      <div class="folder-row">
+        <button class="caret" type="button" data-toggle-folder="${esc(f.id)}" aria-expanded="${open}" aria-label="${open ? 'Hide' : 'Show'} projects in ${esc(f.name)}" ${inside.length ? '' : 'disabled'}>▸</button>
+        <a class="folder-link" href="#/folder/${esc(f.id)}" ${here ? 'aria-current="page"' : ''}>
+          <span class="dot" style="background:${esc(f.color)}" aria-hidden="true"></span>
+          <span class="fn">${esc(f.name)}</span>
+          <span class="fc">${f.projects + f.items || ''}</span>
+        </a>
+      </div>
+      ${open && inside.length ? `<ul class="projects nested">${inside.map(projectLink).join('')}</ul>` : ''}
+    </li>`;
+  }).join('') : '<li class="empty-note">Group projects, videos and music — e.g. per client or series.</li>';
+}
+$('#folderList').addEventListener('click', (e) => {
+  const t = e.target.closest('[data-toggle-folder]');
+  if (!t) return;
+  const id = t.dataset.toggleFolder;
+  if (openFolders.has(id)) openFolders.delete(id);
+  else openFolders.add(id);
+  store.set('clipforge:openFolders', [...openFolders]);
+  renderFolders();
+});
+
+/** Library view header: the whole library, or one folder with its projects. */
+function renderFolderHead() {
+  const f = state.folder && state.folders.find((x) => x.id === state.folder);
+  $('#libTitle').innerHTML = f ? `<span class="dot big" style="background:${esc(f.color)}" aria-hidden="true"></span>${esc(f.name)}` : 'Library';
+  $('#libIntro').textContent = f
+    ? 'Everything in this folder. Uploads you drop here are filed here; select library items and use “Move to folder” to add more.'
+    : "Everything you upload or import stays here. Claude watches each video so you can search by what's in it — and let it pick clips for you.";
+  $('#folderActs').classList.toggle('hidden', !f);
+  const inside = f ? state.projects.filter((p) => p.folder === f.id) : [];
+  $('#folderProjects').classList.toggle('hidden', !f);
+  if (f) {
+    $('#fpGrid').innerHTML = inside.length ? inside.map((p) => `<li><a class="fp-card" href="#/project/${esc(p.id)}">
+        <span class="pt" aria-hidden="true" ${p.thumbnail ? `style="background-image:url('${esc(p.thumbnail)}')"` : ''}></span>
+        <span class="pn">${esc(p.name)}</span>
+        <span class="pm">${p.state === 'running' ? 'Rendering…' : `${plural(p.clips, 'clip')}${p.videos ? ` · ${plural(p.videos, 'video')}` : ''}`}</span>
+      </a></li>`).join('') : '<li class="empty-note">No projects here yet — “New project here”, or pick this folder on a project page.</li>';
+  }
+}
+
+// New / edit folder dialog
+let editingFolder = null;
+function openFolderDialog(folder = null) {
+  editingFolder = folder;
+  $('#fdTitle').textContent = folder ? 'Edit folder' : 'New folder';
+  $('#fdSave').textContent = folder ? 'Save' : 'Create folder';
+  $('#fdName').value = folder?.name || '';
+  $('#fdMsg').textContent = '';
+  const colors = ['#7c5cff', '#22c55e', '#f59e0b', '#ef4444', '#06b6d4', '#ec4899', '#a3a3a3'];
+  const pick = folder?.color || colors[state.folders.length % colors.length];
+  $('#fdColors').innerHTML = colors.map((c) => `<label class="sw"><input type="radio" name="fdColor" value="${c}" ${c === pick ? 'checked' : ''} /><span style="background:${c}" aria-label="${c}"></span></label>`).join('');
+  $('#folderDlg').showModal();
+  setTimeout(() => $('#fdName').focus(), 30);
+}
+$('#newFolder').addEventListener('click', () => openFolderDialog());
+$('#folderEdit').addEventListener('click', () => openFolderDialog(state.folders.find((f) => f.id === state.folder)));
+$('#folderDlg [data-close]').addEventListener('click', () => $('#folderDlg').close());
+$('#folderForm').addEventListener('submit', async (e) => {
+  e.preventDefault();
+  const body = { name: $('#fdName').value, color: $('#fdColors input:checked')?.value };
+  try {
+    const data = editingFolder
+      ? await api(`/api/folders/${editingFolder.id}`, { method: 'PATCH', body })
+      : await api('/api/folders', { method: 'POST', body });
+    $('#folderDlg').close();
+    onFolders(data.folders);
+    if (!editingFolder) location.hash = `#/folder/${data.folder.id}`;
+    else renderLibrary();
+  } catch (err) { $('#fdMsg').textContent = err.message; }
+});
+$('#folderDelete').addEventListener('click', async () => {
+  const f = state.folders.find((x) => x.id === state.folder);
+  if (!f || !confirm(`Delete the folder “${f.name}”? Its projects, videos and music are kept — they just leave the folder.`)) return;
+  try {
+    const data = await api(`/api/folders/${f.id}`, { method: 'DELETE' });
+    for (const a of state.assets) if (a.folder === f.id) a.folder = null;
+    for (const p of state.projects) if (p.folder === f.id) p.folder = null;
+    location.hash = '#/library';
+    onFolders(data.folders);
+    toast(`Deleted the folder “${f.name}”.`, 'ok');
+  } catch (err) { toast(err.message, 'error'); }
+});
+$('#folderNewProject').addEventListener('click', async () => {
+  try {
+    const { project } = await api('/api/projects', { method: 'POST', body: { folder: state.folder } });
+    await loadProjects();
+    loadFolders();
+    location.hash = `#/project/${project.id}`;
+    setTimeout(() => $('#projName').focus(), 50);
+  } catch (err) { toast(err.message, 'error'); }
+});
+$('#projFolder').addEventListener('change', async () => {
+  try {
+    const folder = $('#projFolder').value || null;
+    const { project } = await api(`/api/projects/${state.jobId}`, { method: 'PATCH', body: { folder } });
+    state.project = project;
+    await loadProjects();
+    loadFolders();
+    announce(folder ? `Moved to ${folderName(folder)}.` : 'Removed from the folder.');
+  } catch (err) { toast(err.message, 'error'); }
+});
 
 $('#newProject').addEventListener('click', async () => {
   try {
@@ -1185,7 +1346,7 @@ function setView(view) {
   $('#projectView').classList.toggle('hidden', view !== 'project');
   $('#autoView').classList.toggle('hidden', view !== 'autopilot');
   for (const [id, v] of [['#navLibrary', 'library'], ['#navAuto', 'autopilot']]) {
-    if (view === v) $(id).setAttribute('aria-current', 'page');
+    if (view === v && !(v === 'library' && state.folder)) $(id).setAttribute('aria-current', 'page');
     else $(id).removeAttribute('aria-current');
   }
   document.body.classList.remove('nav-open');
@@ -1196,7 +1357,15 @@ function setView(view) {
 let firstRoute = true;
 async function route() {
   const m = location.hash.match(/^#\/project\/([\w-]+)$/);
-  if (m) {
+  const fm = location.hash.match(/^#\/folder\/([\w-]+)$/);
+  state.folder = fm ? fm[1] : null;
+  if (fm) {
+    state.es?.close();
+    state.jobId = null;
+    setView('library');
+    document.title = `${folderName(fm[1]) || 'Folder'} · ClipForge`;
+    renderLibrary();
+  } else if (m) {
     await openProject(m[1]);
   } else if (location.hash === '#/autopilot') {
     state.es?.close();
@@ -1209,6 +1378,7 @@ async function route() {
     state.es?.close();
     state.jobId = null;
     setView('library');
+    renderLibrary();
     document.title = 'Library · ClipForge';
     store.set('clipforge:route', 'library');
   }
@@ -1250,6 +1420,7 @@ async function openProject(id) {
   document.title = `${data.project.name} · ClipForge`;
   $('#projH1').textContent = `Project: ${data.project.name}`;
   $('#projName').value = data.project.name === 'Untitled project' ? '' : data.project.name;
+  $('#projFolder').innerHTML = folderOptions(data.project.folder);
   if (switching) {
     state.shown = null;
     state.lastState = null;
@@ -2201,7 +2372,7 @@ async function init() {
   pollActivity();
   api('/api/scanner').then((sc) => { state.scanner = sc; renderScanBar(); }).catch(() => {});
   api('/api/library/settings').then((ls) => { $('#shrinkLarge').checked = ls.shrinkLarge; $('#extractAudio').checked = ls.extractAudio === true; }).catch(() => {});
-  await Promise.all([loadLibrary().catch((err) => toast(err.message, 'error')), loadProjects()]);
+  await Promise.all([loadLibrary().catch((err) => toast(err.message, 'error')), loadProjects(), loadFolders()]);
   if (!booted) { listenLibrary(); booted = true; }
   showInterrupted();
   if (!location.hash) {

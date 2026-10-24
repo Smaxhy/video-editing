@@ -175,7 +175,22 @@
               <option value="off">Never</option>
             </select>
           </label>
+          <label>Edit intensity
+            <select class="field" id="autoIntensity">
+              <option value="creator">Creator — styled transitions, punch-ins, sound design</option>
+              <option value="max">Max — hype edit, styled cuts on most beats</option>
+              <option value="clean">Clean — straight cuts</option>
+            </select>
+          </label>
+          <label>Music when the library has none that fits
+            <select class="field" id="autoMusicEngine">
+              <option value="beat">ClipForge music — instant, drop on the peak, free to use</option>
+              <option value="musicgen">MusicGen AI — slower, non-commercial use only</option>
+              <option value="off">No music</option>
+            </select>
+          </label>
           <label class="switch" style="align-self:center"><input type="checkbox" id="autoTrending" role="switch" /><span>I'll add trending sounds in the app (no music in the files)</span></label>
+          <p class="hint-line warn-line hidden" id="autoTrendingWarn">⚠ Trending-sound mode is on: videos are exported <strong>without music</strong> so you can add a sound in TikTok/Instagram. Switch it off to get music in the files.</p>
           <label>Voice
             <select class="field" id="autoVoice"></select>
           </label>
@@ -287,8 +302,12 @@
                   <button type="button" data-v="medium" aria-pressed="true">Medium</button>
                   <button type="button" data-v="high">Loud</button>
                 </div>
-                <label class="tg" style="align-items:center;width:100%"><input type="checkbox" id="aiMusic" checked /><span>AI music when nothing fits
-                  <small>No track in your library that fits the vibe? ClipForge composes one on this machine (MusicGen, free for non-commercial use) and saves it to your music.</small></span></label>
+                <label class="tg" style="align-items:center;width:100%"><input type="checkbox" id="aiMusic" checked /><span>Make music when nothing fits
+                  <small>No track in your library that fits the vibe? ClipForge produces one for this edit — drop on the peak, saved to your music.</small></span></label>
+                <select id="musicEngine" aria-label="Music maker">
+                  <option value="beat">ClipForge music — instant, free to use</option>
+                  <option value="musicgen">MusicGen AI — slower, non-commercial only</option>
+                </select>
                 <label class="tg" style="align-items:center;width:100%"><input type="checkbox" id="trendingSound" /><span>I'll add a trending sound in TikTok/Instagram
                   <small>Exports without background music (trending sounds are licensed inside the apps). Cuts are paced to a beat — pick one of your tracks above to cut to its exact rhythm.</small></span></label>
                 <small class="hint-line" id="musicHint"></small>

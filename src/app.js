@@ -36,6 +36,7 @@ import { VOICES, VOICEOVER_MODES, synthesize, scheduleLines, estimateWords, mixN
 import { createMl } from './ml.js';
 import { musicLine, alignedStart, scanMusic } from './musicscan.js';
 import { generateMusic } from './musicgen.js';
+import { makeBeat } from './beatmaker.js';
 import { ensureYunet } from './reframe.js';
 import { createStyles, styleGuideText } from './style.js';
 import { Server as TusServer } from '@tus/server';
@@ -87,6 +88,7 @@ const broadcast = (evt) => {
 };
 let scanner = null;
 let ml = null;
+let musicgenFailed = false;
 const jobs = new Map(); // project id → job (see the job store below)
 const library = createLibrary({
   dir: DIRS.library,
@@ -589,25 +591,50 @@ async function runPipeline(job, { prompt, clipIds, settings, reusePlan, revise =
     if (removed >= 0.3) notes.push(`Auto-tighten removed ${removed.toFixed(1)} s of pauses and filler words.`);
   }
   if (settings.trendingSound) planned.music = null;
-  // No usable music in the library: compose a track for the vibe on this machine (MusicGen, no API)
-  // and keep it in the library for next time.
+  // No usable music in the library: make a track for the vibe on this machine, and keep it in the
+  // library. MusicGen (real-sounding, slower, non-commercial) first; ClipForge's own beat maker
+  // (instant, arranged so the drop hits the edit's peak) as the guaranteed fallback.
   if (!planned.music && settings.music === 'auto' && !settings.trendingSound && settings.aiMusic) {
-    const longest = Math.max(...planned.versions.map((v) => layoutTimeline(v.plan).total));
-    setStep(job, 'plan', 'active', 'Composing music for the vibe with local AI (the first time also downloads the model)…', 0.36);
-    try {
-      const out = path.join(ws, 'ai-music.m4a');
-      const made = await generateMusic({ toolsDir: TOOLS_DIR, sound: planned.sound, seconds: longest + 1, outFile: out, signal });
-      const vibe = planned.sound?.vibe || 'background';
-      const asset = await library.ingest(out, { name: `AI music — ${vibe}.m4a`, size: (await fs.stat(out)).size });
-      await library.setFields(asset.id, {
-        tags: { title: `AI music — ${vibe}`, artist: 'ClipForge AI (MusicGen)', genre: planned.sound?.style || '' },
-        music: await scanMusic(library.sourcePath(asset.id)).catch(() => null),
-      });
+    const lays = planned.versions.map((v) => layoutTimeline(v.plan));
+    const longest = lays.reduce((a, b) => (b.total > a.total ? b : a));
+    const peak = longest.scenes.find((sc) => sc.peak)?.tlStart ?? null;
+    const vibe = planned.sound?.vibe || 'background';
+    const keep = async (file, tags, music, beats) => {
+      const asset = await library.ingest(file, { name: `${tags.title}.m4a`, size: (await fs.stat(file)).size });
+      await library.setFields(asset.id, { tags, music });
+      if (beats) {
+        await fs.mkdir(library.cacheDir(asset.id), { recursive: true });
+        await fs.writeFile(path.join(library.cacheDir(asset.id), 'beats-v1.json'), JSON.stringify(beats));
+      }
       planned.music = { assetId: asset.id, start: 0 };
-      notes.push(`No music track fit, so ClipForge composed one on this machine: "${made.prompt}" (MusicGen, free for non-commercial use). It's saved in your music library.`);
-    } catch (err) {
-      if (signal.aborted) throw err;
-      notes.push(`Could not compose AI music (${err.message}). Add MP3s to your library for background music.`);
+    };
+    if (settings.musicEngine === 'musicgen' && !musicgenFailed) {
+      setStep(job, 'plan', 'active', 'Composing music for the vibe with MusicGen (the first time also downloads the model)…', 0.36);
+      try {
+        const out = path.join(ws, 'ai-music.m4a');
+        const made = await generateMusic({ toolsDir: TOOLS_DIR, sound: planned.sound, seconds: longest.total + 1, outFile: out, signal });
+        await keep(out, { title: `AI music — ${vibe}`, artist: 'ClipForge AI (MusicGen)', genre: planned.sound?.style || '' }, await scanMusic(out).catch(() => null));
+        notes.push(`Composed the music with MusicGen: "${made.prompt}" (free for non-commercial use). Saved to your music library.`);
+      } catch (err) {
+        if (signal.aborted) throw err;
+        musicgenFailed = true; // don't retry on every video until the next restart
+        notes.push(`MusicGen could not run here (${String(err.message).split('\n')[0]}) — used ClipForge's own music instead.`);
+      }
+    }
+    if (!planned.music) {
+      setStep(job, 'plan', 'active', 'Producing music for the vibe…', 0.36);
+      try {
+        const out = path.join(ws, 'clipforge-music.m4a');
+        const made = await makeBeat({ sound: planned.sound, seconds: longest.total + 3, drop: peak, outFile: out, signal });
+        const label = { lofi: 'lo-fi', house: 'pop / house', trap: 'trap', cinematic: 'cinematic' }[made.preset];
+        const scanned = await scanMusic(out).catch(() => null);
+        await keep(out, { title: `ClipForge ${label} — ${vibe}`, artist: 'ClipForge', genre: label },
+          { ...(scanned || { v: 1, energy: 'medium' }), bpm: made.bpm, drop: made.drop }, { bpm: made.bpm, beats: made.beats, downbeats: made.downbeats });
+        notes.push(`Produced a ${label} track at ${made.bpm} BPM for the "${vibe}" vibe${peak != null ? `, with its drop on the peak of the edit (${round(peak, 1)}s)` : ''}. Saved to your music library.`);
+      } catch (err) {
+        if (signal.aborted) throw err;
+        notes.push(`Could not make music (${err.message}). Add MP3s to your library for background music.`);
+      }
     }
   }
   const musicAsset = planned.music && library.get(planned.music.assetId);
@@ -1070,6 +1097,7 @@ async function renderAutopilotIdea(idea, { prompt, settings, signal, onJob, onPr
     height: v.height,
     review: job.result.review || null,
     sound: job.result.sound || null,
+    notes: job.result.warnings || [],
   };
 }
 
@@ -1601,12 +1629,13 @@ function editSettings(s = {}, autoFind = false) {
     proAudio: s.proAudio !== false,
     trendingSound: s.trendingSound === true,
     aiMusic: s.aiMusic !== false,
+    musicEngine: s.musicEngine === 'musicgen' ? 'musicgen' : 'beat',
     // Edit intensity: clean (documentary), creator (default — styled like a top creator), max (hype).
     intensity: INTENSITIES.includes(s.intensity) ? s.intensity : prof?.intensity || 'creator',
     tighten: level(s.tighten, prof?.tighten, 'natural'),
     polish: s.polish !== false,
     beatSync: s.beatSync !== false,
-    sfx: level(s.sfx, prof?.sfx, s.intensity === 'max' ? 'full' : 'subtle'),
+    sfx: level(s.sfx, prof?.sfx, s.intensity === 'clean' ? 'subtle' : 'full'),
     voiceover: prof ? prof.voiceover : VOICEOVER_MODES.includes(s.voiceover) ? s.voiceover : 'auto',
     voice: VOICES[s.voice] ? s.voice : 'am_michael',
     selfReview: s.selfReview !== false,

@@ -17,6 +17,7 @@ import { ensureYunet } from '../src/reframe.js';
 import { ensureFonts } from '../src/fonts.js';
 import { ensureSfx } from '../src/sfx.js';
 import { scanMusic } from '../src/musicscan.js';
+import { makeBeat } from '../src/beatmaker.js';
 
 const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'clipforge-smoke-'));
 const step = (name) => console.log(`\n== ${name}`);
@@ -102,5 +103,11 @@ await run('ffmpeg', ['-v', 'error', '-y', '-f', 'lavfi', '-i', "aevalsrc='if(lt(
 const heard = await scanMusic(song);
 console.log(heard);
 if (!heard || Math.abs(heard.bpm - 120) > 3 || heard.drop == null || Math.abs(heard.drop - 10) > 1.5) fail('music scan');
+
+step('ClipForge music (beat maker)');
+const beat = await makeBeat({ sound: { style: 'upbeat pop', vibe: 'fun' }, seconds: 12, drop: 4, outFile: path.join(dir, 'beat.m4a') });
+const beatMeta = await probe(beat.file);
+console.log({ preset: beat.preset, bpm: beat.bpm, drop: beat.drop, duration: beatMeta.duration });
+if (beat.preset !== 'house' || beatMeta.duration < 12 || beat.drop < 4) fail('beat maker');
 
 console.log('\nSMOKE TEST PASSED');

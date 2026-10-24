@@ -1435,6 +1435,7 @@ function readSettings() {
     music: $('#music').value || 'auto',
     trendingSound: $('#trendingSound').checked,
     aiMusic: $('#aiMusic').checked,
+    musicEngine: $('#musicEngine').value,
     voiceover: $('#voiceover').value,
     voice: $('#voice').value,
     style: $('#style').value || null,
@@ -1456,6 +1457,7 @@ function applySaved(saved) {
   renderStyleSelects();
   $('#trendingSound').checked = s.trendingSound === true;
   $('#aiMusic').checked = s.aiMusic !== false;
+  if (s.musicEngine) $('#musicEngine').value = s.musicEngine;
   for (const k of ['silence', 'shots', 'cleanVoice', 'watermark', ...PRO_TOGGLES]) {
     const el = $('#' + k);
     if (typeof s[k] === 'boolean' && !el.disabled) el.checked = s[k];
@@ -1483,6 +1485,7 @@ function onOptionsChange() {
 $('#autoFind').addEventListener('change', () => { updateGo(); remember(); });
 $('#trendingSound').addEventListener('change', remember);
 $('#aiMusic').addEventListener('change', () => { renderMusicSelect(); remember(); });
+$('#musicEngine').addEventListener('change', remember);
 $('#music').addEventListener('change', () => { state.musicWanted = $('#music').value; renderMusicSelect(); remember(); });
 $('#style').addEventListener('change', () => {
   if ($('#style').value === '__new') { $('#style').value = state.styleWanted || ''; openStyleDialog(); return; }
@@ -1915,6 +1918,9 @@ function fillAutoForm(s) {
   if (!$('#autoVoice').options.length) $('#autoVoice').innerHTML = $('#voice').innerHTML;
   $('#autoVoiceover').value = s.voiceover || 'auto';
   $('#autoTrending').checked = s.trendingSound === true;
+  $('#autoTrendingWarn').classList.toggle('hidden', s.trendingSound !== true);
+  $('#autoIntensity').value = s.intensity || 'creator';
+  $('#autoMusicEngine').value = s.aiMusic === false ? 'off' : s.musicEngine || 'beat';
   state.autoStyleWanted = s.style || '';
   renderStyleSelects();
   $('#autoVoice').value = s.voice || 'am_michael';
@@ -1950,7 +1956,7 @@ function renderAutopilot() {
   $('#autoEmpty').classList.toggle('hidden', d.batches.length > 0);
 
   // Re-render the batch list only when something visible changed (keeps playing videos playing).
-  const key = JSON.stringify(d.batches.map((b) => [b.id, b.status, b.plan, b.error, b.ideas.map((i) => [i.id, i.status, i.file, i.error])]));
+  const key = JSON.stringify(d.batches.map((b) => [b.id, b.status, b.plan, b.error, b.ideas.map((i) => [i.id, i.status, i.file, i.error, i.notes?.length])]));
   if (key === auto.shownKey) return;
   auto.shownKey = key;
   $('#autoBatches').innerHTML = d.batches.map((b) => {
@@ -1979,6 +1985,7 @@ function ideaHtml(b, i) {
     ${media}
     <div class="vm"><div><div class="vl">${esc(i.title)}${i.review ? `<span class="stars" title="${esc(i.review.summary)}">★ ${i.review.score}/10</span>` : ''}</div><div class="vs">${label}${i.size ? ` · ${fmtSize(i.size)}` : ''}${i.vibe ? ` · <span class="vibe">${esc(i.vibe)}</span>` : ''}</div></div></div>
     ${i.sound ? `<div class="cap snd-line">🎵 ${esc(i.sound.search[0] || i.sound.style)}${i.sound.style && i.sound.search[0] ? ` <span class="hint-line">(${esc(i.sound.style)})</span>` : ''}</div>` : ''}
+    ${i.notes?.length ? `<details class="notes"><summary>What ClipForge did (${i.notes.length})</summary><ul>${i.notes.map((n) => `<li>${esc(n)}</li>`).join('')}</ul></details>` : ''}
     <div class="cap">${esc(i.caption)}${i.hashtags.length ? `\n<span class="tags">${esc(i.hashtags.join(' '))}</span>` : ''}</div>
     <div class="acts">
       <button class="btn sm ghost" type="button" data-copy="${esc(i.captionText)}">Copy caption</button>
@@ -2035,12 +2042,16 @@ async function saveAutopilot() {
         voice: $('#autoVoice').value,
         style: $('#autoStyle').value || null,
         trendingSound: $('#autoTrending').checked,
+        intensity: $('#autoIntensity').value,
+        aiMusic: $('#autoMusicEngine').value !== 'off',
+        musicEngine: $('#autoMusicEngine').value === 'off' ? undefined : $('#autoMusicEngine').value,
       },
     }));
   } catch (err) { toast(err.message, 'error'); }
 }
 $('#autoForm').addEventListener('submit', (e) => e.preventDefault());
 $('#autoForm').addEventListener('change', (e) => {
+  if (e.target === $('#autoTrending')) $('#autoTrendingWarn').classList.toggle('hidden', !e.target.checked);
   if (e.target.name === 'autoLen' && !$$('[name=autoLen]').some((c) => c.checked)) e.target.checked = true; // keep at least one
   if (e.target === $('#autoOn') && e.target.checked) toast('Autopilot is on — the first batch starts now.', 'ok');
   saveAutopilot();

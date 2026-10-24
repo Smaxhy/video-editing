@@ -469,3 +469,9 @@ dialog::backdrop { background: rgba(4, 5, 8, .78); backdrop-filter: blur(3px); }
 .sound-tip .chips { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; color: var(--muted); }
 .sound-tip .chip { border: 1px solid var(--line); background: var(--panel-3); color: var(--text); border-radius: 999px; padding: 3px 10px; font-size: 12.5px; cursor: pointer; }
 .idea .snd-line { color: #93c5fd; padding-bottom: 0; }
+
+/* Autopilot: what ClipForge did for each video, and the "no music" warning. */
+.warn-line { color: var(--warn); grid-column: 1 / -1; margin: 0; }
+.idea details.notes { margin: 6px 12px 0; font-size: 12.5px; }
+.idea details.notes summary { cursor: pointer; opacity: .8; }
+.idea details.notes ul { margin: 6px 0 0; padding-left: 18px; display: grid; gap: 3px; opacity: .85; }

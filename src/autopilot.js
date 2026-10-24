@@ -34,6 +34,9 @@ export const DEFAULT_SETTINGS = {
   voice: 'am_michael',
   style: null,
   trendingSound: false,
+  intensity: 'creator',
+  aiMusic: true,
+  musicEngine: 'beat',
 };
 const VOICE_IDS = ['am_michael', 'am_fenrir', 'am_puck', 'am_onyx', 'bm_george', 'bm_fable', 'af_heart', 'af_bella', 'af_nicole', 'bf_emma'];
 
@@ -54,6 +57,9 @@ export function normalizeSettings(s = {}, prev = DEFAULT_SETTINGS) {
     voiceover: ['off', 'auto', 'on'].includes(s.voiceover) ? s.voiceover : prev.voiceover || 'auto',
     voice: VOICE_IDS.includes(s.voice) ? s.voice : prev.voice || 'am_michael',
     trendingSound: typeof s.trendingSound === 'boolean' ? s.trendingSound : prev.trendingSound ?? false,
+    intensity: ['clean', 'creator', 'max'].includes(s.intensity) ? s.intensity : prev.intensity || 'creator',
+    aiMusic: typeof s.aiMusic === 'boolean' ? s.aiMusic : prev.aiMusic ?? true,
+    musicEngine: ['beat', 'musicgen'].includes(s.musicEngine) ? s.musicEngine : prev.musicEngine || 'beat',
     style: s.style === undefined ? prev.style ?? null : /^[a-z0-9-]{1,40}$/i.test(s.style || '') ? s.style : null,
   };
 }
@@ -232,6 +238,7 @@ export function createAutopilot({ dir, library, scanner, renderIdea, otherWork =
     score: i.score || null,
     review: i.review || null,
     sound: i.sound || null,
+    notes: i.notes || [],
     status: i.status,
     message: i.message || '',
     progress: i.progress || 0,
@@ -346,6 +353,10 @@ export function createAutopilot({ dir, library, scanner, renderIdea, otherWork =
           voice: data.settings.voice,
           style: data.settings.style,
           trendingSound: data.settings.trendingSound,
+          // A proper edit: styled cuts, sound design and music every time.
+          intensity: data.settings.intensity || 'creator',
+          aiMusic: data.settings.aiMusic !== false,
+          musicEngine: data.settings.musicEngine || 'beat',
         };
         let last = 0;
         const r = await renderIdea(idea, {
@@ -382,6 +393,7 @@ export function createAutopilot({ dir, library, scanner, renderIdea, otherWork =
           jobId: r.jobId,
           review: r.review ? { score: r.review.score, summary: r.review.summary } : null,
           sound: r.sound || null,
+          notes: (r.notes || []).slice(0, 12),
           progress: 1,
           message: '',
           error: null,

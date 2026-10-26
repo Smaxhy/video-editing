@@ -134,6 +134,32 @@ main() {
     ok "ClipForge is at $URL"
   fi
 
+  # Automatic updates: every 5 minutes, new versions are built and swapped in while nothing renders.
+  cat > /etc/systemd/system/clipforge-update.service <<UNIT
+[Unit]
+Description=ClipForge auto-update
+After=docker.service network-online.target
+
+[Service]
+Type=oneshot
+Environment=CLIPFORGE_DIR=$DIR CLIPFORGE_BRANCH=$BRANCH
+ExecStart=/usr/bin/env bash $DIR/deploy/server-update.sh
+UNIT
+  cat > /etc/systemd/system/clipforge-update.timer <<UNIT
+[Unit]
+Description=Check for ClipForge updates every 5 minutes
+
+[Timer]
+OnBootSec=3min
+OnUnitActiveSec=5min
+
+[Install]
+WantedBy=timers.target
+UNIT
+  systemctl daemon-reload
+  systemctl enable --now clipforge-update.timer >/dev/null 2>&1 && ok "automatic updates on (every 5 minutes, never mid-render)" || warn "could not enable automatic updates"
+  docker image prune -f >/dev/null 2>&1 || true
+
   bold "Done!"
   echo
   echo "  On your phone:"
@@ -148,7 +174,7 @@ main() {
   else
     echo "  App password: unchanged (see CLIPFORGE_PASSWORD in $DIR/.env)"
   fi
-  echo "  Update later: sudo bash $DIR/deploy/install-server.sh"
+  echo "  Updates install themselves. To update by hand: sudo bash $DIR/deploy/install-server.sh"
   echo
 }
 

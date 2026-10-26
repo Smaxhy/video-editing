@@ -2139,6 +2139,9 @@ app.post('/api/force-stop', (_req, res) => res.json({ ok: true, ...forceStopAll(
 // POST /api/update-now — stop everything, pull the newest version (if any) and restart.
 app.post('/api/update-now', async (_req, res) => {
   forceStopAll();
+  // On a server (Docker) the host's clipforge-update timer sees this flag within 5 minutes and
+  // rebuilds + restarts with the newest version right away (see deploy/server-update.sh).
+  await fs.writeFile(path.join(DIRS.workspace, '.update-now'), new Date().toISOString()).catch(() => {});
   res.json({ ok: true, message: 'Stopping everything and restarting with the newest version…' });
   setTimeout(() => updater.check({ force: true, restartAnyway: true }).catch((err) => console.error('[update-now]', err.message)), 1500);
 });

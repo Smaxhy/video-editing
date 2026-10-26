@@ -510,3 +510,6 @@ dialog::backdrop { background: rgba(4, 5, 8, .78); backdrop-filter: blur(3px); }
 .link-modes { display: grid; gap: 6px; margin-top: 6px; }
 .link-modes .tg { align-items: flex-start; }
 .music-used { font-weight: 700; color: var(--text, #fff); margin-bottom: 6px; }
+.sg-list { list-style: none; margin: 10px 0; padding: 0; display: grid; gap: 8px; }
+.sg-list li { display: flex; gap: 10px; align-items: center; padding: 10px 12px; border: 1px solid var(--line); border-radius: 12px; background: var(--panel-2); }
+#disk .btn { margin-top: 8px; }

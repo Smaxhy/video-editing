@@ -963,7 +963,9 @@ export async function renderProject({ projectDir, outputPath, quality = 'looks',
       cwd: ROOT,
       signal,
       // Local render only; telemetry off so nothing leaves your machine.
-      env: { FORCE_COLOR: '0', NO_COLOR: '1', CI: '1', HYPERFRAMES_NO_TELEMETRY: '1', DO_NOT_TRACK: '1' },
+      // HYPERFRAMES_HISTORY_ROOT: HyperFrames keeps a ~15 MB history of every render in ~/.cache —
+      // keep it inside the composition folder, which is deleted after the render.
+      env: { FORCE_COLOR: '0', NO_COLOR: '1', CI: '1', HYPERFRAMES_NO_TELEMETRY: '1', DO_NOT_TRACK: '1', HYPERFRAMES_HISTORY_ROOT: path.join(projectDir, '.hf-history') },
       onLine: (line) => {
         const m = line.match(/@hf-progress\s+(\{.*\})/);
         if (!m || !onProgress) return;

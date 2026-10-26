@@ -611,6 +611,19 @@
   </div>
 </dialog>
 
+<!-- Free up space -->
+<dialog id="storageDlg" aria-labelledby="sgTitle">
+  <div class="dlg-h">
+    <h2 id="sgTitle">Free up space</h2>
+    <button class="icon-btn" type="button" data-close aria-label="Close"><svg><use href="#i-x"/></svg></button>
+  </div>
+  <div class="dlg-b">
+    <div id="sgDisk" class="hint-line"></div>
+    <ul class="sg-list" id="sgList"></ul>
+    <small class="hint-line">ClipForge already deletes leftovers by itself (raw renders, half uploads, render history) and keeps its caches within a budget. Your videos and music are only deleted from the Library page.</small>
+  </div>
+</dialog>
+
 <!-- Add from links -->
 <dialog id="linkDlg" aria-labelledby="lkTitle">
   <form method="dialog" id="linkForm">

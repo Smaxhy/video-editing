@@ -16,6 +16,7 @@ import { beatEdit } from './beatedit.js';
 import { trackFromText } from './soundpick.js';
 import { createFolders } from './folders.js';
 import { createLinkImports, LINK_MODES } from './links.js';
+import { createStorage } from './storage.js';
 import { smoothSlowMo, rampSlowMo, SLOW } from './slowmo.js';
 import {
   writeProject, renderProject, killStrayRenderers, makeBlurBackground, aspectMismatch, ensureSeekable, layoutTimeline, prepareMusic,
@@ -133,6 +134,15 @@ async function extractAudio(id) {
 await library.load();
 const folders = createFolders({ file: path.join(DIRS.library, '.folders.json') });
 await folders.load();
+const storage = createStorage({
+  dirs: DIRS,
+  library,
+  toolsDir: TOOLS_DIR,
+  // Caches and leftovers are only cleaned while nothing that might be using them runs.
+  isBusy: () => [...jobs.values()].some((j) => j.state === 'running') || autopilot?.busy?.() || false,
+});
+setTimeout(() => storage.autoClean().catch((err) => console.error('[storage]', err.message)), 60_000).unref();
+setInterval(() => storage.autoClean().catch((err) => console.error('[storage]', err.message)), 2 * 3600_000).unref();
 const links = createLinkImports({ library, toolsDir: TOOLS_DIR, work: path.join(DIRS.workspace, '_links'), onChange: broadcast });
 ml = createMl({
   toolsDir: TOOLS_DIR,
@@ -435,6 +445,7 @@ function musicOptions(setting) {
 }
 
 async function runPipeline(job, { prompt, clipIds, settings, reusePlan, revise = null }) {
+  await storage.ensureSpace(); // stop now with a clear message rather than halfway on a full disk
   const ws = path.join(DIRS.workspace, job.id);
   const outDir = path.join(DIRS.output, job.id);
   const signal = job.abort.signal;
@@ -986,6 +997,7 @@ async function runPipeline(job, { prompt, clipIds, settings, reusePlan, revise =
     setStep(job, 'render', 'active', `${prefix}Compressing ${label}…`, base + share * 0.92);
     const fileName = `clipforge-${id}.mp4`;
     const size = await compressVideo(raw, path.join(outDir, fileName), settings.size, { signal, twoPass: tools.ffmpegNormalize });
+    await fs.rm(raw, { force: true }); // the uncompressed render is several times the size of the final video
     const srtName = srt.trim() ? `clipforge-${id}.srt` : null;
     if (srtName) await fs.writeFile(path.join(outDir, srtName), srt);
     await fs.rm(projectDir, { recursive: true, force: true }); // composition is rebuilt on every run
@@ -1040,6 +1052,11 @@ async function runPipeline(job, { prompt, clipIds, settings, reusePlan, revise =
     }
   }
 
+  // Mark the cached copies this edit used as fresh, so the cache clean-up removes the unused ones first.
+  const used = [...Object.values(renderPaths), ...Object.values(voiceTracks).map((v) => v.path), ...Object.values(blurPaths),
+    ...Object.values(slowMo).flatMap((x) => x.extra.map((c) => c.path))].filter(Boolean);
+  const now = new Date();
+  await Promise.all(used.map((p) => fs.utimes(p, now, now).catch(() => {})));
   const result = {
     title: planned.title,
     checklist: planned.checklist,
@@ -1119,10 +1136,11 @@ async function startPipeline(job, opts) {
     job.message = 'Done!';
   } catch (err) {
     const cancelled = job.abort.signal.aborted;
+    const full = !cancelled && (err.code === 'ENOSPC' || /ENOSPC|No space left on device|disk is almost full/i.test(`${err.message} ${err.detail || ''}`));
     job.state = 'error';
     job.error = {
-      message: cancelled ? 'Cancelled.' : err.message || String(err),
-      hint: cancelled ? null : err.hint || null,
+      message: cancelled ? 'Cancelled.' : full && !/almost full/.test(err.message) ? 'The disk is full — the render could not finish.' : err.message || String(err),
+      hint: cancelled ? null : full ? 'Open “Free up space” in the sidebar (old Autopilot batches, renders and caches), then try again.' : err.hint || null,
       detail: cancelled ? null : err.detail || (err instanceof PipelineError ? null : err.stack) || null,
     };
     for (const s of Object.values(job.steps)) if (s.status === 'active') s.status = 'error';
@@ -1131,6 +1149,8 @@ async function startPipeline(job, opts) {
   } finally {
     job.abort = null;
     emit(job);
+    // Tidy up after every render (leftovers, caches over budget).
+    setTimeout(() => storage.autoClean().catch(() => {}), 5_000).unref();
   }
 }
 
@@ -1946,6 +1966,39 @@ app.get('/api/storage', async (req, res) => {
     ).reduce((a, b) => a + b, 0);
   }
   res.json(out);
+});
+
+// GET /api/storage/report — what uses the disk, by category. POST /api/storage/clean — { what, days }.
+app.get('/api/storage/report', async (_req, res) => {
+  const r = await storage.report();
+  const cutoff = (days) => Date.now() - days * 864e5;
+  r.oldBatches = autopilot.status().batches.filter((b) => b.status !== 'running' && b.createdAt < cutoff(14)).length;
+  res.json(r);
+});
+app.post('/api/storage/clean', async (req, res, next) => {
+  try {
+    const what = String(req.body?.what || '');
+    const days = Math.max(0, Math.min(365, Number(req.body?.days) || 14));
+    let out;
+    if (what === 'autopilot') {
+      const before = (await diskFree(DIRS.library)).free;
+      let removed = 0;
+      for (const b of autopilot.status().batches) {
+        if (b.status === 'running' || b.createdAt > Date.now() - days * 864e5) continue;
+        if (await autopilot.removeBatch(b.id).catch(() => false)) removed++;
+      }
+      out = { removed, freed: Math.max(0, ((await diskFree(DIRS.library)).free || 0) - (before || 0)) };
+    } else {
+      if (what === 'caches' && [...jobs.values()].some((j) => j.state === 'running')) {
+        return res.status(409).json({ error: 'A video is rendering — clear the caches when it is done.' });
+      }
+      out = await storage.clean(what, { days });
+    }
+    res.json({ ...out, report: await storage.report() });
+  } catch (err) {
+    if (err.status) return res.status(err.status).json({ error: err.message });
+    next(err);
+  }
 });
 
 // DELETE /api/jobs/:jobId — remove a project's working files and renders (library videos are kept).

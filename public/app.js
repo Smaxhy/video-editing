@@ -243,8 +243,54 @@ function renderDisk() {
   $('#disk').innerHTML = `
     <div><strong style="color:var(--text)">${fmtSize(s.library)}</strong> in library · ${fmtSize(s.projects)} project files</div>
     ${s.total ? `<div class="meter${low ? ' low' : ''}" role="meter" aria-label="Disk used" aria-valuemin="0" aria-valuemax="100" aria-valuenow="${Math.round(used * 100)}"><div style="width:${used * 100}%"></div></div>
-    <div${low ? ' class="miss"' : ''}>${fmtSize(s.free)} free of ${fmtSize(s.total)}</div>` : ''}`;
+    <div${low ? ' class="miss"' : ''}>${fmtSize(s.free)} free of ${fmtSize(s.total)}</div>` : ''}
+    <button class="btn xs ${s.free != null && s.free < 5e9 ? '' : 'ghost'}" type="button" id="openStorage">${s.free != null && s.free < 5e9 ? '⚠ Disk almost full — free up space' : 'Free up space'}</button>`;
 }
+
+// ---- Free up space -------------------------------------------------------------
+const SG_ITEMS = [
+  ['caches', 'Caches', 'Polished clip copies, studio sound, slow motion — re-made when needed', 'Clear'],
+  ['autopilot', 'Autopilot batches', 'Finished batch videos (older than 14 days)', 'Delete old batches'],
+  ['generatedMusic', 'Music made by ClipForge', 'Tracks ClipForge produced (your own music is kept)', 'Delete'],
+  ['system', 'System caches', 'npm / pip download caches and HyperFrames render history', 'Clear'],
+  ['models', 'Local AI models', 'Search / sound-tag / voice models — downloaded again when needed', 'Remove'],
+  ['renders', 'Project renders', 'The latest video of each project — delete projects you no longer need from their page', null],
+  ['videos', 'Your videos', 'Library originals — delete them on the Library page', null],
+  ['music', 'Your music', 'Kept', null],
+  ['work', 'Project working files', 'Transcripts, plans, contact sheets', null],
+  ['tools', 'Tools', 'FFmpeg helpers, fonts, models', null],
+];
+async function openStorage() {
+  $('#sgList').innerHTML = '<li class="hint-line">Measuring…</li>';
+  $('#storageDlg').showModal();
+  try { renderStorage(await api('/api/storage/report')); } catch (err) { $('#sgList').innerHTML = `<li class="miss">${esc(err.message)}</li>`; }
+}
+function renderStorage(r) {
+  const c = r.categories;
+  $('#sgDisk').innerHTML = r.total ? `<strong>${fmtSize(r.free)}</strong> free of ${fmtSize(r.total)}` : '';
+  $('#sgList').innerHTML = SG_ITEMS.filter(([k]) => c[k] > 0 || k === 'caches').map(([k, name, help, action]) => `<li>
+      <div class="grow"><strong>${esc(name)}</strong> <span class="hint-line">${fmtSize(c[k] || 0)}</span><div class="hint-line">${esc(help)}${k === 'autopilot' && r.oldBatches ? ` — ${r.oldBatches} old batch${r.oldBatches === 1 ? '' : 'es'}` : ''}</div></div>
+      ${action && (c[k] > 0) && (k !== 'autopilot' || r.oldBatches) ? `<button class="btn sm ${k === 'caches' || k === 'system' ? '' : 'ghost'}" type="button" data-clean="${k}">${esc(action)}</button>` : ''}
+    </li>`).join('');
+}
+document.addEventListener('click', (e) => { if (e.target.closest('#openStorage')) openStorage(); });
+$('#storageDlg [data-close]').addEventListener('click', () => $('#storageDlg').close());
+$('#sgList').addEventListener('click', async (e) => {
+  const b = e.target.closest('[data-clean]');
+  if (!b) return;
+  const what = b.dataset.clean;
+  if (['generatedMusic', 'autopilot', 'models'].includes(what) && !confirm(`${b.textContent}? This can’t be undone.`)) return;
+  b.disabled = true;
+  b.textContent = 'Working…';
+  try {
+    const r = await api('/api/storage/clean', { method: 'POST', body: { what, days: 14 } });
+    toast(r.freed != null ? `Freed ${fmtSize(r.freed)}.` : 'Done.', 'ok');
+    renderStorage(r.report);
+    refreshStorageSoon();
+    if (what === 'generatedMusic') loadLibrary().catch(() => {});
+    if (what === 'autopilot') loadAutopilot();
+  } catch (err) { toast(err.message, 'error'); b.disabled = false; }
+});
 
 async function loadLibrary() {
   const data = await api('/api/library');

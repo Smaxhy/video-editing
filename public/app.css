@@ -513,3 +513,4 @@ dialog::backdrop { background: rgba(4, 5, 8, .78); backdrop-filter: blur(3px); }
 .sg-list { list-style: none; margin: 10px 0; padding: 0; display: grid; gap: 8px; }
 .sg-list li { display: flex; gap: 10px; align-items: center; padding: 10px 12px; border: 1px solid var(--line); border-radius: 12px; background: var(--panel-2); }
 #disk .btn { margin-top: 8px; }
+#prompt, #fixText, #autoDir { resize: vertical; overflow-y: auto; max-height: 60vh; }

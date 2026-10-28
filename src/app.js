@@ -1863,7 +1863,8 @@ function editSettings(s = {}, autoFind = false) {
 // POST /api/edit — { jobId, prompt, clips?: [clipId…], settings?: {...} }
 app.post('/api/edit', async (req, res) => {
   const { jobId, prompt, clips: clipIds, settings: s = {}, reusePlan = false } = req.body || {};
-  const revise = cleanText(req.body?.revise, 2000) || null;
+  // Long, multi-line instructions are welcome: keep line breaks, allow ~20k characters.
+  const revise = String(req.body?.revise ?? '').replace(/[ \t]+/g, ' ').trim().slice(0, 20000) || null;
   const job = await getJob(jobId);
   if (!job) return res.status(404).json({ error: 'Unknown project — upload clips first.' });
   if (job.state === 'running') return res.status(409).json({ error: 'This project is already rendering.' });
@@ -1887,7 +1888,7 @@ app.post('/api/edit', async (req, res) => {
     return res.status(400).json({ error: `That's ${count} videos — pick at most ${MAX_VARIANTS} format × length combinations.` });
   }
 
-  startPipeline(job, { prompt: String(prompt || job.result?.revision || '').slice(0, 8000), clipIds: revise && job.result?.clipIds?.length ? job.result.clipIds.filter((id) => job.clips.some((c) => c.id === id)) : ids, settings, reusePlan: Boolean(reusePlan) && !revise, revise });
+  startPipeline(job, { prompt: String(prompt || job.result?.revision || '').slice(0, 40000), clipIds: revise && job.result?.clipIds?.length ? job.result.clipIds.filter((id) => job.clips.some((c) => c.id === id)) : ids, settings, reusePlan: Boolean(reusePlan) && !revise, revise });
   res.status(202).json({ jobId: job.id, statusUrl: `/api/status/${job.id}`, videos: count });
 });
 

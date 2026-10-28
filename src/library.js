@@ -71,7 +71,48 @@ export function spriteLayout(duration) {
  */
 export function shouldShrink(meta, size) {
   const mbps = meta.duration ? (size * 8) / meta.duration / 1e6 : 0;
-  return Math.max(meta.width || 0, meta.height || 0) > 1920 * 1.05 || mbps > 16;
+  // Bigger than 1080p, or a heavy bitrate (phone footage is often 20-100 Mbps): an edit-ready 1080p
+  // copy looks the same in a vertical video at a fraction of the size.
+  return Math.max(meta.width || 0, meta.height || 0) > 1920 * 1.05 || mbps > 12;
+}
+
+/** Uncompressed / lossless audio worth turning into AAC (WAV, AIFF, FLAC over ~20 MB). */
+export const shouldCompressAudio = (name, size) => /\.(wav|aiff?|flac|caf)$/i.test(name) && size > 20e6;
+
+/**
+ * The library's space-saving copy: at most 1080p and 60 fps, H.264 (plays everywhere, seeks
+ * frame-accurately with a keyframe every second), AAC sound. `onProgress(0..1)`.
+ */
+export async function compactVideo(src, dest, { duration, onProgress, signal } = {}) {
+  const r = await run('ffmpeg', [
+    '-v', 'error', '-y', '-progress', 'pipe:1', '-nostats', '-i', src,
+    '-map', '0:v:0', '-map', '0:a:0?', '-fpsmax', '60',
+    '-vf', 'scale=w=1920:h=1920:force_original_aspect_ratio=decrease:force_divisible_by=2,format=yuv420p',
+    '-c:v', 'libx264', '-preset', 'veryfast', '-crf', '21', '-g', '30',
+    '-c:a', 'aac', '-b:a', '160k', '-movflags', '+faststart', dest,
+  ], {
+    signal,
+    timeoutMs: encodeTimeout(duration),
+    onLine: (line) => {
+      const m = line.match(/^out_time_us=(\d+)/);
+      if (m && duration && onProgress) onProgress(Math.min(0.99, Number(m[1]) / 1e6 / duration));
+    },
+  });
+  if (r.code !== 0) {
+    await fs.rm(dest, { force: true });
+    throw new PipelineError('Could not compress the video.', { detail: tail(r.stderr, 3) });
+  }
+  return dest;
+}
+
+/** Lossless / uncompressed audio → high-quality AAC. */
+export async function compactAudio(src, dest, { signal } = {}) {
+  const r = await run('ffmpeg', ['-v', 'error', '-y', '-i', src, '-vn', '-map', '0:a:0', '-c:a', 'aac', '-b:a', '256k', dest], { signal, timeoutMs: 30 * 60_000 });
+  if (r.code !== 0) {
+    await fs.rm(dest, { force: true });
+    throw new PipelineError('Could not compress the audio.', { detail: tail(r.stderr, 3) });
+  }
+  return dest;
 }
 
 /**
@@ -266,26 +307,18 @@ export function createLibrary({ dir, onChange = () => {}, onReady = () => {}, is
     const src = file(a.id, a.file);
     const tmp = file(a.id, 'shrink.part.mp4');
     await update(a, { preview: { ...a.preview, step: 'shrinking', progress: 0 } });
-    const r = await run('ffmpeg', [
-      '-v', 'error', '-y', '-progress', 'pipe:1', '-nostats', '-i', src,
-      '-map', '0:v:0', '-map', '0:a:0?',
-      '-vf', 'scale=w=1920:h=1920:force_original_aspect_ratio=decrease:force_divisible_by=2,format=yuv420p',
-      '-c:v', 'libx264', '-preset', 'veryfast', '-crf', '20', '-g', '30',
-      '-c:a', 'aac', '-b:a', '160k', '-movflags', '+faststart', tmp,
-    ], {
-      timeoutMs: encodeTimeout(a.duration),
-      onLine: (line) => {
-        const m = line.match(/^out_time_us=(\d+)/);
-        if (!m || !a.duration) return;
-        const p = Math.min(0.99, Number(m[1]) / 1e6 / a.duration);
+    let failed = null;
+    await compactVideo(src, tmp, {
+      duration: a.duration,
+      onProgress: (p) => {
         if (p - (a.preview.progress || 0) < 0.02) return;
         a.preview = { ...a.preview, progress: p };
         changed(a);
       },
-    });
-    if (r.code !== 0 || !assets.has(a.id)) {
+    }).catch((err) => (failed = err));
+    if (failed || !assets.has(a.id)) {
       await fs.rm(tmp, { force: true });
-      if (r.code !== 0) console.error(`[library ${a.id}] shrink failed — keeping the original:`, tail(r.stderr, 3));
+      if (failed) console.error(`[library ${a.id}] shrink failed — keeping the original:`, failed.detail || failed.message);
       return update(a, { shrunk: 'failed', preview: { ...a.preview, step: null, progress: 0 } });
     }
     // Never swap the file under a render that is reading it.
@@ -451,7 +484,7 @@ export function createLibrary({ dir, onChange = () => {}, onReady = () => {}, is
      * music), grabs a poster frame or waveform, and queues the storyboard + proxy. Returns the
      * public asset. `source` records where an imported file came from (cloud remote + path).
      */
-    async ingest(uploadedPath, { name, size, source = null }) {
+    async ingest(uploadedPath, { name, size, source = null, shrunk = null }) {
       const id = crypto.randomBytes(8).toString('hex');
       const ext = (path.extname(name) || '.mp4').toLowerCase();
       let meta;
@@ -484,6 +517,7 @@ export function createLibrary({ dir, onChange = () => {}, onReady = () => {}, is
         file: `source${ext}`,
         size,
         source,
+        ...(shrunk ? { shrunk } : {}), // compressed on the way in (Drive imports): the original's size
         createdAt: Date.now(),
         updatedAt: Date.now(),
         ...meta,

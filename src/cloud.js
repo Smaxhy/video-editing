@@ -5,9 +5,9 @@ import path from 'node:path';
 import { spawn } from 'node:child_process';
 import net from 'node:net';
 
-import { run, tail, PipelineError } from './util.js';
+import { run, tail, probe, PipelineError } from './util.js';
 import { onPath } from './tools.js';
-import { VIDEO_EXT, AUDIO_EXT } from './library.js';
+import { VIDEO_EXT, AUDIO_EXT, shouldShrink, shouldCompressAudio, compactVideo, compactAudio } from './library.js';
 
 /**
  * Cloud import through rclone (https://github.com/rclone/rclone) — Google Drive first, but any
@@ -149,7 +149,7 @@ export function createCloud({ library, toolsDir, onChange = () => {} }) {
   const emitJob = (job) => onChange({ type: 'import', job: publicJob(job) });
   const emitConnect = () => onChange({ type: 'connect', connect });
   const publicJob = (j) => {
-    const { procs: _p, files: _f, ...rest } = j;
+    const { procs: _p, files: _f, abort: _a, ...rest } = j;
     return rest;
   };
 
@@ -440,7 +440,7 @@ export function createCloud({ library, toolsDir, onChange = () => {} }) {
   async function startImport({ remote: name, link, sharedWithMe, check }) {
     const { remote, flags, files } = await listFiles({ remote: name, link, sharedWithMe });
     const todo = files.filter((f) => !f.imported);
-    await check?.(todo.reduce((s, f) => s + f.size, 0));
+    await check?.(todo.reduce((s, f) => s + f.size, 0), todo.reduce((m, f) => Math.max(m, f.size), 0));
     const job = {
       id: crypto.randomBytes(5).toString('hex'),
       remote: name,
@@ -456,6 +456,8 @@ export function createCloud({ library, toolsDir, onChange = () => {} }) {
       startedAt: Date.now(),
       files: todo,
       procs: new Set(),
+      abort: new AbortController(),
+      savedBytes: 0,
     };
     jobs.set(job.id, job);
     runImport(job, remote, flags);
@@ -482,10 +484,23 @@ export function createCloud({ library, toolsDir, onChange = () => {} }) {
     emitJob(job);
   }
 
+  /** Wait (while other files compress) until this file fits on the disk, with room to spare. */
+  async function waitForSpace(job, f) {
+    const need = f.size * 1.15 + 2 * 1024 ** 3;
+    for (let i = 0; i < 90 && job.state === 'running'; i++) {
+      const s = await fs.statfs(library.incoming).catch(() => null);
+      if (!s || s.bavail * s.bsize >= need) return;
+      await new Promise((r) => setTimeout(r, 20_000));
+    }
+    if (job.state === 'running') throw new PipelineError(`Not enough disk space for ${f.name} (${(f.size / 1024 ** 3).toFixed(1)} GB).`);
+  }
+
   async function importOne(job, f, flags) {
+    await waitForSpace(job, f);
+    if (job.state !== 'running') return;
     const tmp = path.join(library.incoming, `import-${job.id}-${crypto.randomBytes(3).toString('hex')}`);
     await fs.mkdir(tmp, { recursive: true });
-    const cur = { name: f.path, size: f.size, bytes: 0 };
+    const cur = { name: f.path, size: f.size, bytes: 0, phase: 'downloading', progress: 0 };
     job.current.push(cur);
     // rclone writes a .partial file next to the destination — its size is our progress.
     const poll = setInterval(async () => {
@@ -510,9 +525,50 @@ export function createCloud({ library, toolsDir, onChange = () => {} }) {
       });
       if (job.state !== 'running') return;
       if (r.code !== 0) throw new PipelineError(tail(r.err, 2) || 'download failed');
-      const size = (await fs.stat(dest)).size;
-      await library.ingest(dest, { name: f.name, size, source: { remote: job.remote, id: f.id, path: f.path, size: f.size } });
+      clearInterval(poll);
+      let file = dest;
+      let name = f.name;
+      let shrunk = null;
+      const size0 = (await fs.stat(dest)).size;
+      // Save space: compress each file as soon as it's down (before the next one arrives), so a big
+      // Drive never needs room for all its originals. The original is deleted right after.
+      if (library.settings().shrinkLarge) {
+        try {
+          if (VIDEO_EXT.test(f.name)) {
+            const meta = await probe(dest);
+            if (meta.hasVideo && shouldShrink(meta, size0)) {
+              cur.phase = 'compressing';
+              emitJob(job);
+              file = await compactVideo(dest, path.join(tmp, 'compact.mp4'), {
+                duration: meta.duration,
+                signal: job.abort.signal,
+                onProgress: (p) => {
+                  if (p - cur.progress < 0.03) return;
+                  cur.progress = p;
+                  emitJob(job);
+                },
+              });
+              name = `${f.name.replace(/\.[^.]+$/, '')}.mp4`;
+              shrunk = { from: { width: meta.width, height: meta.height, size: size0 } };
+            }
+          } else if (AUDIO_EXT.test(f.name) && shouldCompressAudio(f.name, size0)) {
+            cur.phase = 'compressing';
+            emitJob(job);
+            file = await compactAudio(dest, path.join(tmp, 'compact.m4a'), { signal: job.abort.signal });
+            name = `${f.name.replace(/\.[^.]+$/, '')}.m4a`;
+            shrunk = { from: { size: size0 } };
+          }
+        } catch (err) {
+          file = dest; // keep the original if it can't be compressed
+          console.error(`[import] could not compress ${f.name}:`, err.detail || err.message);
+        }
+        if (file !== dest) await fs.rm(dest, { force: true });
+      }
+      if (job.state !== 'running') return;
+      const size = (await fs.stat(file)).size;
+      await library.ingest(file, { name, size, shrunk, source: { remote: job.remote, id: f.id, path: f.path, size: f.size } });
       job.doneBytes += f.size;
+      job.savedBytes = (job.savedBytes || 0) + Math.max(0, size0 - size);
     } finally {
       clearInterval(poll);
       job.current = job.current.filter((c) => c !== cur);
@@ -524,6 +580,7 @@ export function createCloud({ library, toolsDir, onChange = () => {} }) {
     const job = jobs.get(id);
     if (!job || job.state !== 'running') return false;
     job.state = 'cancelled';
+    job.abort.abort();
     for (const p of job.procs) p.kill();
     emitJob(job);
     return true;

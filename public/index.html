@@ -178,7 +178,7 @@
           </fieldset>
         </div>
         <label for="autoDir">What kind of content? <span class="hint-line">(optional — Claude figures it out from your footage otherwise)</span></label>
-        <textarea class="field" id="autoDir" rows="3" maxlength="1500" placeholder="e.g. POV tree-cutting content — satisfying cuts, the art of tree work, a bit of humour. Account is for an arborist business."></textarea>
+        <textarea class="field" id="autoDir" rows="5" maxlength="20000" placeholder="e.g. POV tree-cutting content — satisfying cuts, the art of tree work, a bit of humour. Account is for an arborist business."></textarea>
         <div class="autogrid">
           <label>Account / brand name<input class="field" id="autoBrand" maxlength="60" autocomplete="off" /></label>
           <label>Call to action<input class="field" id="autoCta" maxlength="60" placeholder="Follow for more" autocomplete="off" /></label>
@@ -530,7 +530,7 @@
             </form>
             <form class="fixbox" id="fixForm">
               <label class="lbl" for="fixText">Not quite right? Tell Claude what to fix</label>
-              <textarea class="field" id="fixText" rows="2" maxlength="2000" placeholder="e.g. Put my summer song under this and cut to the beat. Open on the tree falling. Captions smaller."></textarea>
+              <textarea class="field" id="fixText" rows="3" maxlength="20000" placeholder="e.g. Put my summer song under this and cut to the beat. Open on the tree falling. Captions smaller."></textarea>
               <div class="fixrow"><span class="hint-line grow" id="fixMsg">Claude keeps everything else the same and only changes what you ask — cuts, text, music, captions or the look.</span>
                 <button class="btn" type="submit" id="fixGo">Fix it</button></div>
             </form>

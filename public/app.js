@@ -2560,3 +2560,16 @@ async function init() {
   route();
 }
 init();
+
+// Long prompts: the instruction boxes grow with what you type (up to most of the screen).
+for (const id of ['prompt', 'fixText', 'autoDir']) {
+  const el = document.getElementById(id);
+  if (!el) continue;
+  const fit = () => {
+    el.style.height = 'auto';
+    el.style.height = `${Math.min(el.scrollHeight + 2, Math.round(window.innerHeight * 0.6))}px`;
+  };
+  el.addEventListener('input', fit);
+  el.addEventListener('focus', fit);
+  setTimeout(fit, 0);
+}

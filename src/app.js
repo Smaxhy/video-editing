@@ -1558,11 +1558,18 @@ app.post('/api/cloud/import', async (req, res, next) => {
       remote: String(req.body?.remote || ''),
       link: req.body?.link,
       sharedWithMe: req.body?.sharedWithMe === true,
-      check: async (bytes) => {
+      check: async (bytes, largest) => {
         const { free } = await diskFree(DIRS.library);
-        if (free == null || bytes <= free - DISK_HEADROOM) return;
+        // With "Save space" on, each file is compressed as it arrives and its original deleted, so a
+        // Drive far bigger than the free space fits — only the largest single file must.
+        const need = library.settings().shrinkLarge ? largest * 1.15 + 2 * 1024 ** 3 : bytes + DISK_HEADROOM;
+        if (free == null || need <= free) return;
         const gb = (n) => (n / 1024 ** 3).toFixed(1);
-        throw new PipelineError(`Not enough disk space: the import is ${gb(bytes)} GB, ${gb(Math.max(0, free - DISK_HEADROOM))} GB free.`);
+        throw new PipelineError(library.settings().shrinkLarge
+          ? `Not enough disk space: the largest file is ${gb(largest)} GB and only ${gb(free)} GB is free.`
+          : `Not enough disk space: the import is ${gb(bytes)} GB, ${gb(Math.max(0, free - DISK_HEADROOM))} GB free. Turn on “Save space” to compress files as they arrive.`, {
+          hint: 'Open “Free up space” in the sidebar to make room.',
+        });
       },
     });
     res.status(202).json({ job });

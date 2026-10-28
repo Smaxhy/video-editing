@@ -445,7 +445,7 @@ function renderJobs() {
       <div class="row"><strong>${head}: ${esc(j.label)}</strong>
         ${j.state === 'running' ? `<button class="btn xs ghost" type="button" data-cancel-job>Cancel</button>` : `<button class="btn xs ghost" type="button" data-dismiss-job aria-label="Dismiss">×</button>`}</div>
       <div class="pbar" role="progressbar" aria-label="Import progress" aria-valuemin="0" aria-valuemax="100" aria-valuenow="${pct}"><div style="width:${pct}%"></div></div>
-      <div class="sub">${j.done} of ${plural(j.total, 'file')} · ${fmtSize(j.doneBytes + cur)} of ${fmtSize(j.totalBytes)}${j.skipped ? ` · ${j.skipped} already in your library` : ''}${j.current.length ? ` · now: ${esc(j.current.map((c) => c.name.split('/').pop()).join(', '))}` : ''}</div>
+      <div class="sub">${j.done} of ${plural(j.total, 'file')} · ${fmtSize(j.doneBytes + cur)} of ${fmtSize(j.totalBytes)}${j.skipped ? ` · ${j.skipped} already in your library` : ''}${j.current.length ? ` · now: ${esc(j.current.map((c) => `${c.phase === 'compressing' ? `compressing ${c.name.split('/').pop()} ${Math.round((c.progress || 0) * 100)}%` : c.name.split('/').pop()}`).join(', '))}` : ''}${j.savedBytes ? ` · <strong>saved ${fmtSize(j.savedBytes)}</strong> by compressing` : ''}</div>
       ${j.failed.length ? `<div class="uperr">${j.failed.length} failed: ${esc(j.failed.slice(0, 3).map((f) => `${f.name.split('/').pop()} (${f.error})`).join('; '))}${j.failed.length > 3 ? '…' : ''}</div>` : ''}
     </li>`;
   }).join('');

@@ -514,3 +514,9 @@ dialog::backdrop { background: rgba(4, 5, 8, .78); backdrop-filter: blur(3px); }
 .sg-list li { display: flex; gap: 10px; align-items: center; padding: 10px 12px; border: 1px solid var(--line); border-radius: 12px; background: var(--panel-2); }
 #disk .btn { margin-top: 8px; }
 #prompt, #fixText, #autoDir { resize: vertical; overflow-y: auto; max-height: 60vh; }
+
+/* Move to a new computer */
+.mv-h { font-size: 13px; margin: 16px 0 8px; color: var(--text); }
+.mv-code { margin-top: 10px; padding: 10px 12px; border-radius: 10px; background: var(--panel-2); display: grid; gap: 6px; overflow-wrap: anywhere; }
+.mv-big { font-size: 18px; letter-spacing: .04em; }
+#mvProgress { margin-top: 12px; display: grid; gap: 6px; }

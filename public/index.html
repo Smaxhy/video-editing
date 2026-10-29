@@ -624,6 +624,32 @@
   </div>
 </dialog>
 
+<!-- Move to a new computer -->
+<dialog id="moveDlg" aria-labelledby="mvTitle">
+  <div class="dlg-h">
+    <h2 id="mvTitle">Move to a new computer</h2>
+    <button class="icon-btn" type="button" data-close aria-label="Close"><svg><use href="#i-x"/></svg></button>
+  </div>
+  <div class="dlg-b">
+    <p class="hint-line" style="margin-top:0">Copies your videos, music, folders, learned styles, projects and Autopilot from your old ClipForge (e.g. the codespace) to this one. Nothing is deleted on the old one.</p>
+    <h3 class="mv-h">On the OLD ClipForge</h3>
+    <button class="btn sm ghost" type="button" id="mvMakeCode">Get a transfer code</button>
+    <div id="mvCode" class="mv-code hidden" aria-live="polite"></div>
+    <h3 class="mv-h">On the NEW ClipForge</h3>
+    <form id="mvForm">
+      <label class="lbl" for="mvUrl">Old ClipForge’s address</label>
+      <input class="field" id="mvUrl" type="url" inputmode="url" autocomplete="off" placeholder="https://…-3000.app.github.dev" required style="width:100%" />
+      <label class="lbl" for="mvKey" style="margin-top:10px;display:block">Transfer code</label>
+      <input class="field" id="mvKey" autocomplete="off" autocapitalize="off" spellcheck="false" placeholder="abcd-1234-ef56" required style="width:100%" />
+      <div class="dlg-f" style="padding:14px 0 0;border:0">
+        <span class="grow hint-line" id="mvMsg" aria-live="polite"></span>
+        <button class="btn" type="submit" id="mvGo">Copy everything here</button>
+      </div>
+    </form>
+    <div id="mvProgress" class="hidden" role="status" aria-live="polite"></div>
+  </div>
+</dialog>
+
 <!-- Add from links -->
 <dialog id="linkDlg" aria-labelledby="lkTitle">
   <form method="dialog" id="linkForm">

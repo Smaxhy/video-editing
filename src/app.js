@@ -44,6 +44,7 @@ import { generateMusic } from './musicgen.js';
 import { makeBeat } from './beatmaker.js';
 import { ensureYunet } from './reframe.js';
 import { createStyles, styleGuideText } from './style.js';
+import { createTransfer } from './transfer.js';
 import { Server as TusServer } from '@tus/server';
 import { FileStore } from '@tus/file-store';
 
@@ -1243,6 +1244,17 @@ app.use(express.json({ limit: '1mb' }));
 app.use(express.static(DIRS.public));
 // Browser build of tus-js-client for resumable uploads.
 app.use('/vendor/tus', express.static(path.join(ROOT, 'node_modules', 'tus-js-client', 'dist')));
+// "Move to a new computer": the old install hands out its files to whoever has its one-time code
+// (checked by the transfer itself, so these two sit before the login guard).
+const transfer = createTransfer({
+  dirs: DIRS,
+  onChange: broadcast,
+  isBusy: () => busySummary(),
+  // Everything copied: restart so the library, folders, styles and projects load from disk.
+  onDone: () => setTimeout(() => updater.check({ force: true, restartAnyway: true }).catch((err) => console.error('[transfer]', err.message)), 4000),
+});
+app.get('/api/transfer/manifest', (req, res, next) => transfer.serveManifest(req, res).catch(next));
+app.get('/api/transfer/file', (req, res) => transfer.serveFile(req, res));
 app.get('/api/auth', auth.status);
 app.post('/api/login', auth.login);
 app.post('/api/logout', auth.logout);
@@ -2145,6 +2157,26 @@ function forceStopAll() {
 // POST /api/force-stop — the big red button when a render or Autopilot is stuck.
 app.post('/api/force-stop', (_req, res) => res.json({ ok: true, ...forceStopAll() }));
 // POST /api/update-now — stop everything, pull the newest version (if any) and restart.
+// ---- move to a new computer ---------------------------------------------------
+// POST /api/transfer/code — on the OLD install: a one-time code (6 hours) + this install's address.
+app.post('/api/transfer/code', async (req, res) => {
+  const out = transfer.makeCode(req);
+  res.json({ ...out, portOpened: await transfer.openPort() });
+});
+// POST /api/transfer/pull — on the NEW install: { url, code } copies everything from the old one.
+app.post('/api/transfer/pull', async (req, res) => {
+  try {
+    res.json({ transfer: await transfer.pull(req.body || {}) });
+  } catch (err) {
+    res.status(err.status || 500).json({ error: err.message, hint: err.hint });
+  }
+});
+app.get('/api/transfer/status', (_req, res) => res.json({ transfer: transfer.status() }));
+app.post('/api/transfer/cancel', (_req, res) => {
+  transfer.cancel();
+  res.json({ ok: true });
+});
+
 app.post('/api/update-now', async (_req, res) => {
   forceStopAll();
   // On a server (Docker) the host's clipforge-update timer sees this flag within 5 minutes and

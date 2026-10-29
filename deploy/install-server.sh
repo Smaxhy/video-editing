@@ -71,7 +71,10 @@ main() {
   }
 
   bold "4/7  Building ClipForge (first time: 10-25 minutes)"
-  docker compose build --pull
+  # Plain `docker build`: `docker compose build` refuses to start until the password and Claude login
+  # below are in .env, and the login needs this image. Same image name and build args as docker-compose.yml.
+  local whisperx; whisperx=$(env_get WITH_WHISPERX)
+  docker build --pull -t clipforge:latest --build-arg "WITH_WHISPERX=${whisperx:-0}" .
   ok "image built"
 
   bold "5/7  Password + Claude login"

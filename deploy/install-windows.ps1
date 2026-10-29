@@ -46,6 +46,21 @@ function Find-DockerDesktop {
     $loc = (Get-ItemProperty $key -ErrorAction SilentlyContinue).InstallLocation
     if ($loc) { $cands += (Join-Path $loc 'Docker Desktop.exe') }
   }
+  # Next to the docker command, or wherever it is running right now.
+  $cli = Get-Command docker -ErrorAction SilentlyContinue
+  if ($cli -and $cli.Source) { $cands += (Join-Path (Split-Path (Split-Path (Split-Path $cli.Source))) 'Docker Desktop.exe') }
+  $proc = Get-Process 'Docker Desktop' -ErrorAction SilentlyContinue | Select-Object -First 1
+  if ($proc -and $proc.Path) { $cands += $proc.Path }
+  # The Start menu shortcut, and other drives (installed to D:\ etc.).
+  $shell = New-Object -ComObject WScript.Shell
+  foreach ($menu in "$env:ProgramData\Microsoft\Windows\Start Menu\Programs", "$env:APPDATA\Microsoft\Windows\Start Menu\Programs") {
+    foreach ($l in Get-ChildItem $menu -Recurse -Filter 'Docker Desktop.lnk' -ErrorAction SilentlyContinue) {
+      $cands += $shell.CreateShortcut($l.FullName).TargetPath
+    }
+  }
+  foreach ($d in Get-PSDrive -PSProvider FileSystem -ErrorAction SilentlyContinue) {
+    $cands += (Join-Path $d.Root 'Program Files\Docker\Docker\Docker Desktop.exe')
+  }
   foreach ($c in $cands) { if ($c -and (Test-Path $c)) { return $c } }
   return $null
 }
@@ -82,8 +97,16 @@ if ($LASTEXITCODE -ne 0) {
 }
 Ok 'WSL 2'
 
+Refresh-Path
+$dockerCli = [bool](Get-Command docker -ErrorAction SilentlyContinue)
+$dockerReady = $false
+if ($dockerCli) { docker info *> $null; $dockerReady = $LASTEXITCODE -eq 0 }
 $dockerExe = Find-DockerDesktop
-if (-not $dockerExe) {
+if ($dockerReady) { Ok 'using the Docker you already have' }
+elseif ($dockerCli -and -not $dockerExe) {
+  Fail 'Docker is installed but not running. Open Docker Desktop, wait until it says "Engine running", then run this again.'
+}
+elseif (-not $dockerExe) {
   Write-Host '  installing Docker Desktop (a big download - a few minutes)…'
   winget install --id Docker.DockerDesktop -e --silent --accept-source-agreements --accept-package-agreements
   $dockerExe = Find-DockerDesktop
@@ -107,8 +130,10 @@ if (-not $dockerExe) {
 }
 Refresh-Path
 # The docker command lives next to Docker Desktop (and may not be on this window's PATH yet).
-$dockerBin = Join-Path (Split-Path $dockerExe) 'resources\bin'
-if ((Test-Path $dockerBin) -and -not (Get-Command docker -ErrorAction SilentlyContinue)) { $env:Path += ";$dockerBin" }
+if ($dockerExe) {
+  $dockerBin = Join-Path (Split-Path $dockerExe) 'resources\bin'
+  if ((Test-Path $dockerBin) -and -not (Get-Command docker -ErrorAction SilentlyContinue)) { $env:Path += ";$dockerBin" }
+}
 docker info *> $null
 if ($LASTEXITCODE -ne 0) {
   Write-Host '  starting Docker Desktop (accept its terms the first time it opens)…'
@@ -226,12 +251,14 @@ try {
 } catch { Warn "could not set up automatic updates ($($_.Exception.Message)) - run this installer again to update" }
 
 # Start with Windows: Docker Desktop opens at sign-in, and ClipForge starts with it.
-$startup = [Environment]::GetFolderPath('Startup')
-$shell = New-Object -ComObject WScript.Shell
-$lnk = $shell.CreateShortcut((Join-Path $startup 'Docker Desktop.lnk'))
-$lnk.TargetPath = $dockerExe
-$lnk.Save()
-Ok 'starts by itself when you sign in to Windows'
+if ($dockerExe) {
+  $startup = [Environment]::GetFolderPath('Startup')
+  $shell = New-Object -ComObject WScript.Shell
+  $lnk = $shell.CreateShortcut((Join-Path $startup 'Docker Desktop.lnk'))
+  $lnk.TargetPath = $dockerExe
+  $lnk.Save()
+  Ok 'starts by itself when you sign in to Windows'
+} else { Warn 'make sure your Docker starts with Windows, so ClipForge does too' }
 
 # A sleeping PC can't make videos: don't sleep while plugged in (the screen still turns off).
 if ($env:CLIPFORGE_KEEP_AWAKE -ne '0') {

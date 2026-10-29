@@ -62,7 +62,14 @@ switch ($Command) {
     & powershell -NoProfile -ExecutionPolicy Bypass -File (Join-Path $Dir 'deploy\windows-update.ps1') -Dir $Dir
     Write-Host "Up to date ($(git rev-parse --short HEAD))."
   }
+  'clean' {
+    Write-Host 'Removing old ClipForge versions and Docker build cache (your videos are kept)...'
+    docker image prune -f
+    docker builder prune -af
+    Write-Host 'Done. The next update rebuilds from scratch once (10-25 minutes, in the background).'
+  }
   'space' {
+    docker system df
     docker exec clipforge du -sh /app/library /app/output /app/workspace /app/uploads /root/.cache
     $drive = (Get-Item $Dir).PSDrive
     Write-Host ("{0:N0} GB free on {1}:" -f ($drive.Free / 1GB), $drive.Name)
@@ -76,7 +83,8 @@ clipforge password   show the app password
 clipforge logs       live log (Ctrl+C to leave)
 clipforge restart    restart ClipForge
 clipforge update     install the newest version now (stops a stuck render)
-clipforge space      what's using the disk
+clipforge space      what's using the disk (ClipForge + Docker)
+clipforge clean      free space: delete old versions + Docker build cache (videos kept)
 clipforge stop | start
 To log in to Claude again: delete the CLAUDE_CODE_OAUTH_TOKEN line in .env and run the install command.
 '@

@@ -63,7 +63,12 @@ case "$cmd" in
     cat .env.tmp > .env && rm -f .env.tmp
     echo "Claude login cleared — the installer will ask you to log in again."
     bash "$DIR/deploy/install-server.sh" ;;
-  space) docker exec clipforge du -sh /app/library /app/output /app/workspace /app/uploads /root/.cache 2>/dev/null; df -h "$DIR" ;;
+  clean)
+    need_root clean
+    echo "Removing old ClipForge versions and Docker build cache (your videos are kept)..."
+    docker image prune -f && docker builder prune -af
+    echo "Done. The next update rebuilds from scratch once (10-25 minutes, in the background)." ;;
+  space) docker system df; docker exec clipforge du -sh /app/library /app/output /app/workspace /app/uploads /root/.cache 2>/dev/null; df -h "$DIR" ;;
   help|-h|--help)
     cat <<'HELP'
 clipforge            status: running?, version, link, what it's doing, disk, memory
@@ -73,7 +78,8 @@ clipforge logs       live log (Ctrl+C to leave)
 clipforge restart    restart ClipForge
 clipforge update     install the newest version now (stops a stuck render)
 clipforge login      log in to Claude again (when the login expired)
-clipforge space      what's using the disk
+clipforge space      what's using the disk (ClipForge + Docker)
+clipforge clean      free space: delete old versions + Docker build cache (videos kept)
 clipforge stop|start
 HELP
     ;;

@@ -23,7 +23,7 @@ import {
   FORMATS, CAPTION_STYLES, FRAMINGS,
 } from './renderer.js';
 import { compressVideo, SIZE_PRESETS, RENDER_QUALITY } from './compress.js';
-import { run, exists, round, PipelineError, killAllChildren } from './util.js';
+import { run, exists, round, PipelineError, killAllChildren, setGentle } from './util.js';
 import { createAuth } from './auth.js';
 import { createLibrary, VIDEO_EXT, AUDIO_EXT } from './library.js';
 import { createScanner } from './scanner.js';
@@ -124,7 +124,7 @@ async function extractAudio(id) {
   const done = library.list().find((x) => x.kind === 'audio' && x.source?.type === 'extracted' && x.source.from === id);
   if (done) return done;
   const tmp = path.join(library.incoming, `extract-${id}-${Date.now()}.m4a`);
-  const r = await run('ffmpeg', ['-v', 'error', '-y', '-i', library.sourcePath(id), '-vn', '-map', '0:a:0', '-ac', '2', '-ar', '48000', '-c:a', 'aac', '-b:a', '256k', tmp], { timeoutMs: 30 * 60_000 });
+  const r = await run('ffmpeg', ['-v', 'error', '-y', '-i', library.sourcePath(id), '-vn', '-map', '0:a:0', '-ac', '2', '-ar', '48000', '-c:a', 'aac', '-b:a', '256k', tmp], { timeoutMs: 30 * 60_000, background: true });
   if (r.code !== 0) {
     await fs.rm(tmp, { force: true });
     throw new PipelineError(`Could not extract the sound of ${a.name}.`, { detail: r.stderr.slice(-500) });
@@ -133,6 +133,7 @@ async function extractAudio(id) {
   return library.ingest(tmp, { name, size: (await fs.stat(tmp)).size, source: { type: 'extracted', from: id } });
 }
 await library.load();
+setGentle(library.settings().gentleCpu);
 const folders = createFolders({ file: path.join(DIRS.library, '.folders.json') });
 await folders.load();
 const storage = createStorage({
@@ -1406,6 +1407,10 @@ app.get('/api/library/search', async (req, res, next) => {
 app.patch('/api/library/settings', async (req, res) => {
   const patch = {};
   if (typeof req.body?.shrinkLarge === 'boolean') patch.shrinkLarge = req.body.shrinkLarge;
+  if (typeof req.body?.gentleCpu === 'boolean') {
+    patch.gentleCpu = req.body.gentleCpu;
+    setGentle(req.body.gentleCpu);
+  }
   if (typeof req.body?.extractAudio === 'boolean') patch.extractAudio = req.body.extractAudio;
   res.json(await library.setSettings(patch));
 });

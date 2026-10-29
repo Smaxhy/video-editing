@@ -92,6 +92,7 @@ export async function compactVideo(src, dest, { duration, onProgress, signal } =
     '-c:a', 'aac', '-b:a', '160k', '-movflags', '+faststart', dest,
   ], {
     signal,
+    background: 'heavy',
     timeoutMs: encodeTimeout(duration),
     onLine: (line) => {
       const m = line.match(/^out_time_us=(\d+)/);
@@ -107,7 +108,7 @@ export async function compactVideo(src, dest, { duration, onProgress, signal } =
 
 /** Lossless / uncompressed audio → high-quality AAC. */
 export async function compactAudio(src, dest, { signal } = {}) {
-  const r = await run('ffmpeg', ['-v', 'error', '-y', '-i', src, '-vn', '-map', '0:a:0', '-c:a', 'aac', '-b:a', '256k', dest], { signal, timeoutMs: 30 * 60_000 });
+  const r = await run('ffmpeg', ['-v', 'error', '-y', '-i', src, '-vn', '-map', '0:a:0', '-c:a', 'aac', '-b:a', '256k', dest], { signal, background: true, timeoutMs: 30 * 60_000 });
   if (r.code !== 0) {
     await fs.rm(dest, { force: true });
     throw new PipelineError('Could not compress the audio.', { detail: tail(r.stderr, 3) });
@@ -134,7 +135,7 @@ export function createLibrary({ dir, onChange = () => {}, onReady = () => {}, is
   const incoming = path.join(dir, '.incoming');
   fsSync.mkdirSync(incoming, { recursive: true });
   const settingsFile = path.join(dir, '.library.json');
-  let settings = { shrinkLarge: true, extractAudio: false };
+  let settings = { shrinkLarge: true, extractAudio: false, gentleCpu: true };
   try {
     settings = { ...settings, ...JSON.parse(fsSync.readFileSync(settingsFile, 'utf8')) };
   } catch {
@@ -361,7 +362,7 @@ export function createLibrary({ dir, onChange = () => {}, onReady = () => {}, is
         const r = await run('ffmpeg', [
           '-v', 'error', '-y', '-ss', times[i].toFixed(2), '-i', src,
           '-frames:v', '1', '-vf', `scale=${w}:${h}:force_original_aspect_ratio=decrease,pad=${w}:${h}:-1:-1`, '-q:v', String(q), frame,
-        ], { timeoutMs: FRAME_TIMEOUT });
+        ], { timeoutMs: FRAME_TIMEOUT, background: true });
         if (r.code === 0 && (await exists(frame))) last = frame;
         else if (last) await fs.copyFile(last, frame);
         else return false;
@@ -369,7 +370,7 @@ export function createLibrary({ dir, onChange = () => {}, onReady = () => {}, is
       const r = await run('ffmpeg', [
         '-v', 'error', '-y', '-i', path.join(work, 'f%03d.jpg'),
         '-vf', `tile=${cols}x${rows}`, '-frames:v', '1', '-q:v', String(q), out,
-      ], { timeoutMs: FRAME_TIMEOUT });
+      ], { timeoutMs: FRAME_TIMEOUT, background: true });
       return r.code === 0;
     } finally {
       await fs.rm(work, { recursive: true, force: true });
@@ -385,6 +386,7 @@ export function createLibrary({ dir, onChange = () => {}, onReady = () => {}, is
       '-c:v', 'libx264', '-preset', 'veryfast', '-crf', '26',
       '-c:a', 'aac', '-b:a', '128k', '-ac', '2', '-movflags', '+faststart', tmp,
     ], {
+      background: 'heavy',
       timeoutMs: encodeTimeout(duration),
       onLine: (line) => {
         const m = line.match(/^out_time_us=(\d+)/);
@@ -507,7 +509,7 @@ export function createLibrary({ dir, onChange = () => {}, onReady = () => {}, is
       const thumbArgs = kind === 'video'
         ? ['-ss', String(Math.min(1, meta.duration / 3)), '-i', dest, '-frames:v', '1', '-vf', 'scale=480:-2']
         : ['-i', dest, '-filter_complex', 'aformat=channel_layouts=mono,showwavespic=s=480x270:colors=#9b85ff', '-frames:v', '1'];
-      await run('ffmpeg', ['-v', 'error', '-y', ...thumbArgs, '-q:v', '4', file(id, 'thumb.jpg')], { timeoutMs: FRAME_TIMEOUT }).catch(() => null);
+      await run('ffmpeg', ['-v', 'error', '-y', ...thumbArgs, '-q:v', '4', file(id, 'thumb.jpg')], { timeoutMs: FRAME_TIMEOUT, background: true }).catch(() => null);
 
       const reason = kind === 'video' ? proxyReason(meta, ext) : null;
       const a = {

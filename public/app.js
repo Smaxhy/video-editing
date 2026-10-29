@@ -470,6 +470,10 @@ async function extractAudioOf(ids) {
   if (bad.length) toast(bad.map((r) => r.error).join(' '), 'error');
 }
 
+$('#gentleCpu').addEventListener('change', async () => {
+  try { await api('/api/library/settings', { method: 'PATCH', body: { gentleCpu: $('#gentleCpu').checked } }); }
+  catch (err) { toast(err.message, 'error'); }
+});
 $('#shrinkLarge').addEventListener('change', async () => {
   try { await api('/api/library/settings', { method: 'PATCH', body: { shrinkLarge: $('#shrinkLarge').checked } }); }
   catch (err) { toast(err.message, 'error'); }
@@ -2604,7 +2608,7 @@ async function init() {
   loadStyles();
   pollActivity();
   api('/api/scanner').then((sc) => { state.scanner = sc; renderScanBar(); }).catch(() => {});
-  api('/api/library/settings').then((ls) => { $('#shrinkLarge').checked = ls.shrinkLarge; $('#extractAudio').checked = ls.extractAudio === true; }).catch(() => {});
+  api('/api/library/settings').then((ls) => { $('#shrinkLarge').checked = ls.shrinkLarge; $('#gentleCpu').checked = ls.gentleCpu !== false; $('#extractAudio').checked = ls.extractAudio === true; }).catch(() => {});
   await Promise.all([loadLibrary().catch((err) => toast(err.message, 'error')), loadProjects(), loadFolders()]);
   if (!booted) { listenLibrary(); booted = true; }
   showInterrupted();

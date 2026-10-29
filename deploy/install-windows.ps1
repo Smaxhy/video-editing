@@ -58,7 +58,7 @@ if (-not (Get-Command winget -ErrorAction SilentlyContinue)) {
 }
 
 # --- 1. WSL 2 + Docker Desktop -----------------------------------------------------------------
-Step '1/7  WSL 2 and Docker Desktop'
+Step '1/8  WSL 2 and Docker Desktop'
 wsl.exe --status *> $null
 if ($LASTEXITCODE -ne 0) {
   wsl.exe --install --no-distribution
@@ -86,7 +86,7 @@ $memGb = [math]::Round(((docker info --format '{{.MemTotal}}') -as [double]) / 1
 if ($memGb -lt 7) { Warn "Docker only has $memGb GB of memory. Docker Desktop → Settings → Resources → Memory: set 8 GB or more." }
 
 # --- 2. Git + code ------------------------------------------------------------------------------
-Step '2/7  ClipForge code'
+Step '2/8  ClipForge code'
 if (-not (Get-Command git -ErrorAction SilentlyContinue)) { Winget-Install 'Git.Git' 'Git' }
 if (Test-Path (Join-Path $Dir '.git')) {
   git -C $Dir fetch -q origin $Branch
@@ -104,13 +104,13 @@ $envPath = Join-Path $Dir '.env'
 $cfg = Read-EnvFile $envPath
 
 # --- 3. Build -----------------------------------------------------------------------------------
-Step '3/7  Building ClipForge (first time: 10-25 minutes)'
+Step '3/8  Building ClipForge (first time: 10-25 minutes)'
 docker compose build --pull
 if ($LASTEXITCODE -ne 0) { Fail 'The Docker build failed — copy the error above (no passwords/tokens) and send it to Claude.' }
 Ok 'image built'
 
 # --- 4. Password + Claude login -----------------------------------------------------------------
-Step '4/7  Password and Claude login'
+Step '4/8  Password and Claude login'
 $newPassword = $null
 if (-not $cfg['CLIPFORGE_PASSWORD']) {
   $chars = [char[]]'ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnpqrstuvwxyz23456789'
@@ -142,7 +142,7 @@ if ($Wifi) {
 Write-EnvFile $envPath $cfg
 
 # --- 5. Start -----------------------------------------------------------------------------------
-Step '5/7  Starting ClipForge'
+Step '5/8  Starting ClipForge'
 docker compose up -d --remove-orphans
 if ($LASTEXITCODE -ne 0) { Fail 'docker compose up failed — see the error above.' }
 $up = $false
@@ -153,7 +153,7 @@ if (-not $up) { Fail "ClipForge didn't start. See: docker compose -f `"$Dir\dock
 Ok 'running at http://localhost:3000 (starts with Docker Desktop)'
 
 # --- 6. Tailscale -------------------------------------------------------------------------------
-Step '6/7  Phone access with Tailscale (free, private, HTTPS)'
+Step '6/8  Phone access with Tailscale (free, private, HTTPS)'
 $ts = Join-Path $env:ProgramFiles 'Tailscale\tailscale.exe'
 if (-not (Test-Path $ts)) { Winget-Install 'tailscale.tailscale' 'Tailscale' }
 & $ts status *> $null
@@ -167,8 +167,55 @@ $hostName = ((& $ts status --json) | ConvertFrom-Json).Self.DNSName.TrimEnd('.')
 $url = "https://$hostName"
 Ok "ClipForge is at $url"
 
-# --- 7. Done ------------------------------------------------------------------------------------
-Step '7/7  Done!'
+# --- 7. Automatic updates, start with Windows, stay awake, shortcuts --------------------------------
+Step '7/8  Automatic updates and start-up'
+$appData = Join-Path $env:LOCALAPPDATA 'ClipForge'
+$binDir = Join-Path $appData 'bin'
+New-Item -ItemType Directory -Force $binDir | Out-Null
+
+# Every 5 minutes: install a new version when there is one (never mid-render). Run through a tiny
+# VBScript so no PowerShell window flashes up each time.
+$updScript = Join-Path $Dir 'deploy\windows-update.ps1'
+$cmdLine = 'powershell.exe -NoProfile -ExecutionPolicy Bypass -File "{0}" -Dir "{1}" -Branch {2}' -f $updScript, $Dir, $Branch
+$vbs = Join-Path $appData 'update-hidden.vbs'
+[IO.File]::WriteAllText($vbs, ('CreateObject("WScript.Shell").Run "{0}", 0, False' -f ($cmdLine -replace '"', '""')) + "`r`n", [Text.Encoding]::ASCII)
+try {
+  $action = New-ScheduledTaskAction -Execute 'wscript.exe' -Argument "`"$vbs`""
+  $trigger = New-ScheduledTaskTrigger -Once -At (Get-Date).AddMinutes(2) -RepetitionInterval (New-TimeSpan -Minutes 5)
+  $settings = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -StartWhenAvailable `
+    -MultipleInstances IgnoreNew -ExecutionTimeLimit (New-TimeSpan -Hours 4)
+  $principal = New-ScheduledTaskPrincipal -UserId "$env:USERDOMAIN\$env:USERNAME" -LogonType Interactive -RunLevel Limited
+  Register-ScheduledTask -TaskName 'ClipForge update' -Action $action -Trigger $trigger -Settings $settings -Principal $principal -Force -ErrorAction Stop | Out-Null
+  Ok 'automatic updates on (every 5 minutes, never mid-render)'
+} catch { Warn "could not set up automatic updates ($($_.Exception.Message)) - run this installer again to update" }
+
+# Start with Windows: Docker Desktop opens at sign-in, and ClipForge starts with it.
+$startup = [Environment]::GetFolderPath('Startup')
+$shell = New-Object -ComObject WScript.Shell
+$lnk = $shell.CreateShortcut((Join-Path $startup 'Docker Desktop.lnk'))
+$lnk.TargetPath = $dockerExe
+$lnk.Save()
+Ok 'starts by itself when you sign in to Windows'
+
+# A sleeping PC can't make videos: don't sleep while plugged in (the screen still turns off).
+if ($env:CLIPFORGE_KEEP_AWAKE -ne '0') {
+  powercfg /change standby-timeout-ac 0 | Out-Null
+  powercfg /change hibernate-timeout-ac 0 | Out-Null
+  Ok 'PC stays awake while plugged in (set $env:CLIPFORGE_KEEP_AWAKE = "0" before installing to skip)'
+}
+
+# Desktop shortcut + the `clipforge` command.
+[IO.File]::WriteAllText((Join-Path ([Environment]::GetFolderPath('Desktop')) 'ClipForge.url'), "[InternetShortcut]`r`nURL=http://localhost:3000`r`n", [Text.Encoding]::ASCII)
+$cmdText = "@echo off`r`nsetlocal`r`nset `"CLIPFORGE_DIR=$Dir`"`r`npowershell -NoProfile -ExecutionPolicy Bypass -File `"$Dir\deploy\clipforge.ps1`" %*`r`n"
+[IO.File]::WriteAllText((Join-Path $binDir 'clipforge.cmd'), $cmdText, [Text.Encoding]::Default)
+$userPath = [string][Environment]::GetEnvironmentVariable('Path', 'User')
+if (-not (($userPath -split ';') -contains $binDir)) {
+  [Environment]::SetEnvironmentVariable('Path', (($userPath.TrimEnd(';'), $binDir) -join ';').TrimStart(';'), 'User')
+}
+Ok "desktop shortcut + the 'clipforge' command (open a new terminal, then: clipforge help)"
+
+# --- 8. Done ------------------------------------------------------------------------------------
+Step '8/8  Done!'
 $qrPng = Join-Path $Dir 'output\phone-qr.png'
 docker exec clipforge node scripts/qr.js $url --png /app/output/phone-qr.png | Out-Null
 Write-Host ''
@@ -184,5 +231,6 @@ if ($Wifi) {
 Write-Host ''
 if ($newPassword) { Write-Host "  App password: $newPassword   (save it — also in $envPath)" -ForegroundColor White }
 else { Write-Host "  App password: unchanged (CLIPFORGE_PASSWORD in $envPath)" }
-Write-Host '  Update later: run the same install command again.'
+Write-Host '  Updates install themselves. Check on it any time: open a terminal and type  clipforge'
+Write-Host '  (clipforge open / url / password / logs / update / help)'
 Write-Host ''

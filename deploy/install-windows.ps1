@@ -64,6 +64,13 @@ function Find-DockerDesktop {
   foreach ($c in $cands) { if ($c -and (Test-Path $c)) { return $c } }
   return $null
 }
+function Find-Tailscale {
+  $cands = @((Join-Path $env:ProgramFiles 'Tailscale\tailscale.exe'), (Join-Path ${env:ProgramFiles(x86)} 'Tailscale\tailscale.exe'))
+  $cli = Get-Command tailscale -ErrorAction SilentlyContinue
+  if ($cli -and $cli.Source) { $cands += $cli.Source }
+  foreach ($c in $cands) { if ($c -and (Test-Path $c)) { return $c } }
+  return $null
+}
 function Read-EnvFile($path) {
   $map = [ordered]@{}
   if (Test-Path $path) {
@@ -218,18 +225,43 @@ Ok 'running at http://localhost:3000 (starts with Docker Desktop)'
 
 # --- 6. Tailscale -------------------------------------------------------------------------------
 Step '6/8  Phone access with Tailscale (free, private, HTTPS)'
-$ts = Join-Path $env:ProgramFiles 'Tailscale\tailscale.exe'
-if (-not (Test-Path $ts)) { Winget-Install 'tailscale.tailscale' 'Tailscale' }
-& $ts status *> $null
-if ($LASTEXITCODE -ne 0) {
-  Write-Host '  Log in to Tailscale in the browser window (same account you will use on your phone).'
-  & $ts up
+$ts = Find-Tailscale
+if (-not $ts) {
+  Write-Host '  installing Tailscale…'
+  winget install --id tailscale.tailscale -e --silent --accept-source-agreements --accept-package-agreements
+  $ts = Find-Tailscale
+  if (-not $ts) {
+    Write-Host '  winget could not install it - downloading Tailscale directly…'
+    [Net.ServicePointManager]::SecurityProtocol = [Net.ServicePointManager]::SecurityProtocol -bor [Net.SecurityProtocolType]::Tls12
+    $arch = if ($env:PROCESSOR_ARCHITECTURE -eq 'ARM64') { 'arm64' } else { 'amd64' }
+    $msi = Join-Path $env:TEMP 'tailscale-setup.msi'
+    try {
+      Invoke-WebRequest "https://pkgs.tailscale.com/stable/tailscale-setup-latest-$arch.msi" -OutFile $msi -UseBasicParsing -ErrorAction Stop
+      Start-Process msiexec.exe -ArgumentList '/i', "`"$msi`"", '/quiet', '/norestart' -Wait
+    } catch { Warn "download failed: $($_.Exception.Message)" }
+    $ts = Find-Tailscale
+  }
 }
-Write-Host '  If Tailscale asks you to enable HTTPS, open its link and click Enable.'
-& $ts serve --bg 3000 | Out-Null
-$hostName = ((& $ts status --json) | ConvertFrom-Json).Self.DNSName.TrimEnd('.')
-$url = "https://$hostName"
-Ok "ClipForge is at $url"
+$url = 'http://localhost:3000'
+if ($ts) {
+  # The Tailscale service needs a moment after a fresh install.
+  for ($i = 0; $i -lt 10; $i++) { & $ts version *> $null; if ($LASTEXITCODE -eq 0) { break }; Start-Sleep 2 }
+  & $ts status *> $null
+  if ($LASTEXITCODE -ne 0) {
+    Write-Host '  Log in to Tailscale: open the link below (same account you will use on your phone).'
+    & $ts up
+  }
+  Write-Host '  If Tailscale asks you to enable HTTPS, open its link and click Enable.'
+  & $ts serve --bg 3000 | Out-Null
+  $hostName = $null
+  try { $hostName = ((& $ts status --json) | ConvertFrom-Json).Self.DNSName.TrimEnd('.') } catch {}
+  if ($hostName) {
+    $url = "https://$hostName"
+    Ok "ClipForge is at $url"
+  } else { Warn 'Tailscale is installed but not logged in yet. Run this installer again to finish phone access.' }
+} else {
+  Warn 'Tailscale did not install. Get it from https://tailscale.com/download/windows, log in, then run this again.'
+}
 
 # --- 7. Automatic updates, start with Windows, stay awake, shortcuts --------------------------------
 Step '7/8  Automatic updates and start-up'
@@ -289,7 +321,14 @@ Write-Host '  On your phone:'
 Write-Host '    1. Install the Tailscale app and log in with the same account.'
 Write-Host "    2. Scan the QR code that just opened (or type $url)"
 Write-Host '    3. iPhone: Share -> Add to Home Screen.   Android: menu -> Install app.'
-if (Test-Path $qrPng) { Start-Process $qrPng }
+if ((Test-Path $qrPng) -and $url -like 'https://*') {
+  # No picture viewer on some PCs (e.g. Windows Server): fall back to the browser, then to the file path.
+  try { Start-Process $qrPng -ErrorAction Stop }
+  catch {
+    try { Start-Process 'msedge.exe' -ArgumentList "`"$qrPng`"" -ErrorAction Stop }
+    catch { Write-Host "    (QR code picture: $qrPng)" }
+  }
+}
 if ($Wifi) {
   $ip = (Get-NetIPAddress -AddressFamily IPv4 | Where-Object { $_.PrefixOrigin -eq 'Dhcp' } | Select-Object -First 1).IPAddress
   if ($ip) { Write-Host "    On home Wi-Fi you can also use http://${ip}:3000" }

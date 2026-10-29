@@ -5,7 +5,7 @@ import readline from 'node:readline';
 import { spawn } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import os from 'node:os';
-import { run, tail, PipelineError } from './util.js';
+import { run, tail, PipelineError, isGentle, backgroundThreads, lowerPriority } from './util.js';
 
 /**
  * Local AI models for the library (no API, no GPU): CLIP embeddings of 4 frames per clip power
@@ -108,9 +108,12 @@ export function createMl({ toolsDir, library, isBusy = () => false, onChange = (
         ...process.env,
         TRANSFORMERS_ENTRY: path.join(nm, '@huggingface', 'transformers', 'dist', 'transformers.node.mjs'),
         MODEL_CACHE: path.join(toolsDir, 'ml', 'models'),
+        // Gentle mode: the AI index uses about half the cores, at the lowest priority.
+        ...(isGentle() ? { CLIPFORGE_BG_THREADS: String(backgroundThreads()) } : {}),
       },
       stdio: ['pipe', 'pipe', 'pipe'],
     });
+    if (isGentle() && p.pid) lowerPriority(p.pid);
     let stderr = '';
     p.stderr.on('data', (d) => (stderr = (stderr + d).slice(-4000)));
     // If the worker dies (e.g. the system runs out of memory), writing to it must not crash ClipForge.
@@ -198,7 +201,7 @@ export function createMl({ toolsDir, library, isBusy = () => false, onChange = (
       const frames = [];
       for (const f of [0.12, 0.37, 0.62, 0.87]) {
         const out = path.join(work, `f${frames.length}.jpg`);
-        const r = await run('ffmpeg', ['-v', 'error', '-y', '-ss', String((a.duration || 1) * f), '-i', src, '-frames:v', '1', '-vf', 'scale=336:-2', out], { timeoutMs: 120_000 });
+        const r = await run('ffmpeg', ['-v', 'error', '-y', '-ss', String((a.duration || 1) * f), '-i', src, '-frames:v', '1', '-vf', 'scale=336:-2', out], { timeoutMs: 120_000, background: true });
         if (r.code === 0) frames.push(out);
       }
       const patch = {};

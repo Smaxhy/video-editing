@@ -30,7 +30,7 @@ export function createLinkImports({ library, toolsDir, work, onChange = () => {}
   /** Audio only, as a music track. */
   async function soundOf(file, url, title, signal) {
     const out = path.join(library.incoming, `link-sound-${crypto.randomBytes(4).toString('hex')}.m4a`);
-    const r = await run('ffmpeg', ['-v', 'error', '-y', '-i', file, '-vn', '-map', '0:a:0', '-ac', '2', '-ar', '48000', '-c:a', 'aac', '-b:a', '256k', out], { signal, timeoutMs: 20 * 60_000 });
+    const r = await run('ffmpeg', ['-v', 'error', '-y', '-i', file, '-vn', '-map', '0:a:0', '-ac', '2', '-ar', '48000', '-c:a', 'aac', '-b:a', '256k', out], { signal, timeoutMs: 20 * 60_000, background: true });
     if (r.code !== 0) {
       await fs.rm(out, { force: true });
       throw new PipelineError('That link has no sound to save.', { detail: tail(r.stderr, 3) });

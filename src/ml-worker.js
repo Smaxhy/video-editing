@@ -8,6 +8,9 @@ import { pathToFileURL } from 'node:url';
 
 const tf = await import(pathToFileURL(process.env.TRANSFORMERS_ENTRY).href);
 if (process.env.MODEL_CACHE) tf.env.cacheDir = process.env.MODEL_CACHE;
+// Gentle mode (see util.js): cap the ONNX thread pools.
+const threads = Number(process.env.CLIPFORGE_BG_THREADS) || 0;
+const session = threads ? { session_options: { intraOpNumThreads: threads, interOpNumThreads: 1 } } : {};
 
 const CLIP_ID = 'Xenova/clip-vit-base-patch32';
 const CLAP_ID = 'Xenova/clap-htsat-unfused';
@@ -17,11 +20,11 @@ let clap = null;
 const getClip = () =>
   (clip ||= (async () => ({
     processor: await tf.AutoProcessor.from_pretrained(CLIP_ID),
-    vision: await tf.CLIPVisionModelWithProjection.from_pretrained(CLIP_ID, { dtype: 'q8' }),
+    vision: await tf.CLIPVisionModelWithProjection.from_pretrained(CLIP_ID, { dtype: 'q8', ...session }),
     tokenizer: await tf.AutoTokenizer.from_pretrained(CLIP_ID),
-    text: await tf.CLIPTextModelWithProjection.from_pretrained(CLIP_ID, { dtype: 'q8' }),
+    text: await tf.CLIPTextModelWithProjection.from_pretrained(CLIP_ID, { dtype: 'q8', ...session }),
   }))());
-const getClap = () => (clap ||= tf.pipeline('zero-shot-audio-classification', CLAP_ID, { dtype: 'q8' }));
+const getClap = () => (clap ||= tf.pipeline('zero-shot-audio-classification', CLAP_ID, { dtype: 'q8', ...session }));
 
 const unit = (arr) => {
   let s = 0;

@@ -1,5 +1,6 @@
 import { spawn } from 'node:child_process';
 import fs from 'node:fs/promises';
+import os from 'node:os';
 import path from 'node:path';
 
 /** Error with a short user-facing message plus optional technical detail. */
@@ -44,7 +45,63 @@ export function killAllChildren() {
 }
 process.on('exit', () => { for (const c of live) killTree(c, 'SIGKILL'); });
 
-export function run(cmd, args, { cwd, input, env, unsetEnv = [], onLine, timeoutMs, signal } = {}) {
+/**
+ * Gentle background work: previews, compressing imports and AI indexing run at the lowest CPU
+ * priority on about half the processor, and only one big background encode runs at a time — so uploads
+ * and imports never make the computer crawl. Renders keep full speed. "Full speed" in the library
+ * settings turns it off.
+ */
+let gentle = true;
+export const setGentle = (on) => { gentle = on !== false; };
+export const isGentle = () => gentle;
+// ffmpeg's decoder, filters and encoder each get this many threads and run side by side, so a
+// quarter of the cores per stage comes out at roughly half the computer in total.
+export const backgroundThreads = () => Math.max(1, Math.floor((os.availableParallelism?.() || os.cpus().length) / 4));
+export function lowerPriority(pid) {
+  try {
+    os.setPriority(pid, os.constants.priority.PRIORITY_LOW);
+  } catch { /* not allowed here — fine */ }
+}
+/** ffmpeg arguments capped to the background thread budget: filters, every decoder (before each -i) and the encoder (before the output). */
+export function gentleArgs(args, threads = backgroundThreads()) {
+  if (args.includes('-threads') || args.length < 2) return args;
+  const n = String(threads);
+  const body = args.slice(0, -1).flatMap((a) => (a === '-i' ? ['-threads', n, a] : [a]));
+  return ['-filter_threads', n, ...body, '-threads', n, args[args.length - 1]];
+}
+let heavySlots = 1;
+const heavyWaiting = [];
+async function heavySlot() {
+  if (heavySlots > 0) {
+    heavySlots--;
+    return;
+  }
+  await new Promise((r) => heavyWaiting.push(r));
+}
+function releaseHeavy() {
+  const next = heavyWaiting.shift();
+  if (next) next();
+  else heavySlots++;
+}
+
+/**
+ * `background: true` runs the command gently (see above); `background: 'heavy'` also waits for the
+ * single big-encode slot.
+ */
+export async function run(cmd, args, opts = {}) {
+  const bg = opts.background && gentle;
+  if (!bg) return spawnRun(cmd, args, opts);
+  const heavy = opts.background === 'heavy';
+  if (heavy) await heavySlot();
+  try {
+    if (opts.signal?.aborted) return { code: null, signal: 'SIGTERM', stdout: '', stderr: 'cancelled', timedOut: false };
+    return await spawnRun(cmd, cmd === 'ffmpeg' ? gentleArgs(args) : args, { ...opts, lowPriority: true });
+  } finally {
+    if (heavy) releaseHeavy();
+  }
+}
+
+function spawnRun(cmd, args, { cwd, input, env, unsetEnv = [], onLine, timeoutMs, signal, lowPriority = false } = {}) {
   return new Promise((resolve, reject) => {
     const childEnv = { ...process.env, ...env };
     for (const key of unsetEnv) delete childEnv[key];
@@ -55,6 +112,7 @@ export function run(cmd, args, { cwd, input, env, unsetEnv = [], onLine, timeout
       detached: !isWin, // own process group → the whole tree can be stopped
     });
     live.add(child);
+    if (lowPriority && child.pid) lowerPriority(child.pid);
 
     let stdout = '';
     let stderr = '';

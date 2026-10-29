@@ -244,7 +244,8 @@ function renderDisk() {
     <div><strong style="color:var(--text)">${fmtSize(s.library)}</strong> in library · ${fmtSize(s.projects)} project files</div>
     ${s.total ? `<div class="meter${low ? ' low' : ''}" role="meter" aria-label="Disk used" aria-valuemin="0" aria-valuemax="100" aria-valuenow="${Math.round(used * 100)}"><div style="width:${used * 100}%"></div></div>
     <div${low ? ' class="miss"' : ''}>${fmtSize(s.free)} free of ${fmtSize(s.total)}</div>` : ''}
-    <button class="btn xs ${s.free != null && s.free < 5e9 ? '' : 'ghost'}" type="button" id="openStorage">${s.free != null && s.free < 5e9 ? '⚠ Disk almost full — free up space' : 'Free up space'}</button>`;
+    <button class="btn xs ${s.free != null && s.free < 5e9 ? '' : 'ghost'}" type="button" id="openStorage">${s.free != null && s.free < 5e9 ? '⚠ Disk almost full — free up space' : 'Free up space'}</button>
+    <button class="btn xs ghost" type="button" id="openMove">Move to a new computer</button>`;
 }
 
 // ---- Free up space -------------------------------------------------------------
@@ -290,6 +291,59 @@ $('#sgList').addEventListener('click', async (e) => {
     if (what === 'generatedMusic') loadLibrary().catch(() => {});
     if (what === 'autopilot') loadAutopilot();
   } catch (err) { toast(err.message, 'error'); b.disabled = false; }
+});
+
+// ---- Move to a new computer ------------------------------------------------------
+async function openMove() {
+  $('#moveDlg').showModal();
+  try { renderTransfer((await api('/api/transfer/status')).transfer); } catch { /* older server */ }
+}
+function renderTransfer(t) {
+  const box = $('#mvProgress');
+  if (!t) return box.classList.add('hidden');
+  box.classList.remove('hidden');
+  const pct = t.bytes ? Math.min(100, Math.round((t.doneBytes / t.bytes) * 100)) : 100;
+  const head = t.state === 'running' ? `Copying… ${t.done}/${t.files} files · ${fmtSize(t.doneBytes)} of ${fmtSize(t.bytes)}`
+    : t.state === 'done' ? `Done — ${t.done - t.failed.length} files copied${t.skipped ? `, ${t.skipped} already here` : ''}${t.failed.length ? `, ${t.failed.length} failed (start it again to retry)` : ''}. ClipForge restarts to load everything…`
+    : 'Stopped — start it again to continue where it left off.';
+  box.innerHTML = `<div class="hint-line"><strong style="color:var(--text)">${esc(head)}</strong></div>
+    ${t.state === 'running' ? `<div class="meter" role="meter" aria-label="Transfer" aria-valuemin="0" aria-valuemax="100" aria-valuenow="${pct}"><div style="width:${pct}%"></div></div>
+    <div class="hint-line">${esc(t.current || '')}</div>
+    <button class="btn xs ghost" type="button" id="mvCancel">Stop</button>` : ''}`;
+  $('#mvGo').disabled = t.state === 'running';
+}
+document.addEventListener('click', (e) => { if (e.target.closest('#openMove')) openMove(); });
+$('#moveDlg [data-close]').addEventListener('click', () => $('#moveDlg').close());
+$('#moveDlg').addEventListener('click', async (e) => {
+  if (e.target.closest('#mvCancel')) await api('/api/transfer/cancel', { method: 'POST' }).catch(() => {});
+});
+$('#mvMakeCode').addEventListener('click', async () => {
+  const b = $('#mvMakeCode');
+  b.disabled = true;
+  try {
+    const r = await api('/api/transfer/code', { method: 'POST' });
+    const box = $('#mvCode');
+    box.classList.remove('hidden');
+    box.innerHTML = `<div>Code: <strong class="mv-big">${esc(r.code)}</strong> <span class="hint-line">(works for 6 hours)</span></div>
+      ${r.url ? `<div>Address: <strong>${esc(r.url)}</strong></div>` : ''}
+      ${r.codespace ? (r.portOpened ? '<div class="hint-line">✓ Opened this codespace to the internet for the transfer. Stop the codespace afterwards.</div>'
+        : '<div class="hint-line">One more step in the codespace: <strong>Ports</strong> tab → right-click port <strong>3000</strong> → <strong>Port Visibility → Public</strong>. Stop the codespace after the transfer.</div>') : ''}
+      <div class="hint-line">Now open ClipForge on the new computer → Move to a new computer → paste the address and this code.</div>`;
+  } catch (err) { toast(err.message, 'error'); }
+  b.disabled = false;
+});
+$('#mvForm').addEventListener('submit', async (e) => {
+  e.preventDefault();
+  $('#mvMsg').textContent = 'Connecting…';
+  $('#mvGo').disabled = true;
+  try {
+    const r = await api('/api/transfer/pull', { method: 'POST', body: { url: $('#mvUrl').value, code: $('#mvKey').value } });
+    $('#mvMsg').textContent = '';
+    renderTransfer(r.transfer);
+  } catch (err) {
+    $('#mvMsg').textContent = err.data?.hint ? `${err.message} ${err.data.hint}` : err.message;
+    $('#mvGo').disabled = false;
+  }
 });
 
 async function loadLibrary() {
@@ -345,6 +399,9 @@ function listenLibrary() {
       }
       renderStyleSelects();
       if ($('#styleDlg').open) renderStyleDialog();
+    } else if (evt.type === 'transfer') {
+      renderTransfer(evt.transfer);
+      if (evt.transfer.state === 'done') toast('Transfer finished — ClipForge restarts to load everything.', 'ok');
     } else if (evt.type === 'autopilot') {
       onAutopilot(evt.autopilot);
     } else if (evt.type === 'links') {

@@ -34,6 +34,21 @@ function Winget-Install($id, $name) {
   winget install --id $id -e --silent --accept-source-agreements --accept-package-agreements | Out-Null
   Refresh-Path
 }
+# Docker Desktop's install folder differs between versions and per-user / all-users installs.
+function Find-DockerDesktop {
+  $cands = @(
+    (Join-Path $env:ProgramFiles 'Docker\Docker\Docker Desktop.exe'),
+    (Join-Path $env:LOCALAPPDATA 'Programs\Docker\Docker\Docker Desktop.exe'),
+    (Join-Path $env:LOCALAPPDATA 'Docker\Docker Desktop.exe')
+  )
+  foreach ($key in 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\Docker Desktop',
+                   'HKCU:\SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\Docker Desktop') {
+    $loc = (Get-ItemProperty $key -ErrorAction SilentlyContinue).InstallLocation
+    if ($loc) { $cands += (Join-Path $loc 'Docker Desktop.exe') }
+  }
+  foreach ($c in $cands) { if ($c -and (Test-Path $c)) { return $c } }
+  return $null
+}
 function Read-EnvFile($path) {
   $map = [ordered]@{}
   if (Test-Path $path) {
@@ -67,12 +82,33 @@ if ($LASTEXITCODE -ne 0) {
 }
 Ok 'WSL 2'
 
-$dockerExe = Join-Path $env:ProgramFiles 'Docker\Docker\Docker Desktop.exe'
-if (-not (Test-Path $dockerExe)) {
-  Winget-Install 'Docker.DockerDesktop' 'Docker Desktop'
-  Warn 'Docker Desktop was just installed. If Windows asks you to sign out or restart, do it, then run this again.'
+$dockerExe = Find-DockerDesktop
+if (-not $dockerExe) {
+  Write-Host '  installing Docker Desktop (a big download - a few minutes)…'
+  winget install --id Docker.DockerDesktop -e --silent --accept-source-agreements --accept-package-agreements
+  $dockerExe = Find-DockerDesktop
+  if (-not $dockerExe) {
+    # winget fails on some PCs (old App Installer, store issues): get Docker's own installer instead.
+    Write-Host '  winget could not install it - downloading Docker Desktop directly…'
+    [Net.ServicePointManager]::SecurityProtocol = [Net.ServicePointManager]::SecurityProtocol -bor [Net.SecurityProtocolType]::Tls12
+    $arch = if ($env:PROCESSOR_ARCHITECTURE -eq 'ARM64') { 'arm64' } else { 'amd64' }
+    $setup = Join-Path $env:TEMP 'DockerDesktopInstaller.exe'
+    try {
+      Invoke-WebRequest "https://desktop.docker.com/win/main/$arch/Docker%20Desktop%20Installer.exe" -OutFile $setup -UseBasicParsing -ErrorAction Stop
+      Start-Process $setup -ArgumentList 'install', '--quiet', '--accept-license' -Wait
+    } catch { Warn "download failed: $($_.Exception.Message)" }
+    $dockerExe = Find-DockerDesktop
+  }
+  if (-not $dockerExe) {
+    Fail 'Docker Desktop did not install. Restart the PC and run this again. Still failing? Install it from https://www.docker.com/products/docker-desktop/ then run this again.'
+  }
+  Ok 'Docker Desktop installed'
+  Warn 'If Windows asks you to sign out or restart, do it, then run this same command again.'
 }
 Refresh-Path
+# The docker command lives next to Docker Desktop (and may not be on this window's PATH yet).
+$dockerBin = Join-Path (Split-Path $dockerExe) 'resources\bin'
+if ((Test-Path $dockerBin) -and -not (Get-Command docker -ErrorAction SilentlyContinue)) { $env:Path += ";$dockerBin" }
 docker info *> $null
 if ($LASTEXITCODE -ne 0) {
   Write-Host '  starting Docker Desktop (accept its terms the first time it opens)…'

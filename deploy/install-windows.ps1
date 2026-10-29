@@ -166,7 +166,10 @@ $cfg = Read-EnvFile $envPath
 
 # --- 3. Build -----------------------------------------------------------------------------------
 Step '3/8  Building ClipForge (first time: 10-25 minutes)'
-docker compose build --pull
+# Plain `docker build`: `docker compose build` refuses to start until the password and Claude login
+# below are in .env, and the login needs this image. Same image name and build args as docker-compose.yml.
+$whisperx = if ($cfg['WITH_WHISPERX']) { $cfg['WITH_WHISPERX'] } else { '0' }
+docker build --pull -t clipforge:latest --build-arg "WITH_WHISPERX=$whisperx" .
 if ($LASTEXITCODE -ne 0) { Fail 'The Docker build failed — copy the error above (no passwords/tokens) and send it to Claude.' }
 Ok 'image built'
 

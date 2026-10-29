@@ -162,6 +162,7 @@ UNIT
   systemctl daemon-reload
   systemctl enable --now clipforge-update.timer >/dev/null 2>&1 && ok "automatic updates on (every 5 minutes, never mid-render)" || warn "could not enable automatic updates"
   docker image prune -f >/dev/null 2>&1 || true
+  docker builder prune -f --filter until=168h >/dev/null 2>&1 || true
   install -m 0755 "$DIR/deploy/clipforge-cli.sh" /usr/local/bin/clipforge && ok "added the 'clipforge' command (try: clipforge help)"
 
   bold "Done!"

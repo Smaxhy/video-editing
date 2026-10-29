@@ -52,6 +52,7 @@ sys.exit(0 if d.get("busy") and time.time() * 1000 - d.get("at", 0) < 120000 els
   fi
   install -m 0755 "$DIR/deploy/clipforge-cli.sh" /usr/local/bin/clipforge 2>/dev/null || true
   docker image prune -f >/dev/null 2>&1 || true # old versions' images take gigabytes
+  docker builder prune -f --filter until=168h >/dev/null 2>&1 || true # and so does old build cache
   echo "ClipForge: running $(git rev-parse --short HEAD)"
 }
 

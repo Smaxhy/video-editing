@@ -179,6 +179,8 @@ $whisperx = if ($cfg['WITH_WHISPERX']) { $cfg['WITH_WHISPERX'] } else { '0' }
 docker build --pull -t clipforge:latest --build-arg "WITH_WHISPERX=$whisperx" .
 if ($LASTEXITCODE -ne 0) { Fail 'The Docker build failed — copy the error above (no passwords/tokens) and send it to Claude.' }
 Ok 'image built'
+docker image prune -f *> $null                        # earlier versions' images
+docker builder prune -f --filter until=168h *> $null  # and build cache older than a week
 
 # --- 4. Password + Claude login -----------------------------------------------------------------
 Step '4/8  Password and Claude login'

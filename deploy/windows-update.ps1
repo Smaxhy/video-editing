@@ -56,6 +56,7 @@ try {
   if ($new) { docker compose up -d --remove-orphans 2>&1 | Out-Null }
   else { docker compose up -d --remove-orphans --force-recreate 2>&1 | Out-Null }
   docker image prune -f *> $null # old versions' images take gigabytes
+  docker builder prune -f --filter until=168h *> $null # and so does old build cache
   Log "running $(git rev-parse --short HEAD)"
 } finally {
   $mutex.ReleaseMutex()

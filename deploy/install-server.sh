@@ -159,6 +159,7 @@ UNIT
   systemctl daemon-reload
   systemctl enable --now clipforge-update.timer >/dev/null 2>&1 && ok "automatic updates on (every 5 minutes, never mid-render)" || warn "could not enable automatic updates"
   docker image prune -f >/dev/null 2>&1 || true
+  install -m 0755 "$DIR/deploy/clipforge-cli.sh" /usr/local/bin/clipforge && ok "added the 'clipforge' command (try: clipforge help)"
 
   bold "Done!"
   echo
@@ -174,7 +175,8 @@ UNIT
   else
     echo "  App password: unchanged (see CLIPFORGE_PASSWORD in $DIR/.env)"
   fi
-  echo "  Updates install themselves. To update by hand: sudo bash $DIR/deploy/install-server.sh"
+  echo "  Updates install themselves. Check on it any time with:  clipforge"
+  echo "  (clipforge url · clipforge password · clipforge logs · clipforge update · clipforge help)"
   echo
 }
 

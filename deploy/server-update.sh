@@ -45,7 +45,12 @@ sys.exit(0 if d.get("busy") and time.time() * 1000 - d.get("at", 0) < 120000 els
     done
     busy && { echo "ClipForge: still busy — will retry"; exit 0; }
   fi
-  docker compose up -d --remove-orphans
+  if [ "$new" = 0 ]; then
+    docker compose up -d --remove-orphans --force-recreate # forced: restart even with nothing new
+  else
+    docker compose up -d --remove-orphans
+  fi
+  install -m 0755 "$DIR/deploy/clipforge-cli.sh" /usr/local/bin/clipforge 2>/dev/null || true
   docker image prune -f >/dev/null 2>&1 || true # old versions' images take gigabytes
   echo "ClipForge: running $(git rev-parse --short HEAD)"
 }

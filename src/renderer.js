@@ -293,8 +293,9 @@ export function buildComposition({ plan, clips, transcripts, settings, gsapSrc =
   const serifFont = `${settings.fontFiles?.serif ? '"CF Serif", ' : ''}Georgia, "Times New Roman", serif`;
   // Aesthetic finishing follows the edit: styled edits get kinetic text and an opening hit; film /
   // moody / cinematic looks get grain, a vignette and serif titles.
-  const styled = settings.intensity && settings.intensity !== 'clean';
-  const filmic = ['film', 'moody'].includes(settings.look);
+  // finish === false: the user asked for plain text / no effects (see directives.js).
+  const styled = settings.finish !== false && settings.intensity && settings.intensity !== 'clean';
+  const filmic = settings.finish !== false && ['film', 'moody'].includes(settings.look);
   const serifTitles = filmic || settings.look === 'warm' || settings.look === 'cool';
   const clipById = new Map(clips.map((c) => [c.id, c]));
 

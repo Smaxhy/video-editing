@@ -12,6 +12,7 @@ import { analyzeClip, isolateVoice, cutoutImage } from './analysis.js';
 import { detectTools, onPath, OPTIONAL_TOOLS } from './tools.js';
 import { generateEditPlans, GOALS, LENGTHS, PLANNER_MODELS, REVISABLE, INTENSITIES, beatGrid } from './editor.js';
 import { spicePlan } from './spice.js';
+import { resolveAuto, removeSlowMo, AUTO_LABELS } from './directives.js';
 import { beatEdit } from './beatedit.js';
 import { trackFromText } from './soundpick.js';
 import { createFolders } from './folders.js';
@@ -556,7 +557,7 @@ async function runPipeline(job, { prompt, clipIds, settings, reusePlan, revise =
     else if (settings.music !== 'off' && library.get(settings.music)) {
       music = { assetId: settings.music, start: saved.music?.assetId === settings.music ? saved.music.start : 0 };
     }
-    planned = { ...saved, versions, warnings: [], music: settings.trendingSound ? null : music, emphasis: saved.emphasis || [], sound: saved.sound || null };
+    planned = { ...saved, versions, warnings: [], music: settings.trendingSound ? null : music, emphasis: saved.emphasis || [], sound: saved.sound || null, auto: saved.auto || null };
     setStep(job, 'plan', 'done', 'Reused the saved plan — no Claude call.', 0.38);
   } else {
     setStep(job, 'plan', 'active', 'Claude is planning the edit…', 0.32);
@@ -587,6 +588,8 @@ async function runPipeline(job, { prompt, clipIds, settings, reusePlan, revise =
         remarks: revise,
         previous: JSON.stringify({ title: saved.title, versions: saved.versions, music: saved.music, emphasis: saved.emphasis }),
         current: Object.fromEntries(Object.keys(REVISABLE).map((k) => [k, settings[k]])),
+        applied: saved.autoApplied || [],
+        auto: saved.auto || null,
       };
       setStep(job, 'plan', 'active', 'Claude is applying your remarks…', 0.32);
     }
@@ -619,8 +622,28 @@ async function runPipeline(job, { prompt, clipIds, settings, reusePlan, revise =
     planned.music = pick ? { assetId: pick.id, start: planned.music.start } : null;
     await fs.writeFile(
       planFile,
-      JSON.stringify({ title: planned.title, checklist: planned.checklist, versions: planned.versions, music: planned.music, emphasis: planned.emphasis, sound: planned.sound }, null, 2),
+      JSON.stringify({ title: planned.title, checklist: planned.checklist, versions: planned.versions, music: planned.music, emphasis: planned.emphasis, sound: planned.sound, auto: planned.auto }, null, 2),
     );
+  }
+  // The user's words beat the automatic passes: Claude's "auto" call AND the request's explicit
+  // phrases ("keep the order", "no slow-mo", "simple cuts") decide which passes may touch the plan.
+  const directed = resolveAuto(planned.auto, [prompt, revise].filter(Boolean).join('\n'));
+  const auto = directed.auto;
+  const autoApplied = [];
+  if (directed.skipped.length) {
+    const why = [...new Set(directed.skipped.map((s) => s.why).filter(Boolean))].join('; ');
+    const what = directed.skipped.map((s) => AUTO_LABELS[s.pass]).join(', ');
+    notes.push(`Followed your request${why ? ` (${why})` : ' exactly'} — no automatic ${what}.`);
+  }
+  if (directed.noSlowmo) {
+    const clipDuration = (id) => clips.find((c) => c.id === id)?.duration || 0;
+    let n = 0;
+    planned.versions = planned.versions.map((v) => {
+      const r = removeSlowMo(v.plan, clipDuration);
+      n += r.changed;
+      return { ...v, plan: r.plan };
+    });
+    if (n) notes.push(`No slow motion, as you asked: ${n} scene${n > 1 ? 's' : ''} play at normal speed.`);
   }
   // Setting changes from a revision ("the colours look green" → picture polish off, …).
   const changes = planned.settingsChanges || {};
@@ -728,7 +751,7 @@ async function runPipeline(job, { prompt, clipIds, settings, reusePlan, revise =
         const out = beats ? { beats: shift(beats.beats), downbeats: shift(beats.downbeats) } : beatGrid(planned.sound?.bpm || 120, layoutTimeline(v.plan).total + 5);
         // Music edits (montage / no talking): cut the whole video to the song — rhythm from the beat
         // grid, slow-motion hero shot on the drop. Talking videos keep their word-accurate cuts.
-        if (beats && musicAsset && settings.intensity !== 'clean') {
+        if (beats && musicAsset && settings.intensity !== 'clean' && auto.beatEdit) {
           const dropAt = musicAsset.music?.drop != null ? round(musicAsset.music.drop - offset, 3) : null;
           const be = beatEdit(v.plan, { beats: out.beats, drop: dropAt > 1.5 ? dropAt : null, talking: speaks, clipDuration, energy, total: layoutTimeline(v.plan).total });
           if (be.shots) {
@@ -736,13 +759,20 @@ async function runPipeline(job, { prompt, clipIds, settings, reusePlan, revise =
             return { ...v, plan: be.plan, downbeats: out.downbeats };
           }
         }
+        if (!auto.beatSnap) return { ...v, downbeats: out.downbeats };
         const r = snapCutsToBeats(v.plan, out, { talking: speaks, clipDuration, layout: layoutTimeline });
         moved += r.moved;
         return { ...v, plan: r.plan, downbeats: out.downbeats };
       });
       const what = ref ? `"${ref.name}" (${beats.bpm} BPM)` : `${planned.sound?.bpm || 120} BPM for the sound you'll add`;
-      if (moved) notes.push(`Synced ${moved} cut${moved > 1 ? 's' : ''} to the beat of ${what}.`);
-      if (beatShots) notes.push(`Cut a music edit to ${what}: ${beatShots} shots on the beat, a build-up into the drop and a slow-motion hit on it.`);
+      if (moved) {
+        notes.push(`Synced ${moved} cut${moved > 1 ? 's' : ''} to the beat of ${what}.`);
+        autoApplied.push(`beatSnap: moved ${moved} cut points onto the beat`);
+      }
+      if (beatShots) {
+        notes.push(`Cut a music edit to ${what}: ${beatShots} shots on the beat, a build-up into the drop and a slow-motion hit on it.`);
+        autoApplied.push(`beatEdit: re-cut the whole video into ${beatShots} beat-length shots (re-ordered and re-timed your scenes, slow-motion hit with flash + shake on the drop)`);
+      }
     } catch (err) {
       notes.push(`Could not find the beat (${err.message}) — cuts left as planned.`);
     }
@@ -759,24 +789,37 @@ async function runPipeline(job, { prompt, clipIds, settings, reusePlan, revise =
   }
   // Styling pass: styled transitions on beat-landing B-roll cuts, punch-ins between sentences, and a
   // flash + shake on the peak — so "creator"/"max" edits never come out as plain cuts.
-  if (settings.intensity !== 'clean') {
+  if (settings.intensity !== 'clean' && (auto.styling || auto.slowmo)) {
     const talking = (sc) => (transcripts[sc.clip]?.words || []).filter((w) => w.end > sc.start && w.start < sc.end).length >= 3;
     const clipDuration = (id) => clips.find((c) => c.id === id)?.duration || 0;
     const energy = musicAsset?.music?.energy || planned.sound?.energy || 'medium';
     let added = 0;
-    planned.versions = planned.versions.map((v) => {
+    if (auto.styling) planned.versions = planned.versions.map((v) => {
       const r = spicePlan(v.plan, { intensity: settings.intensity, energy, downbeats: v.downbeats || [], talking, clipDuration, layout: layoutTimeline });
       added += r.added;
       return { ...v, plan: r.plan };
     });
-    if (added) notes.push(`Styled ${added} cut${added > 1 ? 's' : ''} (${settings.intensity} intensity, ${energy} energy): transitions on the beat, punch-ins and a hit on the peak.`);
+    if (added) {
+      notes.push(`Styled ${added} cut${added > 1 ? 's' : ''} (${settings.intensity} intensity, ${energy} energy): transitions on the beat, punch-ins and a hit on the peak.`);
+      autoApplied.push(`styling: added ${added} transitions / punch-ins / flash + shake`);
+    }
     let ramps = 0;
-    planned.versions = planned.versions.map((v) => {
+    if (auto.slowmo) planned.versions = planned.versions.map((v) => {
       const r = rampSlowMo(v.plan, { talking, clipDuration });
       ramps += r.ramps;
       return { ...v, plan: r.plan };
     });
-    if (ramps) notes.push(`Speed-ramped into ${ramps} slow-motion moment${ramps > 1 ? 's' : ''}.`);
+    if (ramps) {
+      notes.push(`Speed-ramped into ${ramps} slow-motion moment${ramps > 1 ? 's' : ''}.`);
+      autoApplied.push(`slowmo: speed-ramped into ${ramps} slow-motion scenes`);
+    }
+  }
+  if (auto.finish && settings.intensity !== 'clean') autoApplied.push('finish: word-by-word animated text and an opening zoom hit');
+  if (auto.finish && ['film', 'moody'].includes(settings.look)) autoApplied.push('finish: film grain and a vignette');
+  // Remember what the passes did, so a revision ("no slow-mo!") can switch the right one off.
+  {
+    const saved = JSON.parse(await fs.readFile(planFile, 'utf8').catch(() => 'null'));
+    if (saved) await fs.writeFile(planFile, JSON.stringify({ ...saved, auto, autoApplied }, null, 2));
   }
   // AI voiceover: Kokoro reads the planner's narration lines; they become one mixed track + captions.
   if (settings.voiceover !== 'off') {
@@ -969,6 +1012,7 @@ async function runPipeline(job, { prompt, clipIds, settings, reusePlan, revise =
         motion: settings.motion,
         look: settings.look,
         intensity: settings.intensity,
+        finish: auto.finish,
         downbeats: v.downbeats || null,
         narration: v.narration || null,
         sfxDir: settings.sfx !== 'off' ? await ensureSfx(TOOLS_DIR).catch(() => null) : null,

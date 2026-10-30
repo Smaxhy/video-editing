@@ -2,6 +2,7 @@ import fs from 'node:fs/promises';
 import path from 'node:path';
 import { jsonrepair } from 'jsonrepair';
 import { run, tail, round, clamp, PipelineError } from './util.js';
+import { AUTO_PASSES, normalizeAuto } from './directives.js';
 
 const CLAUDE_BIN = process.env.CLAUDE_BIN || 'claude';
 const CLAUDE_TIMEOUT_MS = Number(process.env.CLAUDE_TIMEOUT_MS || 10 * 60 * 1000);
@@ -74,6 +75,9 @@ const PLAN_SCHEMA = `{
       ]
     }
   ],
+  "auto": {                                // which automatic passes may change your plan afterwards (see "After your plan")
+    "beatEdit": true, "beatSnap": true, "styling": true, "slowmo": true, "finish": true
+  },
   "music": { "track": "m1", "start": 0 },  // ONLY when a music section is given below; omit otherwise
   "emphasis": [                            // ONLY when captions are on: words the captions should make pop
     { "word": "timber", "emoji": "🌲" }    // a single spoken word; emoji optional (null) — at most 1 in 3 gets one
@@ -150,7 +154,7 @@ const SETTING_HELP = {
   proAudio: 'voice clean-up / levelling',
 };
 
-function revisionSection({ remarks, previous, current }) {
+function revisionSection({ remarks, previous, current, applied = [], auto = null }) {
   const keys = Object.entries(REVISABLE)
     .map(([k, v]) => `- "${k}": ${v.map((x) => JSON.stringify(x)).join(' | ')} — ${SETTING_HELP[k]}${current[k] !== undefined ? ` (now ${JSON.stringify(current[k])})` : ''}`)
     .join('\n');
@@ -163,6 +167,11 @@ ${remarks}
 Start from the previous edit below and change ONLY what the remarks ask for (plus what those changes require). Keep every other scene, cut point, text, timing and the music exactly as they were — unless the remarks ask for a different sound/song: then use the track given in the Music section and re-time the cut to it (B-roll cuts on its beat, the peak on its drop). Record each remark and what you changed in "checklist".
 If a remark is about the look, sound or captions rather than the cut (e.g. "the colours look green", "no music", "captions too big"), change the render settings by adding "settings" to your response with ONLY the keys you change:
 ${keys}
+
+${applied?.length ? `After that plan, ClipForge's automatic passes changed the video the user watched:
+${applied.map((a) => `- ${a}`).join('\n')}
+If a remark is about something those passes did (re-ordered or re-cut shots, slow motion, extra transitions, punch-ins, shakes, flashes, word-by-word text, grain), switch that pass off in "auto" — your plan alone does not contain those changes.
+` : ''}Automatic passes last time: ${JSON.stringify(auto || {})} — keep these values unless the remarks call for a change.
 
 Previous edit (JSON):
 ${previous}
@@ -324,6 +333,11 @@ ${music.tracks.map((t) => `- ${t.id}: "${t.name}" · ${round(t.duration)}s${t.ta
 
 ## RULE #1 — do exactly what the user asks
 The user's request below is the highest authority. Follow every instruction literally: specified text is used word for word, specified order/timing/transitions/clips are respected, anything they say to remove is removed. The style guide further down only fills gaps the user left open; never let it override an explicit instruction. Record every instruction and how you handled it in "checklist".
+
+## After your plan — ClipForge's automatic passes (you decide which may run)
+Unless you switch them off in "auto", ClipForge changes your plan after you answer:
+${Object.entries(AUTO_PASSES).map(([k, v]) => `- "${k}": ${v}.`).join('\n')}
+They make generic requests look great, but they REWRITE what you planned. Set a pass to false whenever it would break something the user asked for — e.g. a set clip order or timing, whole clips, a calm/slow pace, "no slow motion", simple or specific cuts/transitions, "no effects", plain text. When the user gave you no specific instructions about those things, leave them true.
 
 ## User's request
 """
@@ -602,7 +616,8 @@ export function normalizeResponse(raw, clips, options) {
 
   const settingsChanges = options.revision ? normalizeSettingChanges(raw.settings) : {};
 
-  return { title: String(raw.title || 'ClipForge edit').slice(0, 120), checklist, versions, warnings, music, emphasis, settingsChanges, sound: normalizeSound(raw.sound) };
+  const auto = normalizeAuto(raw.auto, options.revision?.auto || null);
+  return { title: String(raw.title || 'ClipForge edit').slice(0, 120), checklist, versions, warnings, music, emphasis, settingsChanges, sound: normalizeSound(raw.sound), auto };
 }
 
 /** Output length of a normalized plan (sum of scene lengths minus transition overlaps). */

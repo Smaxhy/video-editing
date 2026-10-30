@@ -8,8 +8,11 @@ for await (const chunk of process.stdin) input += chunk;
 const { modulePath, lines, voice, speed, outDir } = JSON.parse(input);
 
 const { KokoroTTS } = await import(pathToFileURL(modulePath).href);
-// q8 weights: ~90 MB, near-identical quality to fp32 and several times faster on CPU.
-const tts = await KokoroTTS.from_pretrained('onnx-community/Kokoro-82M-v1.0-ONNX', { dtype: 'q8', device: 'cpu' });
+// fp32 weights (~330 MB, downloaded once): the cleanest voice — the 8-bit model sounds noticeably
+// metallic and slurs words. Falls back to 8-bit when fp32 can't load here.
+const ID = 'onnx-community/Kokoro-82M-v1.0-ONNX';
+const tts = await KokoroTTS.from_pretrained(ID, { dtype: 'fp32', device: 'cpu' })
+  .catch(() => KokoroTTS.from_pretrained(ID, { dtype: 'q8', device: 'cpu' }));
 const out = [];
 for (const [i, line] of lines.entries()) {
   const audio = await tts.generate(line.text, { voice, speed });

@@ -8,6 +8,10 @@ const norm = (s) => String(s || '').toLowerCase().normalize('NFKD').replace(/[̀
   .replace(/\.(m4a|mp3|wav|aac|ogg|flac|mp4|mov|webm)\b/g, ' ').replace(/\(sound\)/g, ' ').replace(/[^a-z0-9]+/g, ' ').trim();
 const STOP = new Set(['the', 'and', 'with', 'this', 'that', 'sound', 'song', 'music', 'track', 'audio', 'video', 'my', 'of', 'from', 'remix', 'edit', 'official', 'version']);
 const SOUND_WORDS = /\b(sound|song|music|track|audio|beat|tune|bgm)\b/;
+const VOCAB = new Set(('hip hop rap drill trap phonk lofi lo fi pop edm house techno dubstep rock metal punk acoustic guitar piano '
+  + 'cinematic orchestral jazz rnb soul funk disco country classical reggaeton afrobeats afro latin kpop ambient synthwave '
+  + 'energetic aggressive happy sad calm epic dark motivational funny romantic nostalgic tense chill hype upbeat emotional '
+  + 'dreamy relaxing peaceful intense powerful playful quirky melancholic uplifting slowed sped').split(' '));
 
 export function trackFromText(text, tracks) {
   const t = norm(text);
@@ -27,7 +31,7 @@ export function trackFromText(text, tracks) {
   if (best) return { id: best.tr.id, name: best.tr.name, why: 'named in your request' };
   if (!SOUND_WORDS.test(t)) return null;
   // 2. "the last / newest / latest sound I imported".
-  if (/\b(last|latest|newest|recent|recently|just)\b/.test(t)) {
+  if (/\b(last|latest|newest|most recent|recently (added|imported|uploaded|saved)|just (added|imported|uploaded|saved|put))\b/.test(t)) {
     const tr = [...tracks].sort((a, b) => (b.createdAt || 0) - (a.createdAt || 0))[0];
     return { id: tr.id, name: tr.name, why: 'the newest sound in your library' };
   }
@@ -35,7 +39,8 @@ export function trackFromText(text, tracks) {
   let desc = null;
   for (const tr of tracks) {
     const heard = norm(`${tr.heard || ''} ${tr.tags || ''}`);
-    const words = heard.split(' ').filter((w) => w.length >= 3 && !STOP.has(w) && !/^\d+$/.test(w) && !['bpm', 'energy', 'genre', 'mood', 'drop', 'loud', 'parts', 'quiet', 'intro', 'curve', 'digit', 'per', 'loudest'].includes(w));
+    // Only real music words count ("phonk", "calm", "piano") — not "background" or "nice".
+    const words = heard.split(' ').filter((w) => VOCAB.has(w));
     const hits = [...new Set(words)].filter((w) => ` ${t} `.includes(` ${w} `)).length;
     if (hits && (!desc || hits > desc.hits)) desc = { hits, tr };
   }

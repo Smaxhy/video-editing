@@ -82,8 +82,13 @@ test('new transitions validate, render as tweens and get matching sound effects'
   assert.deepEqual(plan.scenes.map((s) => s.transition), ['cut', 'whip', 'flash', 'glitch', 'zoom-through', 'light-leak', 'punch', 'spin']);
   const { html } = buildComposition({ plan: { ...plan, title: 't', overlays: [] }, clips, transcripts: {}, settings: { width: 1080, height: 1920, captions: 'off', motion: 'punchy' } });
   for (const needle of ['#mb0g', '#mb1g', 'id="flash"', 'id="glitch"', 'id="lk0"', 'expo.out', 'rotation: 28', 'filter: url(#mb1)']) assert.ok(html.includes(needle), needle);
-  const cues = sfxCues({ timeline: layoutTimeline(plan), overlays: [], level: 'subtle' }).map((c) => c.name);
+  const cues = sfxCues({ timeline: layoutTimeline(plan), overlays: [], level: 'full' }).map((c) => c.name);
   for (const name of ['whoosh', 'hit', 'glitch']) assert.ok(cues.includes(name), `${name} in ${cues}`);
+  // Subtle (the default): no glitch noises, and never two sounds within 2.5 s.
+  const subtle = sfxCues({ timeline: layoutTimeline(plan), overlays: [], level: 'subtle' });
+  assert.ok(!subtle.some((c) => c.name === 'glitch'));
+  assert.ok(subtle.every((c, i) => i === 0 || c.start - subtle[i - 1].start >= 2.5), JSON.stringify(subtle));
+  assert.ok(subtle.length >= 3 && subtle.length < cues.length);
 });
 
 test('the planner gets the intensity guide', () => {

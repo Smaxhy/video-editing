@@ -78,3 +78,54 @@ export function removeSlowMo(plan, clipDuration = () => Infinity) {
   });
   return { plan: { ...plan, scenes }, changed };
 }
+
+/**
+ * Render settings the request's own words decide — whatever the menus say. Texts are read in order
+ * (original request, then each fix), so a later "add music back" beats an earlier "no music".
+ * Returns { patch, reasons } with patch keys: music ('auto' | 'off'), trendingSound, aiMusic,
+ * musicLevel, voiceover, sfx, captions.
+ */
+const SOUNDS = String.raw`music|song|songs|track|soundtrack|beat|tune|audio|bgm|instrumental`;
+const STRONG_NEG = String.raw`(?:no|without|remove|get rid of|turn off|take out|mute|drop|don'?t (?:add|use|want|put|need)|do not (?:add|use|want|put)|stop (?:adding|using|the))`;
+const SETTING_RULES = [
+  {
+    re: new RegExp(String.raw`\b${STRONG_NEG}\b[^.!?\n]{0,20}?\b(?:(?:background )?(?:${SOUNDS}))\b`, 'i'),
+    patch: { music: 'off' },
+    why: 'no music',
+    // A complaint that music is missing, not a request to remove it.
+    unless: /\b(?:there(?:'s| is| was)|still|but|it has|the video has|i hear|i got) no (?:background )?(?:music|song|soundtrack|audio)\b|\bno (?:music|song|audio) (?:in (?:it|the video|there)|is playing|was (?:added|playing)|there)\b|\bisn'?t any (?:music|song)\b/i,
+  },
+  {
+    re: new RegExp(String.raw`\b(?:add|put|use|want|need|include|play|with|under(?:neath)?|keep|bring back|give it|needs?)\b[^.!?\n]{0,40}?\b(?:${SOUNDS})\b|\b(?:background|backing) (?:${SOUNDS})\b|\b(?:${SOUNDS}) (?:in|under|behind|on|over) (?:the |it|this|everything)|\bthere(?:'s| is) no (?:${SOUNDS})\b|\b(?:${SOUNDS}) (?:is )?(?:missing|not there|gone|not playing)\b|\bcan'?t hear the (?:${SOUNDS})\b`, 'i'),
+    patch: { music: 'auto', trendingSound: false, aiMusic: true },
+    why: 'you asked for music',
+  },
+  { re: /\b(?:music|song|track|beat)\b[^.!?\n]{0,15}\b(?:louder|higher|up|more audible|too (?:quiet|low|soft))\b|\b(?:louder|turn up|raise|boost)\b[^.!?\n]{0,15}\b(?:the )?(?:music|song|track|beat)\b|\bcan'?t hear the (?:music|song|track|beat)\b/i, patch: { musicLevel: 'high' }, why: 'music louder' },
+  { re: /\b(?:music|song|track|beat)\b[^.!?\n]{0,15}\b(?:quieter|lower|softer|down|too (?:loud|high))\b|\b(?:quieter|turn down|lower)\b[^.!?\n]{0,15}\b(?:the )?(?:music|song|track|beat)\b/i, patch: { musicLevel: 'low' }, why: 'music quieter' },
+  { re: new RegExp(String.raw`\b${STRONG_NEG}\b[^.!?\n]{0,20}?\b(?:voice[- ]?overs?|narrat(?:ion|or)|ai voice|the voice|robot voice)\b|\b(?:voice[- ]?over|narrat(?:ion|or)|ai voice|the voice)\b[^.!?\n]{0,25}\b(?:bad|terrible|awful|weird|robotic|annoying|cringe|sucks|is off|not good|horrible|trash|doing (?:very )?bad)\b`, 'i'), patch: { voiceover: 'off' }, why: 'no voiceover' },
+  { re: /\b(?:add|with|use|want|need|include|put)\b[^.!?\n]{0,15}\b(?:a |an )?(?:voice[- ]?over|narrat(?:ion|or)|ai voice)\b|\bnarrate (?:it|this|the)\b/i, patch: { voiceover: 'on' }, why: 'you asked for a voiceover', unless: /\b(?:no|without|remove|don'?t)\b[^.!?\n]{0,20}\b(?:voice[- ]?over|narrat)/i },
+  { re: new RegExp(String.raw`\b${STRONG_NEG}\b[^.!?\n]{0,20}?\b(?:sound effects?|sfx|whoosh(?:es)?|swoosh(?:es)?|pops?|dings?|random sounds?|weird sounds?|those sounds?)\b|\b(?:random|weird|annoying|cheesy|stupid|extra) (?:sound|noise)s?\b`, 'i'), patch: { sfx: 'off' }, why: 'no sound effects' },
+  { re: new RegExp(String.raw`\b${STRONG_NEG}\b[^.!?\n]{0,15}?\b(?:captions?|subtitles?|subs)\b`, 'i'), patch: { captions: 'off' }, why: 'no captions' },
+];
+
+export function settingsFromText(texts) {
+  const patch = {};
+  const reasons = {};
+  for (const raw of [].concat(texts).filter(Boolean)) {
+    const t = String(raw).replace(/[’`]/g, "'");
+    for (const r of SETTING_RULES) {
+      if (!r.re.test(t) || r.unless?.test(t)) continue;
+      // "no music" in the same text wins over "music" mentioned elsewhere in it.
+      if (r.patch.music === 'auto' && SETTING_RULES[0].re.test(t) && !SETTING_RULES[0].unless.test(t) && !/\b(?:add|bring back|want|need|put)\b[^.!?\n]{0,30}\b(?:music|song|track)\b/i.test(t)) continue;
+      for (const [k, v] of Object.entries(r.patch)) {
+        patch[k] = v;
+        reasons[k] = r.why;
+      }
+    }
+  }
+  return { patch, reasons };
+}
+
+/** Does the request ask for narration at all? ("auto" voiceover only narrates when it does.) */
+export const asksForVoiceover = (text) => /\b(?:voice[- ]?over|narrat(?:e|ion|or|ing)|ai voice|voice it|someone talking over|tell the story with a voice)\b/i.test(String(text || ''))
+  && !/\b(?:no|without|remove|don'?t)\b[^.!?\n]{0,20}\b(?:voice[- ]?over|narrat)/i.test(String(text || ''));

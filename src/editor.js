@@ -130,7 +130,7 @@ export const REVISABLE = {
   captionPos: ['bottom', 'middle'],
   motion: ['off', 'subtle', 'punchy'],
   sfx: ['off', 'subtle', 'full'],
-  music: ['off'],
+  music: ['off', 'auto'],
   musicLevel: ['low', 'medium', 'high'],
   tighten: ['off', 'natural', 'tight'],
   voiceover: ['off', 'auto', 'on'],
@@ -145,7 +145,7 @@ const SETTING_HELP = {
   captionPos: 'where captions sit',
   motion: 'automatic zooms / punch-ins',
   sfx: 'whoosh/pop sound effects',
-  music: '"off" removes the background music',
+  music: '"off" removes the background music, "auto" puts the creator\'s music back under the video',
   musicLevel: 'music volume',
   tighten: 'how hard pauses are cut',
   voiceover: 'AI narrator',
@@ -154,7 +154,7 @@ const SETTING_HELP = {
   proAudio: 'voice clean-up / levelling',
 };
 
-function revisionSection({ remarks, previous, current, applied = [], auto = null }) {
+function revisionSection({ remarks, previous, current, applied = [], auto = null, earlier = [] }) {
   const keys = Object.entries(REVISABLE)
     .map(([k, v]) => `- "${k}": ${v.map((x) => JSON.stringify(x)).join(' | ')} — ${SETTING_HELP[k]}${current[k] !== undefined ? ` (now ${JSON.stringify(current[k])})` : ''}`)
     .join('\n');
@@ -164,7 +164,10 @@ Their remarks (highest authority — above the original request):
 """
 ${remarks}
 """
-Start from the previous edit below and change ONLY what the remarks ask for (plus what those changes require). Keep every other scene, cut point, text, timing and the music exactly as they were — unless the remarks ask for a different sound/song: then use the track given in the Music section and re-time the cut to it (B-roll cuts on its beat, the peak on its drop). Record each remark and what you changed in "checklist".
+${earlier.length ? `Earlier fixes the user asked for — they STILL apply, keep them done:
+${earlier.map((r, i) => `${i + 1}. """${r}"""`).join('\n')}
+
+` : ''}Start from the previous edit below and change ONLY what the remarks ask for (plus what those changes require). Keep every other scene, cut point, text, timing and the music exactly as they were — unless the remarks ask for a different sound/song: then use the track given in the Music section and re-time the cut to it (B-roll cuts on its beat, the peak on its drop). Record each remark and what you changed in "checklist".
 If a remark is about the look, sound or captions rather than the cut (e.g. "the colours look green", "no music", "captions too big"), change the render settings by adding "settings" to your response with ONLY the keys you change:
 ${keys}
 
@@ -308,8 +311,8 @@ export function buildPrompt({ clips, userPrompt, options }) {
 ${vo.mode === 'on'
     ? 'Write a spoken voiceover ("narration") for every version.'
     : 'If the footage has little or no speech and a narrator would make the video better (story, how-to, documentary, motivational, explainer), write a spoken voiceover ("narration") for every version. If people already talk on camera, or the vibe is a pure music montage, leave "narration" empty.'}
-- A natural AI voice (${vo.voiceLabel}) reads each line. Write how people talk, not how they write: short sentences (max ~16 words), contractions, concrete words. The first line is the hook and starts at ~0.3 s.
-- Leave room to breathe: about 2.5 words per second, total speech at most ~70% of the version's length, lines in order and never overlapping.
+- A natural AI voice (${vo.voiceLabel}) reads each line. Write how the creator would talk to a friend, not how people write: short sentences (max ~14 words), contractions, concrete words, no clichés ("in today's video", "let's dive in", "embark", "journey"). Never describe what the viewer can already see — add what they can't (the why, the feeling, the twist). The first line is the hook and starts at ~0.3 s.
+- If the user said what the voiceover should say, use their words. Leave room to breathe: about 2.3 words per second, total speech at most ~55% of the version's length so the music is heard, lines in order and never overlapping.
 - Never narrate over moments where someone on camera is talking. Under narration set those scenes' "volume" to 0.15-0.35 so the natural sound stays as texture.
 - Narration is turned into captions automatically — do not add text overlays repeating it.
 `;
@@ -382,6 +385,14 @@ ${catalog}
 - Overlay times are OUTPUT timeline seconds and must fit inside that version's length. Overlays must not overlap each other in time unless they sit in different positions.
 - Footage with little or no speech (POV, B-roll, montage): build the story from the visuals — use the "best moments", cut on shot changes, keep scenes 1-4s. If the user asks for subtitles/text or a theme (e.g. "the art of tree cutting"), write short on-screen lines as "title"/"text" overlays (2-7 words, 2-3s each, one at a time) that narrate the video — these are its subtitles.
 - "hook" = big punchy text at the top in the opening seconds. "title" = centered title card. "lower-third" = name/role or place label (3-5s). "text" = short on-screen point. "cta" = end card with the call to action (last 2-3s).
+
+## Final check — before you answer
+Re-read the user's request${options.revision ? ' and every remark' : ''} below and make sure the plan does ALL of it. Every instruction gets a "checklist" entry saying exactly how it is done; if one is impossible with this footage, say why in its "done" instead of quietly ignoring it.${musicSection ? ' A Music section is given: "music" MUST name one of its tracks.' : ''}
+"""
+${String(userPrompt).slice(0, 6000)}${options.revision ? `
+--- fixes asked after watching ---
+${[...(options.revision.earlier || []), options.revision.remarks].map((r) => `- ${r}`).join('\n').slice(0, 6000)}` : ''}
+"""
 
 ## Response format
 Respond with ONE JSON object and nothing else — no prose, no markdown fences. Escape double quotes inside text (\\"). Keep every "note" under 12 words and every checklist "done" under 30 words so the answer stays short. Shape (comments are explanatory, omit them):

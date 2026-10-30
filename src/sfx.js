@@ -96,11 +96,13 @@ export function sfxCues({ timeline, overlays, emojiTimes = [], level = 'full' })
   for (const t of emojiTimes) cues.push({ name: 'pop', start: t, prio: 1 });
   // "subtle" (the default) keeps only what a human editor would add: whooshes on real transitions,
   // the hook pop and the build into the CTA — no ticks or pops on every caption.
-  const keep = level === 'subtle' ? (c) => c.prio >= 2 && c.name !== 'impact' : () => true;
+  const keep = level === 'subtle' ? (c) => c.prio >= 2 && c.name !== 'impact' && c.name !== 'glitch' : () => true;
+  // Subtle also spaces them out (one every ~2.5 s at most) — a whoosh on every beat cut sounds random.
+  const gap = level === 'subtle' ? 2.5 : 0.35;
   const out = [];
   for (const c of cues.filter((x) => x.start >= 0 && keep(x)).sort((a, b) => b.prio - a.prio || a.start - b.start)) {
     // Risers overlap what comes after them by design; everything else keeps its distance.
-    if (out.some((o) => Math.abs(o.start - c.start) < 0.35 && o.name !== 'riser' && c.name !== 'riser')) continue;
+    if (out.some((o) => Math.abs(o.start - c.start) < gap && o.name !== 'riser' && c.name !== 'riser')) continue;
     out.push({ name: c.name, start: round(c.start, 3) });
   }
   return out.sort((a, b) => a.start - b.start);

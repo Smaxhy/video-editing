@@ -12,7 +12,7 @@ import { analyzeClip, isolateVoice, cutoutImage } from './analysis.js';
 import { detectTools, onPath, OPTIONAL_TOOLS } from './tools.js';
 import { generateEditPlans, GOALS, LENGTHS, PLANNER_MODELS, REVISABLE, INTENSITIES, beatGrid } from './editor.js';
 import { spicePlan } from './spice.js';
-import { resolveAuto, removeSlowMo, AUTO_LABELS } from './directives.js';
+import { resolveAuto, removeSlowMo, AUTO_LABELS, settingsFromText, asksForVoiceover } from './directives.js';
 import { beatEdit } from './beatedit.js';
 import { trackFromText } from './soundpick.js';
 import { createFolders } from './folders.js';
@@ -447,13 +447,32 @@ function musicOptions(setting) {
   return { options: { mode: fixed ? 'fixed' : 'auto', fixed, tracks: list }, byKey };
 }
 
-async function runPipeline(job, { prompt, clipIds, settings, reusePlan, revise = null }) {
+async function runPipeline(job, { prompt, userPrompt = prompt, clipIds, settings, reusePlan, revise = null, revisions = [] }) {
   await storage.ensureSpace(); // stop now with a clear message rather than halfway on a full disk
   const ws = path.join(DIRS.workspace, job.id);
   const outDir = path.join(DIRS.output, job.id);
   const signal = job.abort.signal;
   await fs.mkdir(ws, { recursive: true });
   const notes = [];
+  // Everything the user told us, oldest first: the request, then every fix ("add music", "no voiceover").
+  const history = [userPrompt, ...(revisions.length ? revisions : revise ? [revise] : [])].filter(Boolean);
+  const said = history.join('\n');
+  // Settings an earlier fix changed stay changed (they used to snap back to the menus on the next fix).
+  const savedPlan = revise || reusePlan ? JSON.parse(await fs.readFile(path.join(ws, 'edit-plan.json'), 'utf8').catch(() => 'null')) : null;
+  if (savedPlan?.settingsChanges && revise) settings = { ...settings, ...savedPlan.settingsChanges };
+  // The user's words beat the menus: "use my music", "no voiceover", "no sound effects"…
+  {
+    const { patch, reasons } = settingsFromText(history);
+    if (patch.music === 'auto' && settings.music !== 'off') delete patch.music; // a picked track stays
+    if (patch.music === 'off') delete patch.aiMusic;
+    const changed = Object.entries(patch).filter(([k, v]) => settings[k] !== v);
+    if (changed.length) {
+      settings = { ...settings, ...patch };
+      const label = { music: (v) => (v === 'off' ? 'no music' : 'music on'), voiceover: (v) => `voiceover ${v}`, sfx: (v) => `sound effects ${v}`, captions: (v) => `captions ${v}`, musicLevel: (v) => `music ${v}`, trendingSound: () => null, aiMusic: () => null };
+      const parts = [...new Set(changed.map(([k, v]) => label[k]?.(v) && `${label[k](v)} (${reasons[k]})`).filter(Boolean))];
+      if (parts.length) notes.push(`Following your words: ${parts.join(', ')}.`);
+    }
+  }
   if (settings.autoFind && !reusePlan) clipIds = await findFootage(job, prompt, settings, { signal, ws, notes });
   const clips = clipIds
     .map((id) => job.clips.find((c) => c.id === id))
@@ -572,7 +591,8 @@ async function runPipeline(job, { prompt, clipIds, settings, reusePlan, revise =
       cta: settings.cta,
       brand: settings.brand,
       music: mus.byKey.size ? mus.options : null,
-      voiceover: settings.voiceover === 'off' ? null : { mode: settings.voiceover, voiceLabel: VOICES[settings.voice] },
+      // "auto" narrates only when the user asks for a voiceover — never uninvited.
+      voiceover: settings.voiceover === 'on' || (settings.voiceover === 'auto' && asksForVoiceover(said)) ? { mode: 'on', voiceLabel: VOICES[settings.voice] } : null,
       style: settings.style && styles.get(settings.style) ? styleGuideText(styles.get(settings.style)) : null,
       model: settings.plannerModel,
       trendingSound: settings.trendingSound,
@@ -590,6 +610,7 @@ async function runPipeline(job, { prompt, clipIds, settings, reusePlan, revise =
         current: Object.fromEntries(Object.keys(REVISABLE).map((k) => [k, settings[k]])),
         applied: saved.autoApplied || [],
         auto: saved.auto || null,
+        earlier: history.slice(1, -1), // fixes asked before this one — they still apply
       };
       setStep(job, 'plan', 'active', 'Claude is applying your remarks…', 0.32);
     }
@@ -622,12 +643,13 @@ async function runPipeline(job, { prompt, clipIds, settings, reusePlan, revise =
     planned.music = pick ? { assetId: pick.id, start: planned.music.start } : null;
     await fs.writeFile(
       planFile,
-      JSON.stringify({ title: planned.title, checklist: planned.checklist, versions: planned.versions, music: planned.music, emphasis: planned.emphasis, sound: planned.sound, auto: planned.auto }, null, 2),
+      JSON.stringify({ title: planned.title, checklist: planned.checklist, versions: planned.versions, music: planned.music, emphasis: planned.emphasis, sound: planned.sound, auto: planned.auto,
+        settingsChanges: { ...(revise ? savedPlan?.settingsChanges : null), ...planned.settingsChanges } }, null, 2),
     );
   }
   // The user's words beat the automatic passes: Claude's "auto" call AND the request's explicit
   // phrases ("keep the order", "no slow-mo", "simple cuts") decide which passes may touch the plan.
-  const directed = resolveAuto(planned.auto, [prompt, revise].filter(Boolean).join('\n'));
+  const directed = resolveAuto(planned.auto, said);
   const auto = directed.auto;
   const autoApplied = [];
   if (directed.skipped.length) {
@@ -650,7 +672,21 @@ async function runPipeline(job, { prompt, clipIds, settings, reusePlan, revise =
   if (Object.keys(changes).length) {
     settings = { ...settings, ...changes };
     if (changes.music === 'off') planned.music = null;
+    if (changes.music === 'auto') settings.trendingSound = false;
     notes.push(`Changed for your remarks: ${Object.entries(changes).map(([k, v]) => `${k} → ${v}`).join(', ')}.`);
+  }
+  // Music is on but the plan has none (Claude skipped it, or a fix just turned music on): use the
+  // creator's own track whose energy fits the planned vibe.
+  if (!planned.music && settings.music !== 'off' && !settings.trendingSound) {
+    const mine = musicCandidates();
+    const fixed = library.get(settings.music);
+    const energy = planned.sound?.energy;
+    const pick = fixed?.hasAudio ? fixed : mine.find((a) => energy && a.music?.energy === energy) || mine[0];
+    if (pick) {
+      planned.music = { assetId: pick.id, start: 0 };
+      const saved = JSON.parse(await fs.readFile(planFile, 'utf8').catch(() => 'null'));
+      if (saved) await fs.writeFile(planFile, JSON.stringify({ ...saved, music: planned.music }, null, 2));
+    }
   }
   // Auto-tighten: cut pauses and "um"s inside talking scenes (B-roll and POV stay as planned).
   if (settings.tighten !== 'off') {
@@ -1112,6 +1148,8 @@ async function runPipeline(job, { prompt, clipIds, settings, reusePlan, revise =
     music: musicAsset ? { name: musicAsset.name, start: planned.music.start } : null,
     review,
     revision: revise || null,
+    revisions: history.slice(1),
+    prompt: userPrompt || null,
     sound: planned.sound || null,
     trendingSound: Boolean(settings.trendingSound),
     clipIds: clips.map((c) => c.id),
@@ -1141,6 +1179,7 @@ async function maybeReedit(job, opts, first) {
   try {
     second = await runPipeline(job, {
       ...opts,
+      userPrompt: opts.prompt, // the reviewer's notes are not the user's words
       prompt: `${opts.prompt}\n\n## A reviewer watched the previous cut (score ${first.review.score}/10). Fix this:\n${first.review.fixes}\nIssues: ${first.review.issues.join(' | ')}`,
       clipIds: first.clipIds,
       settings: { ...s, autoFind: false },
@@ -1903,7 +1942,8 @@ function editSettings(s = {}, autoFind = false) {
     tighten: level(s.tighten, prof?.tighten, 'natural'),
     polish: s.polish !== false,
     beatSync: s.beatSync !== false,
-    sfx: level(s.sfx, prof?.sfx, s.intensity === 'clean' ? 'subtle' : 'full'),
+    // Subtle by default: a few well-placed whooshes and hits, never a sound on every cut.
+    sfx: level(s.sfx, prof?.sfx, 'subtle'),
     voiceover: prof ? prof.voiceover : VOICEOVER_MODES.includes(s.voiceover) ? s.voiceover : 'auto',
     voice: VOICES[s.voice] ? s.voice : 'am_michael',
     selfReview: s.selfReview !== false,
@@ -1956,7 +1996,10 @@ app.post('/api/edit', async (req, res) => {
     return res.status(400).json({ error: `That's ${count} videos — pick at most ${MAX_VARIANTS} format × length combinations.` });
   }
 
-  startPipeline(job, { prompt: String(prompt || job.result?.revision || '').slice(0, 40000), clipIds: revise && job.result?.clipIds?.length ? job.result.clipIds.filter((id) => job.clips.some((c) => c.id === id)) : ids, settings, reusePlan: Boolean(reusePlan) && !revise, revise });
+  // Fixes build on each other: every earlier remark still applies (and the original request with them).
+  const revisions = revise ? [...(job.result?.revisions || (job.result?.revision ? [job.result.revision] : [])), revise].slice(-12) : [];
+  const original = String(prompt || job.result?.prompt || job.prompt || '').slice(0, 40000);
+  startPipeline(job, { prompt: original, clipIds: revise && job.result?.clipIds?.length ? job.result.clipIds.filter((id) => job.clips.some((c) => c.id === id)) : ids, settings, reusePlan: Boolean(reusePlan) && !revise, revise, revisions });
   res.status(202).json({ jobId: job.id, statusUrl: `/api/status/${job.id}`, videos: count });
 });
 

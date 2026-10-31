@@ -10,7 +10,7 @@
   Run it again any time to update. Optional settings (set before running):
     $env:CLIPFORGE_DIR    = "$HOME\ClipForge"   # install folder
     $env:CLIPFORGE_BRANCH = "main"
-    $env:CLIPFORGE_WIFI   = "1"                  # also allow phones on your home Wi-Fi (no Tailscale needed)
+    $env:CLIPFORGE_WIFI   = "1"                  # phones on your home Wi-Fi (skips Tailscale entirely)
 #>
 # 'Continue', not 'Stop': in Windows PowerShell 5.1, git/docker progress on stderr would otherwise abort
 # the script. Every step checks $LASTEXITCODE (or uses -ErrorAction Stop) instead.
@@ -208,8 +208,12 @@ if (-not $cfg['CLAUDE_CODE_OAUTH_TOKEN']) {
 
 if ($Wifi) {
   $cfg['CLIPFORGE_BIND'] = '0.0.0.0'
-  if (-not (Get-NetFirewallRule -DisplayName 'ClipForge' -ErrorAction SilentlyContinue)) {
-    New-NetFirewallRule -DisplayName 'ClipForge' -Direction Inbound -Protocol TCP -LocalPort 3000 -Action Allow -Profile Private -ErrorAction Stop | Out-Null
+  # Any profile: many home Wi-Fis are marked "Public" in Windows, which would block the phone. The app
+  # itself is password-protected.
+  if (Get-NetFirewallRule -DisplayName 'ClipForge' -ErrorAction SilentlyContinue) {
+    Set-NetFirewallRule -DisplayName 'ClipForge' -Profile Any | Out-Null
+  } else {
+    New-NetFirewallRule -DisplayName 'ClipForge' -Direction Inbound -Protocol TCP -LocalPort 3000 -Action Allow -Profile Any -ErrorAction Stop | Out-Null
   }
 }
 Write-EnvFile $envPath $cfg
@@ -226,6 +230,13 @@ if (-not $up) { Fail "ClipForge didn't start. See: docker compose -f `"$Dir\dock
 Ok 'running at http://localhost:3000 (starts with Docker Desktop)'
 
 # --- 6. Tailscale -------------------------------------------------------------------------------
+$wifiIp = (Get-NetIPAddress -AddressFamily IPv4 | Where-Object { $_.PrefixOrigin -eq 'Dhcp' } | Select-Object -First 1).IPAddress
+if ($Wifi) {
+  # Wi-Fi mode: the phone opens the PC's address on the same network — no Tailscale, no extra login.
+  Step '6/8  Phone access on your home Wi-Fi'
+  $url = if ($wifiIp) { "http://${wifiIp}:3000" } else { 'http://localhost:3000' }
+  if ($wifiIp) { Ok "phones on your Wi-Fi open $url" } else { Warn 'could not find this PC''s Wi-Fi address (ipconfig shows it as IPv4 Address)' }
+} else {
 Step '6/8  Phone access with Tailscale (free, private, HTTPS)'
 $ts = Find-Tailscale
 if (-not $ts) {
@@ -263,6 +274,7 @@ if ($ts) {
   } else { Warn 'Tailscale is installed but not logged in yet. Run this installer again to finish phone access.' }
 } else {
   Warn 'Tailscale did not install. Get it from https://tailscale.com/download/windows, log in, then run this again.'
+}
 }
 
 # --- 7. Automatic updates, start with Windows, stay awake, shortcuts --------------------------------
@@ -320,10 +332,14 @@ $qrPng = Join-Path $Dir 'output\phone-qr.png'
 docker exec clipforge node scripts/qr.js $url --png /app/output/phone-qr.png | Out-Null
 Write-Host ''
 Write-Host '  On your phone:'
-Write-Host '    1. Install the Tailscale app and log in with the same account.'
+if ($Wifi) {
+  Write-Host '    1. Connect the phone to the same Wi-Fi as this PC (Tailscale off).'
+} else {
+  Write-Host '    1. Install the Tailscale app and log in with the same account.'
+}
 Write-Host "    2. Scan the QR code that just opened (or type $url)"
 Write-Host '    3. iPhone: Share -> Add to Home Screen.   Android: menu -> Install app.'
-if ((Test-Path $qrPng) -and $url -like 'https://*') {
+if ((Test-Path $qrPng) -and $url -notlike '*localhost*') {
   # No picture viewer on some PCs (e.g. Windows Server): fall back to the browser, then to the file path.
   try { Start-Process $qrPng -ErrorAction Stop }
   catch {
@@ -331,9 +347,8 @@ if ((Test-Path $qrPng) -and $url -like 'https://*') {
     catch { Write-Host "    (QR code picture: $qrPng)" }
   }
 }
-if ($Wifi) {
-  $ip = (Get-NetIPAddress -AddressFamily IPv4 | Where-Object { $_.PrefixOrigin -eq 'Dhcp' } | Select-Object -First 1).IPAddress
-  if ($ip) { Write-Host "    On home Wi-Fi you can also use http://${ip}:3000" }
+if (-not $Wifi -and $wifiIp -and (Get-NetFirewallRule -DisplayName 'ClipForge' -ErrorAction SilentlyContinue)) {
+  Write-Host "    On home Wi-Fi you can also use http://${wifiIp}:3000"
 }
 Write-Host ''
 if ($newPassword) { Write-Host "  App password: $newPassword   (save it — also in $envPath)" -ForegroundColor White }

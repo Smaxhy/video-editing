@@ -65,7 +65,10 @@ ARG WITH_WHISPERX=0
 RUN if [ "$WITH_WHISPERX" = "1" ]; then bash deploy/install-whisperx.sh; fi
 
 # Model caches (Whisper, Hugging Face, Demucs, rembg) live under /root/.cache — mount it as a volume.
+# Which commit this image was built from (shown in the sidebar and in "Copy details").
+ARG CLIPFORGE_VERSION=dev
 ENV PORT=3000 \
+    CLIPFORGE_VERSION=${CLIPFORGE_VERSION} \
     U2NET_HOME=/root/.cache/u2net \
     HYPERFRAMES_NO_TELEMETRY=1 \
     DO_NOT_TRACK=1

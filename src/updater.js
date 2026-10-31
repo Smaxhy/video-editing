@@ -120,7 +120,8 @@ export function createUpdater({ root, isBusy, beforeRestart, branch = 'main', in
   return {
     state: () => ({ ...state }),
     async start() {
-      state.version = (await git(['rev-parse', '--short', 'HEAD']).catch(() => ({ stdout: '' }))).stdout.trim() || null;
+      // Docker images have no .git: the build stamps the version in CLIPFORGE_VERSION instead.
+      state.version = (await git(['rev-parse', '--short', 'HEAD']).catch(() => ({ stdout: '' }))).stdout.trim() || process.env.CLIPFORGE_VERSION || null;
       if (!enabled) return;
       const every = Number(process.env.CLIPFORGE_UPDATE_EVERY_S) * 1000 || intervalMs;
       const tick = () => check().catch((err) => { state.error = err.message; });

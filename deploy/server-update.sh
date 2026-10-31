@@ -35,7 +35,7 @@ sys.exit(0 if d.get("busy") and time.time() * 1000 - d.get("at", 0) < 120000 els
   if [ "$new" = 1 ]; then
     echo "ClipForge: new version $(git rev-parse --short "origin/$BRANCH") — building"
     git reset -q --hard "origin/$BRANCH"
-    docker compose build -q
+    CLIPFORGE_VERSION=$(git rev-parse --short HEAD) docker compose build -q
   fi
   # Swap in when idle (a forced update doesn't wait). Give up after 3 hours; the next run retries.
   if [ "$forced" = 0 ]; then

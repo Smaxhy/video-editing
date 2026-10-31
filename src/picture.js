@@ -1,6 +1,6 @@
 import fs from 'node:fs/promises';
 import path from 'node:path';
-import { run, tail, exists, round, clamp, PipelineError } from './util.js';
+import { run, tail, exists, round, clamp, PipelineError, FIT_1080 } from './util.js';
 
 /**
  * Picture polish: per clip, the part the edit uses is measured and re-encoded once (cached) with
@@ -151,7 +151,9 @@ export async function preparePicture(src, out, { start = 0, end, grade = true, s
     const hdr = await isHdr(src);
     const { stats, shake } = await measureClip(src, { start, end, work, signal, hdr });
     const span = ['-ss', String(round(start, 3)), ...(end ? ['-t', String(round(end - start, 3))] : [])];
-    const vf = [];
+    // Work at the output size: 4K phone footage is shrunk to ≤1080p first (ClipForge never outputs
+    // more), which makes stabilising and grading several times faster.
+    const vf = [FIT_1080];
     const applied = [];
     if (hdr) {
       vf.push(TONEMAP);
@@ -160,7 +162,7 @@ export async function preparePicture(src, out, { start = 0, end, grade = true, s
     if (stabilize && shake > SHAKY) {
       const trf = path.join(work, 'full.trf');
       const det = await run('ffmpeg', ['-hide_banner', '-v', 'error', ...span, '-i', src, '-an',
-        '-vf', `vidstabdetect=shakiness=7:accuracy=12:result=${trf}`, '-f', 'null', '-'], { signal, timeoutMs: 30 * 60_000 });
+        '-vf', `${FIT_1080},vidstabdetect=shakiness=7:accuracy=12:result=${trf}`, '-f', 'null', '-'], { signal, timeoutMs: 30 * 60_000 });
       if (det.code === 0 && (await exists(trf))) {
         // optzoom=1: zoom just enough to hide the moving borders; smoothing ≈ 0.5 s of camera path.
         vf.push(`vidstabtransform=input=${trf}:smoothing=15:optzoom=1:interpol=bicubic`);

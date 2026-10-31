@@ -352,7 +352,7 @@ ${options.revision ? revisionSection(options.revision) : ''}
 Produce one version per id below. Each version is a complete, standalone edit of the same story (shorter versions keep only the strongest moments):
 ${options.versions.map(versionLine).join('\n')}
 
-Every version will be rendered in these frame formats: ${formats}. Keep overlay text short so it fits a narrow 9:16 frame.
+${options.noText ? 'NO ON-SCREEN TEXT: the user does not want any written text in the video — "overlays" must be [] in every version (no hook, title, text, lower-third or cta).\n' : ''}Every version will be rendered in these frame formats: ${formats}. Keep overlay text short so it fits a narrow 9:16 frame.
 Captions: ${options.captions === 'off' ? 'OFF' : `burned in automatically from the transcript (style "${options.captions}") — do NOT add "caption" overlays repeating spoken words. Fill "emphasis" with the 4-12 spoken words that carry the meaning (numbers, key nouns, payoff words, strong verbs); they are coloured and popped in the captions. Add a fitting emoji to the most visual ones (max one emoji per ~3 seconds; skip emoji for serious topics)`}.
 ${brandLines.length ? `${brandLines.join('\n')}\n` : ''}
 ## Style guide (only where the user is silent)
@@ -383,7 +383,9 @@ ${catalog}
 - Output length = sum of (end - start) / speed, minus overlap of non-cut transitions. Respect each version's length limit.
 - Transitions: "cut" for talking content; others sparingly between distinct moments; transitionDuration 0.2-0.8s.
 - Overlay times are OUTPUT timeline seconds and must fit inside that version's length. Overlays must not overlap each other in time unless they sit in different positions.
-- Footage with little or no speech (POV, B-roll, montage): build the story from the visuals — use the "best moments", cut on shot changes, keep scenes 1-4s. If the user asks for subtitles/text or a theme (e.g. "the art of tree cutting"), write short on-screen lines as "title"/"text" overlays (2-7 words, 2-3s each, one at a time) that narrate the video — these are its subtitles.
+- Footage with little or no speech (POV, B-roll, montage): build the story from the visuals — use the "best moments", cut on shot changes, keep scenes 1-4s. If the user asks for subtitles/text or a theme (e.g. "the art of tree cutting") AND nobody talks (or captions are off), write short on-screen lines as "title"/"text" overlays (2-7 words, 2-3s each, one at a time) that narrate the video — these are its subtitles.
+- When captions are on and people talk, the captions ARE the subtitles: never write text overlays that repeat or paraphrase what is said, and keep any other text away from the moments people speak.
+- On-screen text: only what the user asked for, plus at most one short hook at the start (unless they said no text). Never invent slogans, titles or labels they didn't ask for. If the user says no text, "overlays" is [].
 - "hook" = big punchy text at the top in the opening seconds. "title" = centered title card. "lower-third" = name/role or place label (3-5s). "text" = short on-screen point. "cta" = end card with the call to action (last 2-3s).
 
 ## Final check — before you answer

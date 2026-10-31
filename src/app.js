@@ -468,7 +468,7 @@ async function runPipeline(job, { prompt, userPrompt = prompt, clipIds, settings
     const changed = Object.entries(patch).filter(([k, v]) => settings[k] !== v);
     if (changed.length) {
       settings = { ...settings, ...patch };
-      const label = { music: (v) => (v === 'off' ? 'no music' : 'music on'), voiceover: (v) => `voiceover ${v}`, sfx: (v) => `sound effects ${v}`, captions: (v) => `captions ${v}`, musicLevel: (v) => `music ${v}`, trendingSound: () => null, aiMusic: () => null };
+      const label = { music: (v) => (v === 'off' ? 'no music' : 'music on'), voiceover: (v) => `voiceover ${v}`, sfx: (v) => `sound effects ${v}`, captions: (v) => `captions ${v}`, musicLevel: (v) => `music ${v}`, overlays: (v) => (v === 'off' ? 'no on-screen text' : null), trendingSound: () => null, aiMusic: () => null };
       const parts = [...new Set(changed.map(([k, v]) => label[k]?.(v) && `${label[k](v)} (${reasons[k]})`).filter(Boolean))];
       if (parts.length) notes.push(`Following your words: ${parts.join(', ')}.`);
     }
@@ -599,6 +599,7 @@ async function runPipeline(job, { prompt, userPrompt = prompt, clipIds, settings
       aiMusic: !settings.trendingSound && settings.music === 'auto' && settings.aiMusic,
       intensity: settings.intensity,
       clipAudio: settings.clipAudio,
+      noText: settings.overlays === 'off',
     };
     // Revision: the user watched the last render and said what to fix — Claude edits that plan.
     if (revise) {
@@ -646,6 +647,12 @@ async function runPipeline(job, { prompt, userPrompt = prompt, clipIds, settings
       JSON.stringify({ title: planned.title, checklist: planned.checklist, versions: planned.versions, music: planned.music, emphasis: planned.emphasis, sound: planned.sound, auto: planned.auto,
         settingsChanges: { ...(revise ? savedPlan?.settingsChanges : null), ...planned.settingsChanges } }, null, 2),
     );
+  }
+  // "No text": not a single overlay, whatever the plan (or a saved plan) has.
+  if (settings.overlays === 'off') {
+    const had = planned.versions.reduce((n, v) => n + (v.plan.overlays?.length || 0), 0);
+    planned.versions = planned.versions.map((v) => ({ ...v, plan: { ...v.plan, overlays: [] } }));
+    if (had) notes.push(`Removed all on-screen text, as you asked (${had} text${had > 1 ? 's' : ''}). Captions follow the caption setting.`);
   }
   // The user's words beat the automatic passes: Claude's "auto" call AND the request's explicit
   // phrases ("keep the order", "no slow-mo", "simple cuts") decide which passes may touch the plan.
@@ -1167,6 +1174,12 @@ async function maybeReedit(job, opts, first) {
   const s = opts.settings;
   // A user's own remarks are never overridden by an automatic re-edit.
   if (!s.selfReview || !s.autoFix || opts.reusePlan || opts.revise || !first.review || first.review.score >= 7 || !first.review.fixes) return first;
+  // A second full render on a slow computer doubles the wait: only when the first one was quick.
+  const took = Date.now() - (job.startedAt || Date.now());
+  if (took > 12 * 60_000) {
+    first.warnings = [...(first.warnings || []), `Claude rated this cut ${first.review.score}/10 — tell it what to change below (an automatic re-edit was skipped: this render took ${Math.round(took / 60_000)} minutes).`];
+    return first;
+  }
   const outDir = path.join(DIRS.output, job.id);
   const ws = path.join(DIRS.workspace, job.id);
   const prevOut = `${outDir}-prev`;
@@ -1214,6 +1227,7 @@ async function startPipeline(job, opts) {
   job.lastProgressSent = -1;
   job.abort = new AbortController();
   emit(job);
+  job.startedAt = Date.now();
   try {
     job.result = await runPipeline(job, opts);
     job.result = await maybeReedit(job, opts, job.result);

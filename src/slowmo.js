@@ -1,6 +1,6 @@
 import fs from 'node:fs/promises';
 import path from 'node:path';
-import { run, tail, round, exists, PipelineError } from './util.js';
+import { run, tail, round, exists, PipelineError, FIT_1080 } from './util.js';
 
 /**
  * Pro slow motion. Phone footage is usually 30 fps, so a 0.5× scene shows every frame twice and
@@ -27,14 +27,18 @@ export async function smoothSlowMo(src, out, { start, end, speed, offset = 0, si
   // Ramp steps of a fraction of a second gain nothing visible (and can come out with no frames).
   if (end - start < 0.4) return null;
   if ((await exists(out)) && (await hasVideoFrames(out))) return out;
-  const target = Math.min(120, Math.ceil(30 / speed));
+  // 60 fps is plenty for a smooth 30 fps slow-mo down to ~0.5×; more frames cost minutes each.
+  const target = Math.min(60, Math.ceil(30 / speed));
   if ((await sourceFps(src)) >= target * 0.95) return null;
   await fs.mkdir(path.dirname(out), { recursive: true });
   const tmp = `${out}.part.mp4`;
   const r = await run('ffmpeg', [
     '-v', 'error', '-y', '-ss', String(round(Math.max(0, start - offset), 3)), '-t', String(round(end - start, 3)), '-i', src,
     '-map', '0:v:0', '-map', '0:a:0?',
-    '-vf', `minterpolate=fps=${target}:mi_mode=mci:mc_mode=aobmc:me_mode=bidir:vsbmc=1,format=yuv420p`,
+    // Interpolate at the output size (≤1080p), not the 4K original — ~4× less work, same result on screen.
+    // Motion-compensated frames (best, ~30 s of work per source second) for short slow-mo hits; frame
+    // blending (near-instant) for longer stretches, so one long slow shot can't add half an hour.
+    '-vf', `${FIT_1080},minterpolate=fps=${target}:${end - start <= 1.5 ? 'mi_mode=mci:mc_mode=obmc:me_mode=bidir:vsbmc=1' : 'mi_mode=blend'},format=yuv420p`,
     '-c:v', 'libx264', '-preset', 'veryfast', '-crf', '17', '-g', String(target),
     '-c:a', 'aac', '-b:a', '192k', '-movflags', '+faststart', tmp,
   ], { signal, timeoutMs: 30 * 60_000 });

@@ -3,6 +3,9 @@ import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 
+/** ffmpeg filter: shrink to fit 1920 px on the long side (ClipForge never outputs more), never upscale. */
+export const FIT_1080 = "scale=w='min(iw,trunc(iw*1920/max(iw,ih)/2)*2)':h=-2";
+
 /** Error with a short user-facing message plus optional technical detail. */
 export class PipelineError extends Error {
   constructor(message, { detail, hint, cause } = {}) {

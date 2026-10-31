@@ -96,3 +96,12 @@ test('planner prompt ends with the request and every fix; earlier fixes still ap
   assert.ok(tail.indexOf('## Final check') < tail.indexOf('## Response format'));
   assert.deepEqual(normalizeSettingChanges({ music: 'auto' }), { music: 'auto' });
 });
+
+test('"no text" / "stupid written text" removes on-screen text; "add a title" brings it back', async () => {
+  const { settingsFromText } = await import('../src/directives.js');
+  const p = (t) => settingsFromText(t).patch;
+  for (const t of ['it also has a STUPID WRITTEN TEXT', 'no text please', 'remove the text', "don't add titles"]) assert.equal(p(t).overlays, 'off', t);
+  assert.equal(p('add a hook at the start').overlays, 'on');
+  assert.equal(p(['no text', 'put a title saying Dead aspen removal']).overlays, 'on');
+  assert.deepEqual(p('the subtitles overlap'), {});
+});

@@ -179,3 +179,21 @@ test('keyframe gap parsing ignores blank lines and trailing commas', () => {
   assert.equal(largestKeyframeGap(parseKeyframeTimes('0.0\n8.33\n'), 17), 8.67);
   assert.equal(largestKeyframeGap([], 12), 12);
 });
+
+test('never two text layers at once: overlays don’t overlap, captions step aside in wide frames', () => {
+  const plan = {
+    title: 't',
+    scenes: [{ ...scene('clip1', 0, 8), transition: 'cut', transitionDuration: 0, speed: 1, volume: 1, effect: 'none' }],
+    overlays: [
+      { type: 'title', text: 'Dead aspen', subtext: '', start: 1, end: 5, position: 'center' },
+      { type: 'text', text: "Client's right to ask", subtext: '', start: 3, end: 6, position: 'center' },
+    ],
+    audio: { fadeIn: 0, fadeOut: 0.5 },
+  };
+  const words = [{ word: 'hello', start: 0.2, end: 0.6 }, { word: 'during', start: 3.5, end: 3.9 }, { word: 'after', start: 6.5, end: 7 }];
+  const { html, captions } = buildComposition({ plan, clips, transcripts: { clip1: { words } }, settings: { width: 1920, height: 1080, captions: 'bold' } });
+  // The first overlay ends where the second begins.
+  assert.match(html, /id="o0" class="clip ov ov-title pos-center" data-start="1" data-duration="2"/);
+  // Landscape: no caption while any text overlay is up.
+  assert.deepEqual(captions.map((c) => c.text), ['HELLO', 'AFTER']);
+});

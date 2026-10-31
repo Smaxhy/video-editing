@@ -106,6 +106,13 @@ const SETTING_RULES = [
   { re: /\b(?:add|with|use|want|need|include|put)\b[^.!?\n]{0,15}\b(?:a |an )?(?:voice[- ]?over|narrat(?:ion|or)|ai voice)\b|\bnarrate (?:it|this|the)\b/i, patch: { voiceover: 'on' }, why: 'you asked for a voiceover', unless: /\b(?:no|without|remove|don'?t)\b[^.!?\n]{0,20}\b(?:voice[- ]?over|narrat)/i },
   { re: new RegExp(String.raw`\b${STRONG_NEG}\b[^.!?\n]{0,20}?\b(?:sound effects?|sfx|whoosh(?:es)?|swoosh(?:es)?|pops?|dings?|random sounds?|weird sounds?|those sounds?)\b|\b(?:random|weird|annoying|cheesy|stupid|extra) (?:sound|noise)s?\b`, 'i'), patch: { sfx: 'off' }, why: 'no sound effects' },
   { re: new RegExp(String.raw`\b${STRONG_NEG}\b[^.!?\n]{0,15}?\b(?:captions?|subtitles?|subs)\b`, 'i'), patch: { captions: 'off' }, why: 'no captions' },
+  {
+    re: new RegExp(String.raw`\b${STRONG_NEG}\b[^.!?\n]{0,12}?\b(?:the |any |that |those |all )?(?:written |on[- ]?screen |stupid |extra |random |big )?(?:text|titles?|writing|headlines?|words on (?:the )?screen)\b|\b(?:stupid|dumb|weird|random|cringe|annoying|ugly) (?:written )?(?:text|titles?|writing)\b|\bwritten text\b`, 'i'),
+    patch: { overlays: 'off' },
+    why: 'no on-screen text',
+    unless: /\b(?:add|put|write|with|want|include)\b[^.!?\n]{0,15}\b(?:text|title|hook)\b(?![^.!?\n]{0,10}\b(?:off|gone)\b)/i,
+  },
+  { re: /\b(?:add|put|write|include|want|need)\b[^.!?\n]{0,20}\b(?:a |some |the )?(?:text|title|hook|headline)s?\b/i, patch: { overlays: 'on' }, why: 'you asked for text', unless: new RegExp(String.raw`\b${STRONG_NEG}\b[^.!?\n]{0,12}?\b(?:text|titles?)\b`, 'i') },
 ];
 
 export function settingsFromText(texts) {

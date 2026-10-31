@@ -304,8 +304,11 @@ export function buildComposition({ plan, clips, transcripts, settings, gsapSrc =
   // Captions step aside for CTA end cards so the call to action reads cleanly.
   // Captions step aside for CTA end cards, and for any title/hook/text that sits in the same part of
   // the frame (middle captions vs centred titles, bottom captions vs bottom text) — never two layers of text.
+  // Never two big text layers at once (a title colliding with the subtitles). Captions step aside for
+  // CTA end cards, title cards, and text in their part of the frame; in square / landscape frames there
+  // is no room for both, so they step aside for every hook / title / text. Lower-thirds share the frame.
   const capZone = settings.captionPos === 'middle' ? 'center' : 'bottom';
-  const ctas = plan.overlays.filter((o) => o.type === 'cta' || (o.type !== 'lower-third' && o.position === capZone));
+  const ctas = plan.overlays.filter((o) => o.type !== 'lower-third' && (tall < 1.5 || o.type === 'cta' || o.type === 'title' || o.position === capZone));
   const capOpts = { upperCase: settings.captionCase ? settings.captionCase === 'upper' : undefined };
   const captions = withNarration(buildCaptions(laid, transcripts, settings.captions, capOpts), settings.narration, total, settings.captions, capOpts)
     .map((c) => {
@@ -518,7 +521,12 @@ export function buildComposition({ plan, clips, transcripts, settings, gsapSrc =
   const layer = { 'lower-third': 0, text: 0, caption: 0, hook: 1, title: 1, cta: 2 };
   const overlays = plan.overlays
     .map((o, i) => ({ ...o, i, end: Math.min(o.end, total) }))
-    .filter((o) => o.start < total && o.end - o.start >= 0.2);
+    .filter((o) => o.start < total && o.end - o.start >= 0.2)
+    .sort((a, b) => a.start - b.start);
+  // One text overlay at a time (lower-thirds aside): each one ends where the next begins.
+  const big = overlays.filter((o) => o.type !== 'lower-third');
+  for (let k = 0; k < big.length - 1; k++) if (big[k].end > big[k + 1].start) big[k].end = big[k + 1].start;
+  for (let k = overlays.length - 1; k >= 0; k--) if (overlays[k].end - overlays[k].start < 0.4) overlays.splice(k, 1);
 
   const logo = settings.logoFile ? `<img class="logo" src="media/${escapeHtml(settings.logoFile)}" alt="" />` : '';
   const overlayHtml = overlays.map((o) => {
@@ -534,7 +542,8 @@ export function buildComposition({ plan, clips, transcripts, settings, gsapSrc =
       const step = round(Math.min(0.11, (dur * 0.35) / words.length), 3);
       tweens.push(`tl.fromTo("#${id}i", { opacity: 0, scale: ${o.type === 'title' ? 1 : 0.85} }, { opacity: 1, scale: 1, duration: 0.18, ease: "back.out(2)" }, ${o.start});`);
       words.forEach((_, k) => {
-        tweens.push(`tl.fromTo("#${id}w${k}", { opacity: 0, scale: 1.7, y: ${Math.round(-18 * u)}, filter: "blur(${Math.round(8 * u)}px)" }, { opacity: 1, scale: 1, y: 0, filter: "blur(0px)", duration: 0.22, ease: "expo.out" }, ${at(o.start + 0.04 + k * step)});`);
+        // Gentle scale (words never grow into their neighbours) and no blur filter (slow to render).
+        tweens.push(`tl.fromTo("#${id}w${k}", { opacity: 0, scale: 1.25, y: ${Math.round(-14 * u)} }, { opacity: 1, scale: 1, y: 0, duration: 0.2, ease: "expo.out" }, ${at(o.start + 0.04 + k * step)});`);
       });
     } else if (o.type === 'hook' || o.type === 'cta') {
       // Pop in with a little overshoot — the social-native feel.
@@ -700,7 +709,7 @@ ${fontFaces}
       background-size: 240px 240px; }
     .vignette { position: absolute; inset: 0; pointer-events: none; background: radial-gradient(ellipse 80% 70% at 50% 50%, rgba(0,0,0,0) 55%, rgba(0,0,0,.28) 100%); }
     .vignette.strong { background: radial-gradient(ellipse 75% 65% at 50% 48%, rgba(0,0,0,0) 45%, rgba(0,0,0,.5) 100%); }
-    .kw { display: inline-block; }
+    .kw { display: inline-block; margin: 0 0.06em; }
     .fx-leak { inset: -20%; mix-blend-mode: screen; background:
       radial-gradient(ellipse 45% 60% at 30% 40%, rgba(255,150,60,.95), rgba(255,90,40,.45) 45%, rgba(255,60,90,0) 75%),
       radial-gradient(ellipse 35% 50% at 75% 65%, rgba(255,210,120,.8), rgba(255,120,80,0) 70%); }

@@ -634,7 +634,7 @@ export function buildComposition({ plan, clips, transcripts, settings, gsapSrc =
     // Under on-camera talking the music steps well back; under a voiceover it stays present (the
     // narration is already loudness-matched) — otherwise the music all but vanishes for the whole video.
     const onCamera = audibleScenes.length > 0;
-    const automation = JSON.stringify({ version: 1, lanes: [{ target: 'volume', points: musicAutomation(speech, total, base, round(base * (onCamera ? 0.32 : 0.5), 3)) }] });
+    const automation = JSON.stringify({ version: 1, lanes: [{ target: 'volume', points: musicAutomation(speech, total, base, round(base * (onCamera ? 0.42 : 0.55), 3)) }] });
     music.push(`    <audio id="music" src="media/${escapeHtml(settings.musicFile)}" data-start="0" data-duration="${total}" data-track-index="50" data-volume="1" data-automation='${automation}'></audio>`);
   }
   // AI voiceover: one mixed narration track under everything (already level-matched).

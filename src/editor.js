@@ -340,7 +340,7 @@ The user's request below is the highest authority. Follow every instruction lite
 ## After your plan — ClipForge's automatic passes (you decide which may run)
 Unless you switch them off in "auto", ClipForge changes your plan after you answer:
 ${Object.entries(AUTO_PASSES).map(([k, v]) => `- "${k}": ${v}.`).join('\n')}
-They make generic requests look great, but they REWRITE what you planned. Set a pass to false whenever it would break something the user asked for — e.g. a set clip order or timing, whole clips, a calm/slow pace, "no slow motion", simple or specific cuts/transitions, "no effects", plain text. When the user gave you no specific instructions about those things, leave them true.
+They make edits look great, but they REWRITE what you planned. Default: all true. Set a pass to false ONLY when it would contradict a specific instruction — e.g. a set clip order or timing, whole clips, a calm/slow pace, "no slow motion", simple or specific cuts/transitions, "no effects", plain text. A topic, a vibe, "add subtitles" or "for a client" is not such an instruction: leave every pass true.
 
 ## User's request
 """

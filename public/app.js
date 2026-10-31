@@ -1893,6 +1893,46 @@ $('#soundTip').addEventListener('click', async (e) => {
 });
 
 /** "Put one of your sounds under this video": your music, newest first. */
+/** "Copy details": what ClipForge decided for this video, to paste when reporting a problem. */
+function detailsText(r) {
+  const d = r.debug || {};
+  return [
+    `ClipForge ${d.version || '?'} — "${r.title || ''}"`,
+    `Request: ${r.prompt || ''}`,
+    ...(r.revisions || []).map((x, i) => `Fix ${i + 1}: ${x}`),
+    `Music used: ${d.music ? `${d.music.name}${d.music.generated ? ' (made by ClipForge)' : ''}` : 'NONE'} · tracks in library: ${d.musicTracksInLibrary ?? '?'} (audio files: ${d.audioFilesInLibrary ?? '?'})`,
+    `Settings: ${Object.entries(d.settings || {}).map(([k, v]) => `${k}=${v}`).join(', ')}`,
+    d.auto ? `Automatic passes: ${Object.entries(d.auto).map(([k, v]) => `${k}=${v ? 'on' : 'off'}`).join(', ')}` : '',
+    'Notes:',
+    ...(r.warnings || []).map((w) => `- ${w}`),
+  ].filter(Boolean).join('\n');
+}
+function detailsHtml(r) {
+  return `<details class="adv dbg"><summary>Copy details (for reporting a problem)</summary>
+    <pre class="dbg-text">${esc(detailsText(r))}</pre>
+    <button class="btn xs ghost" type="button" data-copy-details>Copy</button></details>`;
+}
+document.addEventListener('click', async (e) => {
+  const b = e.target.closest('[data-copy-details]');
+  if (!b) return;
+  const text = b.parentElement.querySelector('.dbg-text').textContent;
+  // The clipboard API needs HTTPS; on the home-Wi-Fi address fall back to a selected textarea.
+  try {
+    await navigator.clipboard.writeText(text);
+  } catch {
+    const ta = Object.assign(document.createElement('textarea'), { value: text });
+    ta.setAttribute('readonly', '');
+    ta.style.position = 'fixed';
+    ta.style.opacity = '0';
+    document.body.append(ta);
+    ta.select();
+    ta.setSelectionRange(0, text.length);
+    document.execCommand('copy');
+    ta.remove();
+  }
+  toast('Details copied — paste them in your message.', 'ok');
+});
+
 function renderSoundPick() {
   const mine = state.assets.filter((a) => a.status === 'ready' && ((a.kind === 'audio' && !a.generated) || (a.kind === 'video' && a.useAsMusic)))
     .sort((x, y) => y.createdAt - x.createdAt);
@@ -2066,7 +2106,7 @@ async function showResult(r) {
   renderSoundPick();
   const musicNote = (r.warnings || []).find((w) => w.startsWith('🎵'));
   $('#warns').innerHTML = (musicNote ? `<div class="music-used">${esc(musicNote)}</div>` : r.music ? `<div class="music-used">🎵 Music: ${esc(r.music.name)}</div>` : '') +
-    (r.warnings || []).filter((w) => w !== musicNote).map((w) => `⚠ ${esc(w)}`).join('<br>');
+    (r.warnings || []).filter((w) => w !== musicNote).map((w) => `⚠ ${esc(w)}`).join('<br>') + detailsHtml(r);
   syncChangedSettings(r);
   const snd = r.sound;
   $('#soundTip').classList.toggle('hidden', !snd);

@@ -96,7 +96,7 @@ const SETTING_RULES = [
     unless: /\b(?:there(?:'s| is| was)|still|but|it has|the video has|i hear|i got) no (?:background )?(?:music|song|soundtrack|audio)\b|\bno (?:music|song|audio) (?:in (?:it|the video|there)|is playing|was (?:added|playing)|there)\b|\bisn'?t any (?:music|song)\b/i,
   },
   {
-    re: new RegExp(String.raw`\b(?:add|put|use|want|need|include|play|with|under(?:neath)?|keep|bring back|give it|needs?)\b[^.!?\n]{0,40}?\b(?:${SOUNDS})\b|\b(?:background|backing) (?:${SOUNDS})\b|\b(?:${SOUNDS}) (?:in|under|behind|on|over) (?:the |it|this|everything)|\bthere(?:'s| is) no (?:${SOUNDS})\b|\b(?:${SOUNDS}) (?:is )?(?:missing|not there|gone|not playing)\b|\bcan'?t hear the (?:${SOUNDS})\b`, 'i'),
+    re: new RegExp(String.raw`\b(?:add(?:ing|ed)?|put(?:ting)?|us(?:e|ing|ed)|want(?:ed)?|need(?:s|ed)?|includ(?:e|ing)|play(?:ing|s)?|with|under(?:neath)?|keep|bring back|give it|hear(?:ing)?|where(?:'s| is))\b[^.!?\n]{0,40}?\b(?:${SOUNDS})\b|\b(?:background|backing) (?:${SOUNDS})\b|\b(?:${SOUNDS}) (?:in|under|behind|on|over) (?:the |it|this|everything)|\bthere(?:'s| is) no (?:${SOUNDS})\b|\b(?:${SOUNDS}) (?:is )?(?:missing|not there|gone|not playing)\b|\bcan'?t hear the (?:${SOUNDS})\b`, 'i'),
     patch: { music: 'auto', trendingSound: false, aiMusic: true },
     why: 'you asked for music',
   },

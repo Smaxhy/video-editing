@@ -463,12 +463,18 @@ async function runPipeline(job, { prompt, userPrompt = prompt, clipIds, settings
   // The user's words beat the menus: "use my music", "no voiceover", "no sound effects"…
   {
     const { patch, reasons } = settingsFromText(history);
+    // Asked for music under the video: the clips' own sound (wind, engines, a chainsaw…) becomes a
+    // quiet bed so the music is actually heard; talking stays clear.
+    if (patch.music === 'auto' && settings.clipAudio === 'auto') {
+      patch.clipAudio = 'low';
+      reasons.clipAudio = 'so the music is heard';
+    }
     if (patch.music === 'auto' && settings.music !== 'off') delete patch.music; // a picked track stays
     if (patch.music === 'off') delete patch.aiMusic;
     const changed = Object.entries(patch).filter(([k, v]) => settings[k] !== v);
     if (changed.length) {
       settings = { ...settings, ...patch };
-      const label = { music: (v) => (v === 'off' ? 'no music' : 'music on'), voiceover: (v) => `voiceover ${v}`, sfx: (v) => `sound effects ${v}`, captions: (v) => `captions ${v}`, musicLevel: (v) => `music ${v}`, overlays: (v) => (v === 'off' ? 'no on-screen text' : null), trendingSound: () => null, aiMusic: () => null };
+      const label = { music: (v) => (v === 'off' ? 'no music' : 'music on'), voiceover: (v) => `voiceover ${v}`, sfx: (v) => `sound effects ${v}`, captions: (v) => `captions ${v}`, musicLevel: (v) => `music ${v}`, overlays: (v) => (v === 'off' ? 'no on-screen text' : null), clipAudio: (v) => (v === 'low' ? 'clip sound turned down' : null), trendingSound: () => null, aiMusic: () => null };
       const parts = [...new Set(changed.map(([k, v]) => label[k]?.(v) && `${label[k](v)} (${reasons[k]})`).filter(Boolean))];
       if (parts.length) notes.push(`Following your words: ${parts.join(', ')}.`);
     }
@@ -1157,6 +1163,15 @@ async function runPipeline(job, { prompt, userPrompt = prompt, clipIds, settings
     revision: revise || null,
     revisions: history.slice(1),
     prompt: userPrompt || null,
+    // "Copy details" under the video: what ClipForge decided, so a problem can be explained exactly.
+    debug: {
+      version: updater.state().version,
+      music: musicAsset ? { name: musicName(musicAsset), generated: Boolean(musicAsset.generated), kind: musicAsset.kind } : null,
+      musicTracksInLibrary: musicCandidates().length,
+      audioFilesInLibrary: library.list().filter((a) => a.kind === 'audio').length,
+      settings: Object.fromEntries(['music', 'trendingSound', 'aiMusic', 'clipAudio', 'musicLevel', 'voiceover', 'sfx', 'captions', 'overlays', 'intensity', 'beatSync'].map((k) => [k, settings[k] ?? null])),
+      auto,
+    },
     sound: planned.sound || null,
     trendingSound: Boolean(settings.trendingSound),
     clipIds: clips.map((c) => c.id),

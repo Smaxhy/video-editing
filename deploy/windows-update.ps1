@@ -45,6 +45,7 @@ try {
   if ($new) {
     Log "new version $(git rev-parse --short "origin/$Branch") - building"
     git reset -q --hard "origin/$Branch"
+    $env:CLIPFORGE_VERSION = (git rev-parse --short HEAD)
     docker compose build -q 2>&1 | Out-Null
     if ($LASTEXITCODE -ne 0) { Log 'build failed - keeping the running version'; exit 1 }
   }

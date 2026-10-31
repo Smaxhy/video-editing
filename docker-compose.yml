@@ -6,6 +6,7 @@ services:
       context: .
       args:
         WITH_WHISPERX: ${WITH_WHISPERX:-0}   # set WITH_WHISPERX=1 in .env to include WhisperX
+        CLIPFORGE_VERSION: ${CLIPFORGE_VERSION:-dev}   # set by the installers / auto-updaters
     image: clipforge:latest
     container_name: clipforge
     restart: unless-stopped

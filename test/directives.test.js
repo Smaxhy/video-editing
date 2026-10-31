@@ -105,3 +105,10 @@ test('"no text" / "stupid written text" removes on-screen text; "add a title" br
   assert.equal(p(['no text', 'put a title saying Dead aspen removal']).overlays, 'on');
   assert.deepEqual(p('the subtitles overlap'), {});
 });
+
+test('complaints that the music is missing turn it on', async () => {
+  const { settingsFromText } = await import('../src/directives.js');
+  for (const t of ['its STILL not using music', 'where is the music', 'music is not playing', 'not adding the music', 'i cant hear any music']) {
+    assert.equal(settingsFromText(t).patch.music, 'auto', t);
+  }
+});

@@ -3,6 +3,7 @@ import path from 'node:path';
 import { jsonrepair } from 'jsonrepair';
 import { run, tail, round, clamp, PipelineError } from './util.js';
 import { AUTO_PASSES, normalizeAuto } from './directives.js';
+import { matchPopular } from './charts.js';
 
 const CLAUDE_BIN = process.env.CLAUDE_BIN || 'claude';
 const CLAUDE_TIMEOUT_MS = Number(process.env.CLAUDE_TIMEOUT_MS || 10 * 60 * 1000);
@@ -14,25 +15,26 @@ export const TRANSITIONS = [
 /** Transitions that keep a hard cut in time (no overlap): the effect plays on the incoming shot. */
 export const CUT_LIKE = new Set(['cut', 'fadeblack', 'punch', 'flash', 'glitch']);
 export const SCENE_EFFECTS = ['none', 'kenburns', 'punch-in', 'shake'];
-export const INTENSITIES = ['clean', 'creator', 'max'];
+export const INTENSITIES = ['clean', 'natural', 'creator', 'max'];
 export const OVERLAY_TYPES = ['hook', 'title', 'lower-third', 'text', 'caption', 'cta'];
 export const POSITIONS = ['top', 'center', 'bottom'];
 export const GOALS = ['social', 'ad', 'both'];
 export const LENGTHS = ['15', '30', '60', 'full'];
 
 const GOAL_GUIDE = {
-  social: `ORGANIC SOCIAL (TikTok / Reels / Shorts) — it must feel made by a person, not a template:
-- The first 1.5 seconds decide everything: open on the most surprising, emotional or useful moment — not on "hi everyone". Pull a strong moment forward if needed.
-- One short "hook" overlay (2-6 words) over the opening ~2 seconds that teases the payoff. Keep other on-screen text rare and purposeful — not a title on every shot.
-- Keep it moving but human: cut out dead air and retakes, yet keep the natural rhythm of speech and the odd real reaction or breath. Vary shot lengths (some 1 s, some 3-4 s) — never a mechanical every-N-seconds pattern.
+  social: `ORGANIC SOCIAL (TikTok / Reels / Shorts) — it must feel made by a person who was there, not by an app:
+- Frame one is the hook. Open on the single most striking thing in the footage — the result, the biggest movement, the strangest sight, the strongest line — already happening. Never on setup, a greeting, a logo or a slow establishing shot. Pull that moment forward from anywhere in the footage.
+- Then earn the next second, every second: each cut must show something NEW (closer, another angle, the next step, a reaction). If a shot adds nothing, it goes — however pretty it is.
+- Keep it human: cut dead air and retakes but keep the natural rhythm of speech, a real laugh, a breath before the big moment. Vary shot lengths with the content (a quick 0.6 s detail, a 3 s shot that needs to play out) — never a mechanical every-N-seconds pattern.
+- Let real sound live: the saw starting, the crack, the thud, laughter. Those moments get the clip's own sound up ("volume" 1) even under music.
 - Transitions and effects: follow the "Edit intensity" section below.
-- Let real sound live: natural sounds (a saw starting, laughter, wind) are part of the story.
-- End on a payoff or a loop-able line. No slow outros.`,
-  ad: `ADVERTISEMENT (paid social / pre-roll):
-- Structure: Hook (0-3s) → Problem or desire → Product/solution & proof → Call to action.
-- Add a "hook" overlay in the first ~2.5s. Keep every on-screen claim short and concrete.
-- Finish with a "cta" overlay covering the final 2-3 seconds (main text = the action, subtext = brand/offer).
-- Tight pacing, no dead air, clean audio fades. Every second must earn its place.`,
+- End the moment the payoff has landed — on the result, a reaction or a line that loops into the opening. No outro, no fade, no "thanks for watching".`,
+  ad: `ADVERTISEMENT (paid social) — it should look like a great organic post that happens to sell:
+- Structure: Hook (0-2 s: the result or the problem, shown) → what it is / who it's for (one beat) → proof (the work being done, the before → after, a real reaction, a number) → call to action.
+- Show the product or the finished result inside the first 3 seconds; viewers who never see it can't want it.
+- One message. Every on-screen claim is short, concrete and true to the footage (a number, a time, a place) — never a slogan.
+- Finish with a "cta" overlay over the final 2-3 seconds (main text = the action, subtext = brand / offer) — only when a call to action or brand is given, or the user asks for one.
+- Tight pacing, no dead air. Every second must earn its place.`,
 };
 GOAL_GUIDE.both = `${GOAL_GUIDE.social}\n\n${GOAL_GUIDE.ad}\nBalance both: organic-feeling content that still ends with a clear "cta" overlay.`;
 
@@ -91,7 +93,8 @@ const PLAN_SCHEMA = `{
     "part": "which part of the sound to use (e.g. start on the drop)",
     "why": "one line: why it fits the vibe",
     "prompt": "a vivid prompt for an AI music generator: genre, instruments, mood, tempo — e.g. warm lo-fi hip hop beat, soft rhodes chords, vinyl crackle, 85 bpm",
-    "options": [{ "search": "…", "style": "…" }]
+    "options": [{ "search": "…", "style": "…" }],
+    "popular": [{ "track": "c7", "why": "why it fits, max 12 words", "part": "which part to use" }]  // ONLY when a "Popular songs right now" list is given
   }
 }`;
 
@@ -99,6 +102,11 @@ const PLAN_SCHEMA = `{
 /** How much styling the edit gets. Exported for tests. */
 export const INTENSITY_GUIDE = {
   clean: `Clean — a documentary / talking-head feel: straight cuts; a transition only where place or time changes ("crossfade", "fadeblack", "light-leak"). Effects ("kenburns", "punch-in") sparingly.`,
+  natural: `Natural — the edit a good human editor makes; nothing that looks like a template or an app preset:
+- Straight cuts. The edit is carried by WHAT is shown and WHEN it cuts, not by effects.
+- At most one or two transitions in the whole video, and only where place or time really changes ("crossfade", or "whip" between two moving shots). Never "glitch", "flash", "spin" or "zoom-through".
+- Talking: jump cuts between sentences; a "punch-in" effect on the one line that matters most.
+- No "shake". Slow motion ("speed" 0.5) only on the single best moment of motion footage, and only if it deserves it.`,
   creator: `Creator — edit like a top creator; styled but never random:
 - 3-6 styled transitions per 30 s, placed where the energy shifts or on a beat between B-roll / montage shots (never inside a sentence): "punch" (zoom-in cut, most versatile), "whip" (fast pan between related shots), "zoom-through" (into a new place), "flash" (on a drop or a reveal), "glitch" (tech / gaming / hype), "spin" (playful, rare), "light-leak" (warm, nostalgic, lifestyle). Match them to the vibe — calm videos get light-leak / crossfade / punch, hype videos get punch / whip / flash / glitch.
 - Talking: straight cuts or "punch" between sentences; "punch-in" effect on the key line.
@@ -112,7 +120,9 @@ export const INTENSITY_GUIDE = {
 
 const CRAFT = `
 ## Editing craft (top-tier editors do this; the user's words and the creator style still win)
-- Hook (first 1.5 s): picture, text and sound hit together. Open mid-action or on a teaser of the result — never on setup. The hook overlay says what the picture can't.
+- Hook (first 1.5 s): open mid-action or on the result — never on setup. If there is a hook overlay it says what the picture can't, and it is on screen from frame one.
+- Words on screen are written the way the creator would type them on their phone: specific to THIS footage (a number, a place, what is actually happening), plain, lower stakes than an advert. Never stock phrases — no "Wait for it", "You won't believe", "Watch till the end", "Game changer", "Next level", "Here's the thing", "Let's dive in", "Satisfying", "POV:" unless the user wrote it. No emojis in text unless the user asks. If you can't write a line that is specific and true, write none: a strong picture needs no caption.
+- Never use the same moment twice, and never put two shots of the same framing back to back (unless it is a jump cut inside one sentence).
 - Shape: hook → quick context → escalation (every scene raises the stakes: closer, faster, more detail) → PEAK (the best shot) → payoff → an ending that loops back into the opening or lands the strongest image. No flat middle.
 - Pattern interrupt every 2-4 s: a new angle, shot size (wide → close → detail), direction of motion, a text beat or a sound. Never two near-identical shots back to back.
 - Cut on action: leave a shot while it still moves and enter the next one already moving; drop the first frames where a camera is still settling and the tail after an action has finished.
@@ -208,7 +218,7 @@ NO background music is mixed into this video — the creator adds a trending sou
 - Pace it like a video made for a trending track: pick a tempo for the vibe ("sound.bpm", usually 90-150) and cut B-roll/montage on every 2nd or 4th beat of it (ClipForge snaps the cuts to that grid). Put the biggest visual moment where a drop would land (~1/3 in).
 - Fill "sound" with what to search for in the app's sound picker.
 ${SOUND_RULES}
-`;
+${popularSection(options)}`;
   }
   const composed = options.aiMusic && !options.music
     ? `
@@ -218,6 +228,17 @@ The user has no music in their library: ClipForge composes the background music 
 ## Sound idea for posting
 Also fill "sound": the kind of trending sound that would suit this video if the creator swaps or adds one in the app.${composed}
 ${SOUND_RULES}
+${popularSection(options)}`;
+}
+
+/** The current chart, for picking real popular songs that fit the edit. */
+function popularSection(options) {
+  const songs = options.popular;
+  if (!songs?.length) return '';
+  return `
+### Popular songs right now (this week's streaming chart)
+${songs.map((s) => `${s.id}: ${s.title} — ${s.artist}${s.explicit ? ' (explicit)' : ''}`).join('\n')}
+In "sound.popular" pick 3 to 5 of these that genuinely fit THIS video's vibe, energy and pacing — best fit first — each with a short "why" and the "part" to use (e.g. "the chorus", "the drop at the start"). Only pick songs you actually know the sound of; a wrong-mood hit is worse than none. If fewer than 3 fit, pick fewer; if none fit, use [].
 `;
 }
 
@@ -243,6 +264,13 @@ export function normalizeSound(raw) {
     options,
   };
   return out.search.length || out.style ? out : null;
+}
+
+/** Attach the chart songs the planner picked to the sound suggestion. */
+function withPopular(sound, raw, songs) {
+  const popular = matchPopular(raw?.popular, songs);
+  if (!popular.length) return sound;
+  return { ...(sound || { vibe: '', energy: null, search: [], style: '', part: '', why: '', prompt: '', bpm: null, options: [] }), popular };
 }
 
 /** A steady beat grid (seconds) for cutting to a sound that isn't in the library. */
@@ -630,7 +658,7 @@ export function normalizeResponse(raw, clips, options) {
   const settingsChanges = options.revision ? normalizeSettingChanges(raw.settings) : {};
 
   const auto = normalizeAuto(raw.auto, options.revision?.auto || null);
-  return { title: String(raw.title || 'ClipForge edit').slice(0, 120), checklist, versions, warnings, music, emphasis, settingsChanges, sound: normalizeSound(raw.sound), auto };
+  return { title: String(raw.title || 'ClipForge edit').slice(0, 120), checklist, versions, warnings, music, emphasis, settingsChanges, sound: withPopular(normalizeSound(raw.sound), raw.sound, options.popular), auto };
 }
 
 /** Output length of a normalized plan (sum of scene lengths minus transition overlaps). */

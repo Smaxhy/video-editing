@@ -12,6 +12,9 @@ import { analyzeClip, isolateVoice, cutoutImage } from './analysis.js';
 import { detectTools, onPath, OPTIONAL_TOOLS } from './tools.js';
 import { generateEditPlans, GOALS, LENGTHS, PLANNER_MODELS, REVISABLE, INTENSITIES, beatGrid } from './editor.js';
 import { spicePlan } from './spice.js';
+import { loudnessCurve, refineSpeechCuts, snapToShotChanges, quantizePlan } from './precision.js';
+import { lintPlan } from './lint.js';
+import { createCharts } from './charts.js';
 import { resolveAuto, removeSlowMo, AUTO_LABELS, settingsFromText, asksForVoiceover } from './directives.js';
 import { beatEdit } from './beatedit.js';
 import { trackFromText } from './soundpick.js';
@@ -136,6 +139,7 @@ async function extractAudio(id) {
 await library.load();
 setGentle(library.settings().gentleCpu);
 const folders = createFolders({ file: path.join(DIRS.library, '.folders.json') });
+const charts = createCharts({ cacheFile: path.join(DIRS.workspace, 'charts.json'), log: () => {} });
 await folders.load();
 const storage = createStorage({
   dirs: DIRS,
@@ -606,6 +610,8 @@ async function runPipeline(job, { prompt, userPrompt = prompt, clipIds, settings
       intensity: settings.intensity,
       clipAudio: settings.clipAudio,
       noText: settings.overlays === 'off',
+      // This week's chart, so the sound suggestion names real popular songs that fit the vibe.
+      popular: (await charts.top().catch(() => null))?.songs || null,
     };
     // Revision: the user watched the last render and said what to fix — Claude edits that plan.
     if (revise) {
@@ -660,6 +666,18 @@ async function runPipeline(job, { prompt, userPrompt = prompt, clipIds, settings
     planned.versions = planned.versions.map((v) => ({ ...v, plan: { ...v.plan, overlays: [] } }));
     if (had) notes.push(`Removed all on-screen text, as you asked (${had} text${had > 1 ? 's' : ''}). Captions follow the caption setting.`);
   }
+  // The editor's checklist: no stock phrases or emojis in text, no label on every shot, the hook on
+  // frame one, text readable, a hard open and a clean ending.
+  {
+    const keepText = settings.overlays === 'on' || /\b(?:subtitles?|on[- ]screen text|text on screen)\b/i.test(said);
+    const all = new Set();
+    planned.versions = planned.versions.map((v) => {
+      const r = lintPlan(v.plan, { total: layoutTimeline(v.plan).total, goal: settings.goal, said, intensity: settings.intensity, keepText });
+      r.fixes.forEach((f) => all.add(f));
+      return { ...v, plan: r.plan };
+    });
+    if (all.size) notes.push(`Editor's check: ${[...all].join('; ')}.`);
+  }
   // The user's words beat the automatic passes: Claude's "auto" call AND the request's explicit
   // phrases ("keep the order", "no slow-mo", "simple cuts") decide which passes may touch the plan.
   const directed = resolveAuto(planned.auto, said);
@@ -711,6 +729,30 @@ async function runPipeline(job, { prompt, userPrompt = prompt, clipIds, settings
       return { ...v, plan: { ...t.plan, title: v.plan.title } };
     });
     if (removed >= 0.3) notes.push(`Auto-tighten removed ${removed.toFixed(1)} s of pauses and filler words.`);
+  }
+  // Precision: speech cuts go in the real quiet gap around the words (from each clip's loudness
+  // curve), and B-roll cuts next to a camera cut move onto it.
+  {
+    const curves = {};
+    const speaking = [...new Set(planned.versions.flatMap((v) => v.plan.scenes.map((sc) => sc.clip)))]
+      .map((id) => clips.find((c) => c.id === id))
+      .filter((c) => c?.hasAudio && transcripts[c.id]?.words?.length);
+    for (const c of speaking) {
+      curves[c.id] = await loudnessCurve(c.path, cache(c, 'loudness', '.bin')).catch(() => null);
+    }
+    const talking = (sc) => (transcripts[sc.clip]?.words || []).filter((w) => w.end > sc.start && w.start < sc.end).length >= 3;
+    const clipDuration = (id) => clips.find((c) => c.id === id)?.duration || 0;
+    let words = 0;
+    let shots = 0;
+    planned.versions = planned.versions.map((v) => {
+      const a = refineSpeechCuts(v.plan, { words: (id) => transcripts[id]?.words, curve: (id) => curves[id], clipDuration, talking });
+      const b = snapToShotChanges(a.plan, { shots: (id) => analysis[id]?.shots, talking });
+      words += a.moved;
+      shots += b.moved;
+      return { ...v, plan: b.plan };
+    });
+    if (words) notes.push(`Precision: placed ${words} speech cut${words > 1 ? 's' : ''} in the quiet gap around the words, so no syllable is clipped.`);
+    if (shots) notes.push(`Precision: moved ${shots} cut${shots > 1 ? 's' : ''} onto the camera cut in the footage (no flash frames).`);
   }
   if (settings.trendingSound) planned.music = null;
   // No usable music in the library: make a track for the vibe on this machine, and keep it in the
@@ -802,7 +844,7 @@ async function runPipeline(job, { prompt, userPrompt = prompt, clipIds, settings
         // grid, slow-motion hero shot on the drop. Talking videos keep their word-accurate cuts.
         if (beats && musicAsset && settings.intensity !== 'clean' && auto.beatEdit) {
           const dropAt = musicAsset.music?.drop != null ? round(musicAsset.music.drop - offset, 3) : null;
-          const be = beatEdit(v.plan, { beats: out.beats, drop: dropAt > 1.5 ? dropAt : null, talking: speaks, clipDuration, energy, total: layoutTimeline(v.plan).total });
+          const be = beatEdit(v.plan, { beats: out.beats, drop: dropAt > 1.5 ? dropAt : null, talking: speaks, clipDuration, energy, total: layoutTimeline(v.plan).total, plain: settings.intensity === 'natural' });
           if (be.shots) {
             beatShots += be.shots;
             return { ...v, plan: be.plan, downbeats: out.downbeats };
@@ -863,12 +905,17 @@ async function runPipeline(job, { prompt, userPrompt = prompt, clipIds, settings
       autoApplied.push(`slowmo: speed-ramped into ${ramps} slow-motion scenes`);
     }
   }
-  if (auto.finish && settings.intensity !== 'clean') autoApplied.push('finish: word-by-word animated text and an opening zoom hit');
+  if (auto.finish && ['creator', 'max'].includes(settings.intensity)) autoApplied.push('finish: word-by-word animated text and an opening zoom hit');
   if (auto.finish && ['film', 'moody'].includes(settings.look)) autoApplied.push('finish: film grain and a vignette');
   // Remember what the passes did, so a revision ("no slow-mo!") can switch the right one off.
   {
     const saved = JSON.parse(await fs.readFile(planFile, 'utf8').catch(() => 'null'));
     if (saved) await fs.writeFile(planFile, JSON.stringify({ ...saved, auto, autoApplied }, null, 2));
+  }
+  // Last: everything on the frame grid (whole frames per shot, no drift off the word or the beat).
+  {
+    const clipDuration = (id) => clips.find((c) => c.id === id)?.duration || 0;
+    planned.versions = planned.versions.map((v) => ({ ...v, plan: quantizePlan(v.plan, { clipDuration }).plan }));
   }
   // AI voiceover: Kokoro reads the planner's narration lines; they become one mixed track + captions.
   if (settings.voiceover !== 'off') {
@@ -1062,6 +1109,8 @@ async function runPipeline(job, { prompt, userPrompt = prompt, clipIds, settings
         look: settings.look,
         intensity: settings.intensity,
         finish: auto.finish,
+        // Emoji pops over captions read as an app template: only for the styled levels or the "pop" look.
+        emoji: ['creator', 'max'].includes(settings.intensity) || settings.captions === 'pop',
         downbeats: v.downbeats || null,
         narration: v.narration || null,
         sfxDir: settings.sfx !== 'off' ? await ensureSfx(TOOLS_DIR).catch(() => null) : null,
@@ -1966,8 +2015,9 @@ function editSettings(s = {}, autoFind = false) {
     // The clips' own sound: auto (planner decides per shot), low (a bed under the music), off (music only).
     clipAudio: ['auto', 'low', 'off'].includes(s.clipAudio) ? s.clipAudio : 'auto',
     musicEngine: s.musicEngine === 'musicgen' ? 'musicgen' : 'beat',
-    // Edit intensity: clean (documentary), creator (default — styled like a top creator), max (hype).
-    intensity: INTENSITIES.includes(s.intensity) ? s.intensity : prof?.intensity || 'creator',
+    // Edit intensity: clean (documentary), natural (default — a good human editor: straight cuts, no
+    // gimmicks), creator (styled transitions), max (hype).
+    intensity: INTENSITIES.includes(s.intensity) ? s.intensity : prof?.intensity || 'natural',
     tighten: level(s.tighten, prof?.tighten, 'natural'),
     polish: s.polish !== false,
     beatSync: s.beatSync !== false,
@@ -1977,7 +2027,7 @@ function editSettings(s = {}, autoFind = false) {
     voice: VOICES[s.voice] ? s.voice : 'am_michael',
     selfReview: s.selfReview !== false,
     autoFix: s.autoFix !== false,
-    motion: level(s.motion, prof?.motion, s.intensity === 'clean' ? 'subtle' : 'punchy'),
+    motion: level(s.motion, prof?.motion, ['creator', 'max'].includes(s.intensity) ? 'punchy' : 'subtle'),
     useLogo: s.useLogo !== false,
     watermark: s.watermark === true,
     plannerModel: PLANNER_MODELS.includes(s.plannerModel) ? s.plannerModel : 'sonnet',

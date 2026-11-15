@@ -294,7 +294,7 @@ export function buildComposition({ plan, clips, transcripts, settings, gsapSrc =
   // Aesthetic finishing follows the edit: styled edits get kinetic text and an opening hit; film /
   // moody / cinematic looks get grain, a vignette and serif titles.
   // finish === false: the user asked for plain text / no effects (see directives.js).
-  const styled = settings.finish !== false && settings.intensity && settings.intensity !== 'clean';
+  const styled = settings.finish !== false && ['creator', 'max'].includes(settings.intensity);
   const filmic = settings.finish !== false && ['film', 'moody'].includes(settings.look);
   const serifTitles = filmic || settings.look === 'warm' || settings.look === 'cool';
   const clipById = new Map(clips.map((c) => [c.id, c]));
@@ -610,7 +610,7 @@ export function buildComposition({ plan, clips, transcripts, settings, gsapSrc =
         if (off != null && !strong) tweens.push(`tl.to("#${wid}", { color: "#ffffff", scale: 1, duration: 0.07, ease: "power1.out" }, ${round(off, 3)});`);
         else if (off != null) tweens.push(`tl.to("#${wid}", { scale: 1, duration: 0.07 }, ${round(off, 3)});`);
       }
-      if (strong && emphasis.get(key) && !emoji && w.start - lastEmoji >= 2.5 && style !== 'clean') {
+      if (settings.emoji !== false && strong && emphasis.get(key) && !emoji && w.start - lastEmoji >= 2.5 && style !== 'clean') {
         emoji = emphasis.get(key);
         lastEmoji = w.start;
         emojiTimes.push(round(Math.max(c.start, w.start), 3));

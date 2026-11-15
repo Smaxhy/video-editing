@@ -197,6 +197,7 @@
           </label>
           <label>Edit intensity
             <select class="field" id="autoIntensity">
+              <option value="natural">Natural — a human editor's cut, no gimmicks</option>
               <option value="creator">Creator — styled transitions, punch-ins, sound design</option>
               <option value="max">Max — hype edit, styled cuts on most beats</option>
               <option value="clean">Clean — straight cuts</option>
@@ -425,10 +426,11 @@
             <div class="opt"><span class="lbl">Edit intensity</span>
               <div class="seg" data-name="intensity" data-single role="group" aria-label="Edit intensity">
                 <button type="button" data-v="clean">Clean</button>
-                <button type="button" data-v="creator" aria-pressed="true">Creator</button>
+                <button type="button" data-v="natural" aria-pressed="true">Natural</button>
+                <button type="button" data-v="creator">Creator</button>
                 <button type="button" data-v="max">Max</button>
               </div>
-              <small class="hint-line">Clean: straight cuts. Creator: styled transitions on the beat (punch, whip, zoom-through, flash, light leaks), punch-ins and a hit on the drop. Max: hype edit — styled cuts on most beats, shakes, speed ramps.</small>
+              <small class="hint-line">Natural: how a good human editor cuts — straight cuts on the beat and the words, a punch-in where it counts, no gimmicks. Clean: documentary, nothing added. Creator: styled transitions, animated text, a hit on the drop. Max: hype edit — effects on most beats, shakes, speed ramps.</small>
             </div>
 
             <div class="opt"><span class="lbl">Pro finishing</span>

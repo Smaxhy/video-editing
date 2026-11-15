@@ -1766,7 +1766,7 @@ function readSettings() {
     voice: $('#voice').value,
     style: $('#style').value || null,
     musicLevel: segValue('musicLevel')[0],
-    intensity: segValue('intensity')[0] || 'creator',
+    intensity: segValue('intensity')[0] || 'natural',
     clipAudio: segValue('clipAudio')[0] || 'auto',
   };
 }
@@ -2365,7 +2365,7 @@ function fillAutoForm(s) {
   $('#autoVoiceover').value = s.voiceover || 'auto';
   $('#autoTrending').checked = s.trendingSound === true;
   $('#autoTrendingWarn').classList.toggle('hidden', s.trendingSound !== true);
-  $('#autoIntensity').value = s.intensity || 'creator';
+  $('#autoIntensity').value = s.intensity || 'natural';
   $('#autoClipAudio').value = s.clipAudio || 'auto';
   $('#autoMusicEngine').value = s.aiMusic === false ? 'off' : s.musicEngine || 'beat';
   state.autoStyleWanted = s.style || '';

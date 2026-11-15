@@ -20,11 +20,14 @@ export function spicePlan(plan, { intensity = 'creator', energy = 'medium', down
   const scenes = plan.scenes.map((s) => ({ ...s }));
   const lay = layout({ ...plan, scenes });
   const max = intensity === 'max';
+  // Natural: what a human editor does and nothing more — a punch-in cut between sentences now and
+  // then. No blends, flashes, glitches or shakes.
+  const natural = intensity === 'natural';
   // Spacing between styled transitions, and how many a video of this length should have in total.
   const minGap = max ? 1.2 : 3;
   const already = scenes.filter((s, i) => i > 0 && s.transition !== 'cut').length;
-  const want = max ? Infinity : Math.max(0, Math.round(lay.total / 6) - already);
-  const set = SETS[energy] || SETS.medium;
+  const want = max ? Infinity : Math.max(0, Math.round(lay.total / (natural ? 10 : 6)) - already);
+  const set = natural ? ['punch'] : SETS[energy] || SETS.medium;
   const onBeat = (at) => !downbeats.length || downbeats.some((b) => Math.abs(b - at) < 0.09);
   let lastAt = -Infinity;
   let added = 0;
@@ -44,7 +47,7 @@ export function spicePlan(plan, { intensity = 'creator', energy = 'medium', down
       if (at - lastAt < 5 || prev.clip === s.clip) continue;
       s.transition = 'punch';
     } else {
-      if (!onBeat(at)) continue;
+      if (natural || !onBeat(at)) continue; // natural: montage cuts stay straight cuts
       let t = set[k++ % set.length];
       if (!CUT_LIKE.has(t)) {
         const d = BLEND[t];
@@ -63,6 +66,7 @@ export function spicePlan(plan, { intensity = 'creator', energy = 'medium', down
   }
   // The peak: hit it.
   const p = scenes.findIndex((s) => s.peak);
+  if (natural) return { plan: { ...plan, scenes }, added };
   if (p > 0 && scenes[p].transition === 'cut') {
     scenes[p].transition = energy === 'low' ? 'punch' : 'flash';
     added++;

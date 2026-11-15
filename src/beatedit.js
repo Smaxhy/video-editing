@@ -33,7 +33,7 @@ function slotBeats(t, { drop, b, total, energy }) {
  * Rebuild a plan's scenes on the beat grid. `beats` / `downbeats` / `drop` are OUTPUT seconds.
  * Returns { plan, shots } (shots = 0 when the plan isn't suited: talking, no beats).
  */
-export function beatEdit(plan, { beats, drop = null, talking, clipDuration, energy = 'medium', total = null }) {
+export function beatEdit(plan, { beats, drop = null, talking, clipDuration, energy = 'medium', total = null, plain = false }) {
   if (!beats?.length || beats.length < 8) return { plan, shots: 0 };
   const moments = plan.scenes.filter((s) => !talking(s) && s.end - s.start >= 0.3);
   if (moments.length < 2 || moments.length < plan.scenes.length * 0.7) return { plan, shots: 0 };
@@ -62,7 +62,7 @@ export function beatEdit(plan, { beats, drop = null, talking, clipDuration, ener
       const start = hero.start;
       const end = Math.min(clipDuration(hero.clip), start + out * speed);
       if (end - start > 0.3) {
-        scenes.push({ ...hero, start: round(start, 3), end: round(end, 3), speed, transition: 'flash', transitionDuration: 0, effect: 'shake', peak: true, beat: true });
+        scenes.push({ ...hero, start: round(start, 3), end: round(end, 3), speed, transition: plain ? 'cut' : 'flash', transitionDuration: 0, effect: plain ? 'none' : 'shake', peak: true, beat: true });
         t += (end - start) / speed;
         cursor.set(peakIdx, end);
         mi = (peakIdx + 1) % moments.length;

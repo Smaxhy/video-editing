@@ -34,7 +34,7 @@ export const DEFAULT_SETTINGS = {
   voice: 'am_michael',
   style: null,
   trendingSound: false,
-  intensity: 'creator',
+  intensity: 'natural',
   clipAudio: 'auto',
   aiMusic: true,
   musicEngine: 'beat',
@@ -58,7 +58,7 @@ export function normalizeSettings(s = {}, prev = DEFAULT_SETTINGS) {
     voiceover: ['off', 'auto', 'on'].includes(s.voiceover) ? s.voiceover : prev.voiceover || 'auto',
     voice: VOICE_IDS.includes(s.voice) ? s.voice : prev.voice || 'am_michael',
     trendingSound: typeof s.trendingSound === 'boolean' ? s.trendingSound : prev.trendingSound ?? false,
-    intensity: ['clean', 'creator', 'max'].includes(s.intensity) ? s.intensity : prev.intensity || 'creator',
+    intensity: ['clean', 'natural', 'creator', 'max'].includes(s.intensity) ? s.intensity : prev.intensity || 'natural',
     clipAudio: ['auto', 'low', 'off'].includes(s.clipAudio) ? s.clipAudio : prev.clipAudio || 'auto',
     aiMusic: typeof s.aiMusic === 'boolean' ? s.aiMusic : prev.aiMusic ?? true,
     musicEngine: ['beat', 'musicgen'].includes(s.musicEngine) ? s.musicEngine : prev.musicEngine || 'beat',
@@ -123,7 +123,7 @@ ${styleGuide ? `\n## The creator's style (copied from reference videos they love
 ${Object.entries(IDEA_FORMATS).map(([k, v]) => `  - "${k}": ${v}`).join('\n')}
 - Make them eye-catching and aesthetic, the way the best accounts in this niche edit: a hook that stops the scroll in the first second (the most striking shot + bold text), constant visual change, a payoff, and a strong ending (a loop back to the start, a reveal or a punchline — never a slow fade).
 - "look": the colour grade that makes the idea look its best — ${IDEA_LOOKS.map((l) => `"${l}"`).join(', ')} (film/moody for cinematic, vibrant for hype/funny, warm for lifestyle/story).
-- "intensity": "max" for hype / transformation / funny, "creator" for most others, "clean" only for calm tips.
+- "intensity": "natural" for most ideas (a human editor's cut: straight cuts, no gimmicks), "creator" or "max" only for hype / transformation / funny edits that really call for effects, "clean" for calm tips.
 - Each idea uses 2–${MAX_IDEA_CLIPS} clips from the library (by id) that genuinely fit it, in story order. Different ideas may reuse a clip, but vary them where you can. Prefer good-quality clips.
 - Length per idea: one of ${settings.lengths.map((l) => `"${l}"`).join(', ')} seconds — pick what suits the idea and the amount of fitting footage.
 - "brief" is the instruction for the video editor: the hook in the first 2 seconds, pacing, what on-screen text/subtitles to show, the mood of the music, how it ends. Concrete, 2–5 sentences.
@@ -174,7 +174,7 @@ export function normalizePlan(raw, { known, lengths, count, tracks = [] }) {
       captionStyle: AUTOPILOT_CAPTIONS.includes(it?.captionStyle) ? it.captionStyle : 'bold',
       format: IDEA_FORMATS[String(it?.format || '').toLowerCase()] ? String(it.format).toLowerCase() : null,
       look: IDEA_LOOKS.includes(it?.look) ? it.look : null,
-      intensity: ['clean', 'creator', 'max'].includes(it?.intensity) ? it.intensity : null,
+      intensity: ['clean', 'natural', 'creator', 'max'].includes(it?.intensity) ? it.intensity : null,
       musicId: tracks[Number(String(it?.music || '').replace(/^s/i, '')) - 1]?.id || null,
       musicName: tracks[Number(String(it?.music || '').replace(/^s/i, '')) - 1]?.name || null,
       accent: /^#[0-9a-f]{6}$/i.test(it?.accent || '') ? it.accent : null,
@@ -391,7 +391,7 @@ export function createAutopilot({ dir, library, scanner, renderIdea, otherWork =
           style: data.settings.style,
           trendingSound: data.settings.trendingSound,
           // A proper edit: styled cuts, sound design and music every time.
-          intensity: data.settings.intensity === 'clean' ? 'clean' : idea.intensity || data.settings.intensity || 'creator',
+          intensity: data.settings.intensity === 'clean' ? 'clean' : idea.intensity || data.settings.intensity || 'natural',
           aiMusic: data.settings.aiMusic !== false,
           clipAudio: data.settings.clipAudio || 'auto',
           musicEngine: data.settings.musicEngine || 'beat',

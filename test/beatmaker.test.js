@@ -36,7 +36,7 @@ test('composed music is long enough, on tempo, and drops on a bar at or after th
 
 test('autopilot asks for a proper edit by default and keeps the music options', () => {
   const s = normalizeSettings({});
-  assert.equal(s.intensity, 'creator');
+  assert.equal(s.intensity, 'natural'); // a human editor's cut by default (beat edit included, no gimmicks)
   assert.equal(s.aiMusic, true);
   assert.equal(s.musicEngine, 'beat');
   const t = normalizeSettings({ intensity: 'max', aiMusic: false, musicEngine: 'musicgen' }, s);

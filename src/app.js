@@ -12,6 +12,7 @@ import { analyzeClip, isolateVoice, cutoutImage } from './analysis.js';
 import { detectTools, onPath, OPTIONAL_TOOLS } from './tools.js';
 import { generateEditPlans, GOALS, LENGTHS, PLANNER_MODELS, REVISABLE, INTENSITIES, beatGrid } from './editor.js';
 import { spicePlan } from './spice.js';
+import { loudnessCurve, refineSpeechCuts, snapToShotChanges, quantizePlan } from './precision.js';
 import { resolveAuto, removeSlowMo, AUTO_LABELS, settingsFromText, asksForVoiceover } from './directives.js';
 import { beatEdit } from './beatedit.js';
 import { trackFromText } from './soundpick.js';
@@ -712,6 +713,30 @@ async function runPipeline(job, { prompt, userPrompt = prompt, clipIds, settings
     });
     if (removed >= 0.3) notes.push(`Auto-tighten removed ${removed.toFixed(1)} s of pauses and filler words.`);
   }
+  // Precision: speech cuts go in the real quiet gap around the words (from each clip's loudness
+  // curve), and B-roll cuts next to a camera cut move onto it.
+  {
+    const curves = {};
+    const speaking = [...new Set(planned.versions.flatMap((v) => v.plan.scenes.map((sc) => sc.clip)))]
+      .map((id) => clips.find((c) => c.id === id))
+      .filter((c) => c?.hasAudio && transcripts[c.id]?.words?.length);
+    for (const c of speaking) {
+      curves[c.id] = await loudnessCurve(c.path, cache(c, 'loudness', '.bin')).catch(() => null);
+    }
+    const talking = (sc) => (transcripts[sc.clip]?.words || []).filter((w) => w.end > sc.start && w.start < sc.end).length >= 3;
+    const clipDuration = (id) => clips.find((c) => c.id === id)?.duration || 0;
+    let words = 0;
+    let shots = 0;
+    planned.versions = planned.versions.map((v) => {
+      const a = refineSpeechCuts(v.plan, { words: (id) => transcripts[id]?.words, curve: (id) => curves[id], clipDuration, talking });
+      const b = snapToShotChanges(a.plan, { shots: (id) => analysis[id]?.shots, talking });
+      words += a.moved;
+      shots += b.moved;
+      return { ...v, plan: b.plan };
+    });
+    if (words) notes.push(`Precision: placed ${words} speech cut${words > 1 ? 's' : ''} in the quiet gap around the words, so no syllable is clipped.`);
+    if (shots) notes.push(`Precision: moved ${shots} cut${shots > 1 ? 's' : ''} onto the camera cut in the footage (no flash frames).`);
+  }
   if (settings.trendingSound) planned.music = null;
   // No usable music in the library: make a track for the vibe on this machine, and keep it in the
   // library. MusicGen (real-sounding, slower, non-commercial) first; ClipForge's own beat maker
@@ -869,6 +894,11 @@ async function runPipeline(job, { prompt, userPrompt = prompt, clipIds, settings
   {
     const saved = JSON.parse(await fs.readFile(planFile, 'utf8').catch(() => 'null'));
     if (saved) await fs.writeFile(planFile, JSON.stringify({ ...saved, auto, autoApplied }, null, 2));
+  }
+  // Last: everything on the frame grid (whole frames per shot, no drift off the word or the beat).
+  {
+    const clipDuration = (id) => clips.find((c) => c.id === id)?.duration || 0;
+    planned.versions = planned.versions.map((v) => ({ ...v, plan: quantizePlan(v.plan, { clipDuration }).plan }));
   }
   // AI voiceover: Kokoro reads the planner's narration lines; they become one mixed track + captions.
   if (settings.voiceover !== 'off') {

@@ -117,7 +117,7 @@ export async function polishAudio(src, out, { start = 0, end, speech, deepFilter
 export function usedWindows(versions, pad = 0.5) {
   const w = {};
   for (const v of versions) {
-    for (const s of v.plan.scenes) {
+    for (const s of [...v.plan.scenes, ...(v.plan.cutaways || [])]) {
       const cur = w[s.clip];
       w[s.clip] = cur ? [Math.min(cur[0], s.start), Math.max(cur[1], s.end)] : [s.start, s.end];
     }

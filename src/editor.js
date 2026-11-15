@@ -71,6 +71,11 @@ const PLAN_SCHEMA = `{
           "position": "top"       // ${POSITIONS.join(' | ')}
         }
       ],
+      "cutaways": [               // B-roll shown OVER a talking scene while its voice keeps playing; [] when not used
+        { "clip": "clip2", "start": 3.0, "end": 5.5,   // the picture: this range of clip2 (its sound is muted)
+          "over": "clip1", "at": 12.4,                 // starts when second 12.4 of clip1 (SOURCE seconds) is playing in a scene
+          "note": "shows the saw he is talking about" }
+      ],
       "audio": { "fadeIn": 0, "fadeOut": 0.4 },
       "narration": [              // ONLY when a Voiceover section is given below; else []
         { "text": "One spoken sentence.", "start": 0.3 }   // start = OUTPUT seconds
@@ -412,6 +417,7 @@ ${catalog}
 - Transitions: "cut" for talking content; others sparingly between distinct moments; transitionDuration 0.2-0.8s.
 - Overlay times are OUTPUT timeline seconds and must fit inside that version's length. Overlays must not overlap each other in time unless they sit in different positions.
 - Footage with little or no speech (POV, B-roll, montage): build the story from the visuals — use the "best moments", cut on shot changes, keep scenes 1-4s. If the user asks for subtitles/text or a theme (e.g. "the art of tree cutting") AND nobody talks (or captions are off), write short on-screen lines as "title"/"text" overlays (2-7 words, 2-3s each, one at a time) that narrate the video — these are its subtitles.
+- B-roll over talking ("cutaways") — how professionals edit anyone who speaks: when someone talks and other footage (another clip, or another moment) SHOWS what they are saying, keep the voice running and cover the picture with it. Each cutaway is 1.5-4 s, starts on the phrase it illustrates, and shows exactly that thing (the tool when they name the tool, the result when they describe the result). Cover roughly a third to a half of the talking — always show the speaker on their first line and their last. A cutaway is also the best way to hide a jump cut. Don't use footage as a cutaway that already appears as a scene. No fitting footage → no cutaways.
 - When captions are on and people talk, the captions ARE the subtitles: never write text overlays that repeat or paraphrase what is said, and keep any other text away from the moments people speak.
 - On-screen text: only what the user asked for, plus at most one short hook at the start (unless they said no text). Never invent slogans, titles or labels they didn't ask for. If the user says no text, "overlays" is [].
 - "hook" = big punchy text at the top in the opening seconds. "title" = centered title card. "lower-third" = name/role or place label (3-5s). "text" = short on-screen point. "cta" = end card with the call to action (last 2-3s).
@@ -750,11 +756,29 @@ export function normalizePlan(raw, clips) {
     .sort((a, b) => a.start - b.start)
     .slice(0, 24);
 
+  // B-roll over talking: picture from one clip while a talking scene's sound continues.
+  const cutaways = (Array.isArray(raw.cutaways) ? raw.cutaways : [])
+    .map((c) => {
+      const clip = byId.get(String(c?.clip ?? '').trim());
+      const over = byId.get(String(c?.over ?? '').trim());
+      if (!clip || !over || !Number.isFinite(Number(c.start)) || !Number.isFinite(Number(c.end)) || !Number.isFinite(Number(c.at))) return null;
+      const start = clamp(num(c.start, 0), 0, clip.duration);
+      const end = clamp(num(c.end, 0), 0, clip.duration);
+      if (end - start < 0.5) return null;
+      // Only over a moment that is actually in the edit.
+      const at = num(c.at, 0);
+      if (!scenes.some((s) => s.clip === over.id && at >= s.start - 0.3 && at < s.end)) return null;
+      return { clip: clip.id, start: round(start, 3), end: round(Math.min(end, start + 8), 3), over: over.id, at: round(at, 3), note: typeof c.note === 'string' ? c.note : '' };
+    })
+    .filter(Boolean)
+    .slice(0, 12);
+
   return {
     plan: {
       summary: String(raw.summary || ''),
       scenes,
       overlays,
+      cutaways,
       narration,
       audio: {
         fadeIn: clamp(num(raw.audio?.fadeIn, 0), 0, 5),

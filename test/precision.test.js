@@ -74,3 +74,49 @@ test('precision: every shot is a whole number of frames and cuts do not drift', 
   const e = quantizePlan({ scenes: [{ clip: 'a', start: 9.5, end: 10.02, speed: 1 }] }, { clipDuration: () => 10 });
   assert.ok(e.plan.scenes[0].end <= 10);
 });
+
+test('cutaways: anchored to the talking clip, snapped to words, never overlapping', async () => {
+  const { layCutaways } = await import('../src/precision.js');
+  const { layoutTimeline, buildComposition } = await import('../src/renderer.js');
+  const { normalizePlan } = await import('../src/editor.js');
+  const clips = [
+    { id: 'talk', name: 'talk.mp4', file: 'talk.mp4', duration: 60, width: 1080, height: 1920, hasAudio: true },
+    { id: 'saw', name: 'saw.mp4', file: 'saw.mp4', duration: 20, width: 1080, height: 1920, hasAudio: true },
+  ];
+  // The talking was tightened into two pieces: source 10–14 s then 16–22 s (output 0–4 and 4–10).
+  const raw = {
+    scenes: [{ clip: 'talk', start: 10, end: 22 }], // as planned; tightening then cuts 14–16 s out
+    cutaways: [
+      { clip: 'saw', start: 2, end: 4.5, over: 'talk', at: 11.07 }, // just after the word starting at 11.0
+      { clip: 'saw', start: 8, end: 10, over: 'talk', at: 15 },     // that moment was cut → lands on the next piece
+      { clip: 'saw', start: 0, end: 3, over: 'talk', at: 40 },      // not in the edit → dropped
+      { clip: 'nope', start: 0, end: 3, over: 'talk', at: 12 },
+    ],
+    overlays: [],
+  };
+  const { plan } = normalizePlan(raw, clips);
+  assert.equal(plan.cutaways.length, 2);
+  const words = [{ start: 10.2, end: 10.6 }, { start: 11.0, end: 11.4 }, { start: 13.2, end: 13.56 }, { start: 16.1, end: 16.5 }, { start: 17.7, end: 18.02 }];
+  plan.scenes = [{ ...plan.scenes[0], end: 14 }, { ...plan.scenes[0], start: 16 }];
+  const laid = layoutTimeline(plan);
+  const c = layCutaways(plan, laid, { words: () => words, clipDuration: () => 20 });
+  assert.equal(c.length, 2);
+  // In: a hair before the word at source 11.0 (output 1.0); out: after the word ending at 13.56 (output 3.56).
+  assert.ok(Math.abs(c[0].tlStart - 0.97) <= 0.02, `in ${c[0].tlStart}`);
+  const alone = layCutaways({ ...plan, cutaways: [plan.cutaways[0]] }, laid, { words: () => words, clipDuration: () => 20 });
+  assert.ok(Math.abs(alone[0].tlStart + alone[0].duration - 3.61) <= 0.03, `out ${alone[0].tlStart + alone[0].duration}`);
+  // With the next cutaway 0.4 s later, the gap is closed instead of flashing the speaker.
+  assert.ok(Math.abs(c[0].tlStart + c[0].duration - c[1].tlStart) < 0.01);
+  // The second one starts on the next piece (output 4.0) and they don't overlap.
+  assert.ok(Math.abs(c[1].tlStart - 4.0) <= 0.04, `second ${c[1].tlStart}`);
+  assert.ok(c[0].tlStart + c[0].duration <= c[1].tlStart + 1e-6);
+  for (const x of c) assert.ok(Math.abs(x.duration * 30 - Math.round(x.duration * 30)) < 0.01);
+
+  const { html } = buildComposition({
+    plan: { ...plan, title: 't' },
+    clips, transcripts: { talk: { words: words.map((w) => ({ ...w, word: 'word' })) } }, settings: { width: 1080, height: 1920, captions: 'off' },
+  });
+  assert.match(html, /<video id="kv0" src="media\/saw\.mp4" data-start="\d\.\d+" data-duration="[\d.]+" data-media-start="2" data-track-index="70" muted/);
+  // The speaker's own video (and so the voice) still plays underneath for the whole time.
+  assert.match(html, /<video id="v0" src="media\/talk\.mp4" data-start="0" data-duration="4"/);
+});

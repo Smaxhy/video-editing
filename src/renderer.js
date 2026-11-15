@@ -5,6 +5,7 @@ import { fileURLToPath } from 'node:url';
 import { run, tail, exists, linkOrCopy, round, clamp, escapeHtml, PipelineError } from './util.js';
 import { sfxCues, SFX_VOLUME, SFX_LENGTH } from './sfx.js';
 import { cameraPath } from './reframe.js';
+import { layCutaways } from './precision.js';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const LOCAL_HYPERFRAMES = path.join(ROOT, 'node_modules', '.bin', 'hyperframes');
@@ -517,6 +518,29 @@ export function buildComposition({ plan, clips, transcripts, settings, gsapSrc =
     </div>`;
   });
 
+  // B-roll cutaways: another clip's picture over the talking scene while its voice keeps playing.
+  const cutaways = layCutaways(plan, laid, { words: (id) => transcripts[id]?.words, clipDuration: (id) => clipById.get(id)?.duration });
+  const cutawayHtml = cutaways.map((c, k) => {
+    const clip = clipById.get(c.clip);
+    if (!clip) return '';
+    const mismatch = aspectMismatch(clip, W, H);
+    const fit = !mismatch || ['crop', 'face', 'smart'].includes(settings.framing) ? 'cover' : 'contain';
+    let position = '50% 50%';
+    if (mismatch && settings.framing === 'face') {
+      const face = faceCenter(clip.faces, c.srcStart, c.srcEnd);
+      if (face) ({ position } = coverPositionFor(face, clip, W, H));
+    } else if (mismatch && settings.framing === 'smart') {
+      const cam = cameraPath(clip.track, { srcStart: c.srcStart, srcEnd: c.srcEnd, speed: 1, duration: c.duration }, clip, W, H);
+      if (cam?.keys) position = `${cam.keys[0].x}% ${cam.keys[0].y}%`;
+      else if (cam) position = `${cam.x}% ${cam.y}%`;
+    }
+    // A slow push so the B-roll is never a dead-still frame.
+    if (motion !== 'off' && c.duration > 1.5) tweens.push(`tl.fromTo("#k${k}i", { scale: 1 }, { scale: ${push}, duration: ${c.duration}, ease: "none" }, ${c.tlStart});`);
+    return `    <div id="k${k}" class="scene cutaway">
+      <div id="k${k}i" class="inner"><video id="kv${k}" src="media/${escapeHtml(clip.file)}" data-start="${c.tlStart}" data-duration="${c.duration}" data-media-start="${round(c.srcStart - (clip.videoOffset || 0), 3)}" data-track-index="${70 + (k % 2)}" muted playsinline style="object-fit: ${fit}; object-position: ${position}"></video></div>
+    </div>`;
+  }).filter(Boolean);
+
   // Overlays. Stacking (bottom → top): lower-thirds/text, captions, hooks/titles, CTA end card.
   const layer = { 'lower-third': 0, text: 0, caption: 0, hook: 1, title: 1, cta: 2 };
   const overlays = plan.overlays
@@ -782,7 +806,7 @@ ${fontFaces}
 </head>
 <body>
   <div id="root" data-composition-id="main" data-start="0" data-width="${W}" data-height="${H}" data-duration="${total}" data-fps="${FPS}">
-${[...sceneHtml, ...fxHtml, ...music, ...sfx, ...layerHtml(0), ...captionHtml, ...watermark, ...layerHtml(1), ...layerHtml(2)].join('\n')}
+${[...sceneHtml, ...cutawayHtml, ...fxHtml, ...music, ...sfx, ...layerHtml(0), ...captionHtml, ...watermark, ...layerHtml(1), ...layerHtml(2)].join('\n')}
   </div>
   <script>
     const tl = gsap.timeline({ paused: true });
@@ -879,7 +903,7 @@ export async function ensureSeekable(srcPath, cachePath, { signal } = {}) {
 export async function writeProject({ projectDir, plan, clips, transcripts, settings }) {
   await fs.rm(projectDir, { recursive: true, force: true });
   await fs.mkdir(path.join(projectDir, 'media'), { recursive: true });
-  const used = new Set(plan.scenes.map((s) => s.clip));
+  const used = new Set([...plan.scenes, ...(plan.cutaways || [])].map((s) => s.clip));
   const projectClips = [];
   for (const c of clips) {
     if (!used.has(c.id)) continue;

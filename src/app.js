@@ -10,7 +10,7 @@ import { fileURLToPath } from 'node:url';
 import { transcribe, WHISPER_MODELS, ENGINES } from './transcriber.js';
 import { analyzeClip, isolateVoice, cutoutImage } from './analysis.js';
 import { detectTools, onPath, OPTIONAL_TOOLS } from './tools.js';
-import { generateEditPlans, GOALS, LENGTHS, PLANNER_MODELS, REVISABLE, INTENSITIES, beatGrid } from './editor.js';
+import { generateEditPlans, normalizePlan, GOALS, LENGTHS, PLANNER_MODELS, REVISABLE, INTENSITIES, beatGrid } from './editor.js';
 import { spicePlan } from './spice.js';
 import { loudnessCurve, refineSpeechCuts, snapToShotChanges, quantizePlan } from './precision.js';
 import { lintPlan } from './lint.js';
@@ -452,7 +452,9 @@ function musicOptions(setting) {
   return { options: { mode: fixed ? 'fixed' : 'auto', fixed, tracks: list }, byKey };
 }
 
-async function runPipeline(job, { prompt, userPrompt = prompt, clipIds, settings, reusePlan, revise = null, revisions = [] }) {
+async function runPipeline(job, { prompt, userPrompt = prompt, clipIds, settings, reusePlan, revise = null, revisions = [], manual = false }) {
+  // manual: the user edited the shots by hand — render exactly that, no automatic pass may touch it.
+  const hands = Boolean(manual);
   await storage.ensureSpace(); // stop now with a clear message rather than halfway on a full disk
   const ws = path.join(DIRS.workspace, job.id);
   const outDir = path.join(DIRS.output, job.id);
@@ -562,7 +564,7 @@ async function runPipeline(job, { prompt, userPrompt = prompt, clipIds, settings
   let planned = null;
   if (reusePlan) {
     const saved = JSON.parse(await fs.readFile(planFile, 'utf8').catch(() => 'null'));
-    const versions = saved?.versions?.filter((v) => settings.lengths.includes(v.id)) || [];
+    const versions = (hands ? saved?.editable : saved?.versions)?.filter((v) => settings.lengths.includes(v.id)) || [];
     if (!clips.length || clips.some((c) => !c)) {
       throw new PipelineError('Some clips of the last edit are no longer in this project.', { hint: 'Run a normal edit instead.' });
     }
@@ -588,7 +590,7 @@ async function runPipeline(job, { prompt, userPrompt = prompt, clipIds, settings
       music = { assetId: settings.music, start: saved.music?.assetId === settings.music ? saved.music.start : 0 };
     }
     planned = { ...saved, versions, warnings: [], music: settings.trendingSound ? null : music, emphasis: saved.emphasis || [], sound: saved.sound || null, auto: saved.auto || null };
-    setStep(job, 'plan', 'done', 'Reused the saved plan — no Claude call.', 0.38);
+    setStep(job, 'plan', 'done', hands ? 'Using your hand-edited shots — no Claude call.' : 'Reused the saved plan — no Claude call.', 0.38);
   } else {
     setStep(job, 'plan', 'active', 'Claude is planning the edit…', 0.32);
     // Trending-sound mode: nothing is mixed — the creator adds the sound in the app when posting.
@@ -663,14 +665,14 @@ async function runPipeline(job, { prompt, userPrompt = prompt, clipIds, settings
     );
   }
   // "No text": not a single overlay, whatever the plan (or a saved plan) has.
-  if (settings.overlays === 'off') {
+  if (!hands && settings.overlays === 'off') {
     const had = planned.versions.reduce((n, v) => n + (v.plan.overlays?.length || 0), 0);
     planned.versions = planned.versions.map((v) => ({ ...v, plan: { ...v.plan, overlays: [] } }));
     if (had) notes.push(`Removed all on-screen text, as you asked (${had} text${had > 1 ? 's' : ''}). Captions follow the caption setting.`);
   }
   // The editor's checklist: no stock phrases or emojis in text, no label on every shot, the hook on
   // frame one, text readable, a hard open and a clean ending.
-  {
+  if (!hands) {
     const keepText = settings.overlays === 'on' || /\b(?:subtitles?|on[- ]screen text|text on screen)\b/i.test(said);
     const all = new Set();
     planned.versions = planned.versions.map((v) => {
@@ -683,14 +685,16 @@ async function runPipeline(job, { prompt, userPrompt = prompt, clipIds, settings
   // The user's words beat the automatic passes: Claude's "auto" call AND the request's explicit
   // phrases ("keep the order", "no slow-mo", "simple cuts") decide which passes may touch the plan.
   const directed = resolveAuto(planned.auto, said);
-  const auto = directed.auto;
+  // Hand-edited: only the finishing look and the slow-motion ramps (both part of what the user saw) stay.
+  const auto = hands ? { ...directed.auto, beatEdit: false, beatSnap: false, styling: false } : directed.auto;
   const autoApplied = [];
-  if (directed.skipped.length) {
+  if (hands) notes.push('Rendered your hand-edited shots exactly as you set them.');
+  if (!hands && directed.skipped.length) {
     const why = [...new Set(directed.skipped.map((s) => s.why).filter(Boolean))].join('; ');
     const what = directed.skipped.map((s) => AUTO_LABELS[s.pass]).join(', ');
     notes.push(`Followed your request${why ? ` (${why})` : ' exactly'} — no automatic ${what}.`);
   }
-  if (directed.noSlowmo) {
+  if (!hands && directed.noSlowmo) {
     const clipDuration = (id) => clips.find((c) => c.id === id)?.duration || 0;
     let n = 0;
     planned.versions = planned.versions.map((v) => {
@@ -722,7 +726,7 @@ async function runPipeline(job, { prompt, userPrompt = prompt, clipIds, settings
     }
   }
   // Retakes: when the speaker started a line over, only the last attempt stays.
-  if (settings.tighten !== 'off') {
+  if (!hands && settings.tighten !== 'off') {
     const found = Object.fromEntries(clips.map((c) => [c.id, findRetakes(transcripts[c.id]?.words)]));
     const gone = new Set();
     planned.versions = planned.versions.map((v) => {
@@ -733,7 +737,7 @@ async function runPipeline(job, { prompt, userPrompt = prompt, clipIds, settings
     if (gone.size) notes.push(`Cut ${gone.size} earlier take${gone.size > 1 ? 's' : ''} where the line was started over (“${[...gone][0]}”${gone.size > 1 ? '…' : ''}) — the last attempt stays.`);
   }
   // Auto-tighten: cut pauses and "um"s inside talking scenes (B-roll and POV stay as planned).
-  if (settings.tighten !== 'off') {
+  if (!hands && settings.tighten !== 'off') {
     let removed = 0;
     planned.versions = planned.versions.map((v) => {
       // natural keeps short breaths (more human); tight removes every pause.
@@ -745,7 +749,7 @@ async function runPipeline(job, { prompt, userPrompt = prompt, clipIds, settings
   }
   // Precision: speech cuts go in the real quiet gap around the words (from each clip's loudness
   // curve), and B-roll cuts next to a camera cut move onto it.
-  {
+  if (!hands) {
     const curves = {};
     const speaking = [...new Set(planned.versions.flatMap((v) => v.plan.scenes.map((sc) => sc.clip)))]
       .map((id) => clips.find((c) => c.id === id))
@@ -837,7 +841,7 @@ async function runPipeline(job, { prompt, userPrompt = prompt, clipIds, settings
       if (start !== planned.music.start && v === planned.versions[0]) notes.push(`Lined the drop of "${musicAsset.name}" (${musicAsset.music.drop}s) up with the peak of the edit (${round(peak, 1)}s).`);
     }
   }
-  if (settings.beatSync && (musicAsset || settings.trendingSound)) {
+  if (!hands && settings.beatSync && (musicAsset || settings.trendingSound)) {
     setStep(job, 'plan', 'active', 'Finding the beat…', 0.37);
     try {
       const talking = (sc) => (transcripts[sc.clip]?.words || []).filter((w) => w.end > sc.start && w.start < sc.end).length >= 3;
@@ -883,7 +887,7 @@ async function runPipeline(job, { prompt, userPrompt = prompt, clipIds, settings
   }
   // Original sound: "off" = a music-only edit (every clip muted), "low" = clip sound as a quiet bed
   // under the music (talking stays clear).
-  if (settings.clipAudio !== 'auto') {
+  if (!hands && settings.clipAudio !== 'auto') {
     const talkingScene = (sc) => (transcripts[sc.clip]?.words || []).filter((w) => w.end > sc.start && w.start < sc.end).length >= 3;
     planned.versions = planned.versions.map((v) => ({
       ...v,
@@ -893,6 +897,7 @@ async function runPipeline(job, { prompt, userPrompt = prompt, clipIds, settings
   }
   // Styling pass: styled transitions on beat-landing B-roll cuts, punch-ins between sentences, and a
   // flash + shake on the peak — so "creator"/"max" edits never come out as plain cuts.
+  let editable = null;
   if (settings.intensity !== 'clean' && (auto.styling || auto.slowmo)) {
     const talking = (sc) => (transcripts[sc.clip]?.words || []).filter((w) => w.end > sc.start && w.start < sc.end).length >= 3;
     const clipDuration = (id) => clips.find((c) => c.id === id)?.duration || 0;
@@ -907,6 +912,8 @@ async function runPipeline(job, { prompt, userPrompt = prompt, clipIds, settings
       notes.push(`Styled ${added} cut${added > 1 ? 's' : ''} (${settings.intensity} intensity, ${energy} energy): transitions on the beat, punch-ins and a hit on the peak.`);
       autoApplied.push(`styling: added ${added} transitions / punch-ins / flash + shake`);
     }
+    // The cut as the shot editor shows it: everything except the speed ramps (re-applied on render).
+    editable = planned.versions.map((v) => ({ id: v.id, plan: v.plan }));
     let ramps = 0;
     if (auto.slowmo) planned.versions = planned.versions.map((v) => {
       const r = rampSlowMo(v.plan, { talking, clipDuration });
@@ -923,7 +930,8 @@ async function runPipeline(job, { prompt, userPrompt = prompt, clipIds, settings
   // Remember what the passes did, so a revision ("no slow-mo!") can switch the right one off.
   {
     const saved = JSON.parse(await fs.readFile(planFile, 'utf8').catch(() => 'null'));
-    if (saved) await fs.writeFile(planFile, JSON.stringify({ ...saved, auto, autoApplied }, null, 2));
+    editable ||= planned.versions.map((v) => ({ id: v.id, plan: v.plan }));
+    if (saved) await fs.writeFile(planFile, JSON.stringify({ ...saved, auto: hands ? saved.auto : auto, autoApplied: hands ? saved.autoApplied : autoApplied, editable }, null, 2));
   }
   // Last: everything on the frame grid (whole frames per shot, no drift off the word or the beat).
   {
@@ -2066,13 +2074,13 @@ function editSettings(s = {}, autoFind = false) {
 
 // POST /api/edit — { jobId, prompt, clips?: [clipId…], settings?: {...} }
 app.post('/api/edit', async (req, res) => {
-  const { jobId, prompt, clips: clipIds, settings: s = {}, reusePlan = false } = req.body || {};
+  const { jobId, prompt, clips: clipIds, settings: s = {}, reusePlan = false, manual = false } = req.body || {};
   // Long, multi-line instructions are welcome: keep line breaks, allow ~20k characters.
   const revise = String(req.body?.revise ?? '').replace(/[ \t]+/g, ' ').trim().slice(0, 20000) || null;
   const job = await getJob(jobId);
   if (!job) return res.status(404).json({ error: 'Unknown project — upload clips first.' });
   if (job.state === 'running') return res.status(409).json({ error: 'This project is already rendering.' });
-  if (!reusePlan && !revise && (!prompt || !String(prompt).trim())) return res.status(400).json({ error: 'Describe how you want the video edited.' });
+  if (!reusePlan && !manual && !revise && (!prompt || !String(prompt).trim())) return res.status(400).json({ error: 'Describe how you want the video edited.' });
 
   // A revision keeps the clips of the edit it fixes.
   const autoFind = s.autoFind === true && !reusePlan && !revise;
@@ -2081,6 +2089,20 @@ app.post('/api/edit', async (req, res) => {
   if (missing.length) return res.status(400).json({ error: `Unknown clip(s): ${missing.join(', ')}` });
   if (!ids.length && !autoFind) return res.status(400).json({ error: 'Add at least one clip, or turn on "Let Claude find the clips".' });
 
+  // Hand-edited shots: render the saved cut exactly as edited, with the settings of the last render.
+  if (manual) {
+    if (!job.result?.settings) return res.status(400).json({ error: 'Make the video first, then edit its shots.' });
+    const last = job.result;
+    startPipeline(job, {
+      prompt: String(last.prompt || '').slice(0, 40000),
+      clipIds: (last.clipIds || ids).filter((id) => job.clips.some((c) => c.id === id)),
+      settings: { ...last.settings, selfReview: false, autoFind: false },
+      reusePlan: true,
+      manual: true,
+      revisions: last.revisions || [],
+    });
+    return res.status(202).json({ jobId: job.id, statusUrl: `/api/status/${job.id}`, videos: last.settings.formats.length * last.settings.lengths.length });
+  }
   let settings = editSettings(s, autoFind);
   // "Put <sound> under this" / "use the sound I imported": the request names one of their sounds →
   // use exactly that track (and cut to it), whatever the music menu says.
@@ -2097,6 +2119,41 @@ app.post('/api/edit', async (req, res) => {
   const original = String(prompt || job.result?.prompt || job.prompt || '').slice(0, 40000);
   startPipeline(job, { prompt: original, clipIds: revise && job.result?.clipIds?.length ? job.result.clipIds.filter((id) => job.clips.some((c) => c.id === id)) : ids, settings, reusePlan: Boolean(reusePlan) && !revise, revise, revisions });
   res.status(202).json({ jobId: job.id, statusUrl: `/api/status/${job.id}`, videos: count });
+});
+
+// ---- shot editor: the finished cut, shot by shot, to adjust by hand --------------------------
+// GET → { versions: [{ id, scenes, overlays, cutaways }], clips, fps }.
+app.get('/api/projects/:jobId/shots', async (req, res) => {
+  const job = await getJob(req.params.jobId);
+  if (!job) return res.status(404).json({ error: 'Unknown project.' });
+  const saved = JSON.parse(await fs.readFile(path.join(DIRS.workspace, job.id, 'edit-plan.json'), 'utf8').catch(() => 'null'));
+  if (!saved?.editable?.length) return res.status(404).json({ error: 'Make the video once more to edit its shots (this cut was made by an older version).' });
+  res.json({
+    fps: 30,
+    versions: saved.editable.map((v) => ({ id: v.id, scenes: v.plan.scenes, overlays: v.plan.overlays || [], cutaways: v.plan.cutaways || [] })),
+    clips: job.clips.map((c) => publicClip(job.id, c)),
+  });
+});
+// PUT { versions: [{ id, scenes, overlays, cutaways }] } → saves the edited cut (validated like a plan).
+app.put('/api/projects/:jobId/shots', async (req, res) => {
+  const job = await getJob(req.params.jobId);
+  if (!job) return res.status(404).json({ error: 'Unknown project.' });
+  if (job.state === 'running') return res.status(409).json({ error: 'This project is rendering — wait for it to finish.' });
+  const planFile = path.join(DIRS.workspace, job.id, 'edit-plan.json');
+  const saved = JSON.parse(await fs.readFile(planFile, 'utf8').catch(() => 'null'));
+  if (!saved?.editable?.length) return res.status(404).json({ error: 'There is no cut to edit yet.' });
+  try {
+    const editable = saved.editable.map((v) => {
+      const mine = (req.body?.versions || []).find((x) => String(x?.id) === v.id);
+      if (!mine) return v;
+      const { plan } = normalizePlan({ ...mine, narration: v.plan.narration, audio: v.plan.audio, summary: v.plan.summary }, job.clips);
+      return { id: v.id, plan: { ...plan, title: v.plan.title } };
+    });
+    await fs.writeFile(planFile, JSON.stringify({ ...saved, editable }, null, 2));
+    res.json({ ok: true });
+  } catch (err) {
+    res.status(400).json({ error: `Those shots can't be saved: ${err.message}.` });
+  }
 });
 
 app.post('/api/cancel/:jobId', async (req, res) => {

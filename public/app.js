@@ -2005,6 +2005,171 @@ $('#fixForm').addEventListener('submit', async (e) => {
   }
 });
 
+// ---- Shot editor: adjust the finished cut by hand ---------------------------------------------
+const shots = { data: null, v: 0, clipShown: null };
+const shClip = (id) => shots.data.clips.find((c) => c.id === id);
+const shVer = () => shots.data.versions[shots.v];
+const shStep = () => ($('#shFine').checked ? 1 / shots.data.fps : 0.1);
+const shT = (t) => `${Math.floor(t / 60)}:${(t % 60).toFixed(2).padStart(5, '0')}`;
+const r3 = (x) => Math.round(x * 1000) / 1000;
+
+async function openShots() {
+  try {
+    shots.data = await api(`/api/projects/${state.jobId}/shots`);
+  } catch (err) { return toast(err.message, 'error'); }
+  shots.v = 0;
+  shots.clipShown = null;
+  $('#shVersion').innerHTML = shots.data.versions.map((v, i) => `<option value="${i}">${v.id === 'full' ? 'Full length' : `${esc(v.id)} s version`}</option>`).join('');
+  $('#shVersion').classList.toggle('hidden', shots.data.versions.length < 2);
+  $('#shAddClip').innerHTML = shots.data.clips.map((c) => `<option value="${esc(c.id)}">${esc(c.name)}</option>`).join('');
+  $('#shMsg').textContent = 'Re-rendering uses your shots exactly as set — no AI changes.';
+  renderShots();
+  $('#shotsDlg').showModal();
+}
+function renderShots() {
+  const v = shVer();
+  $('#shList').innerHTML = v.scenes.map((s, i) => {
+    const c = shClip(s.clip) || { name: s.clip, thumbnail: '' };
+    return `<li data-i="${i}">
+      <span class="num">${i + 1}</span>
+      <img class="th" src="${esc(c.thumbnail || '')}" alt="" loading="lazy" />
+      <div class="sh-main">
+        <div class="name">${esc(c.name)}${s.peak ? ' <span class="badge">peak</span>' : ''}</div>
+        <div class="sh-times">
+          <span class="sh-t"><button type="button" class="sh-time" data-seek="start" aria-label="Show the first frame">in ${shT(s.start)}</button><button type="button" class="nb" data-nudge="start" data-d="-1" aria-label="In point earlier">−</button><button type="button" class="nb" data-nudge="start" data-d="1" aria-label="In point later">+</button></span>
+          <span class="sh-t"><button type="button" class="sh-time" data-seek="end" aria-label="Show the last frame">out ${shT(s.end)}</button><button type="button" class="nb" data-nudge="end" data-d="-1" aria-label="Out point earlier">−</button><button type="button" class="nb" data-nudge="end" data-d="1" aria-label="Out point later">+</button></span>
+        </div>
+        <div class="sh-opts">
+          <span class="len">${((s.end - s.start) / s.speed).toFixed(2)} s on screen</span>
+          <select data-speed aria-label="Speed">${[0.5, 0.75, 1, 1.5, 2].map((x) => `<option value="${x}"${Math.abs(s.speed - x) < 0.01 ? ' selected' : ''}>${x}×</option>`).join('')}${[0.5, 0.75, 1, 1.5, 2].some((x) => Math.abs(s.speed - x) < 0.01) ? '' : `<option value="${s.speed}" selected>${s.speed}×</option>`}</select>
+          <label><input type="checkbox" data-mute${s.volume === 0 ? ' checked' : ''} /> Mute</label>
+        </div>
+      </div>
+      <div class="acts">
+        <button type="button" class="icon-btn" data-move="-1" aria-label="Move earlier"${i === 0 ? ' disabled' : ''}>↑</button>
+        <button type="button" class="icon-btn" data-move="1" aria-label="Move later"${i === v.scenes.length - 1 ? ' disabled' : ''}>↓</button>
+        <button type="button" class="icon-btn" data-del aria-label="Remove this shot"${v.scenes.length < 2 ? ' disabled' : ''}>✕</button>
+      </div>
+    </li>`;
+  }).join('');
+  const total = v.scenes.reduce((n, s) => n + (s.end - s.start) / s.speed, 0);
+  $('#shTotal').textContent = `${v.scenes.length} shots · ${total.toFixed(1)} s`;
+  $('#shText').innerHTML = v.overlays.map((o, i) => `<li data-i="${i}">
+      <input class="field grow" data-otext value="${esc(o.text)}" maxlength="160" aria-label="Text" />
+      <select class="field" data-otype aria-label="Kind">${['hook', 'text', 'title', 'lower-third', 'cta'].map((t) => `<option${o.type === t ? ' selected' : ''}>${t}</option>`).join('')}</select>
+      <label>from <input class="field num" type="number" step="0.1" min="0" data-ostart value="${o.start}" /></label>
+      <label>to <input class="field num" type="number" step="0.1" min="0" data-oend value="${o.end}" /></label>
+      <button type="button" class="icon-btn" data-odel aria-label="Remove this text">✕</button>
+    </li>`).join('') || '<li class="hint-line">No text on screen.</li>';
+  $('#shCuts').innerHTML = v.cutaways.length ? `<h3 class="mv-h">B-roll over talking</h3><ul class="sh-texts">${v.cutaways.map((c, i) => `<li data-i="${i}"><span class="grow">${esc(shClip(c.clip)?.name || c.clip)} ${shT(c.start)}–${shT(c.end)} <span class="hint-line">over ${esc(shClip(c.over)?.name || c.over)} at ${shT(c.at)}</span></span><button type="button" class="icon-btn" data-cdel aria-label="Remove this cutaway">✕</button></li>`).join('')}</ul>` : '';
+}
+function shSeek(s, which) {
+  const c = shClip(s.clip);
+  const vid = $('#shPreview');
+  if (!c?.streamUrl) return;
+  // The last frame of a shot is one frame before its out point.
+  const t = which === 'end' ? Math.max(0, s.end - 1 / shots.data.fps) : s.start;
+  const go = () => { vid.currentTime = t; };
+  if (shots.clipShown !== c.id) {
+    shots.clipShown = c.id;
+    vid.src = c.streamUrl;
+    vid.addEventListener('loadedmetadata', go, { once: true });
+  } else go();
+  $('#shInfo').textContent = `${c.name} — ${which === 'end' ? 'last' : 'first'} frame of the shot (${shT(t)})`;
+}
+$('#openShots').addEventListener('click', openShots);
+$('#shotsDlg [data-close]').addEventListener('click', () => $('#shotsDlg').close());
+$('#shVersion').addEventListener('change', () => { shots.v = Number($('#shVersion').value); renderShots(); });
+$('#shList').addEventListener('click', (e) => {
+  const li = e.target.closest('li[data-i]');
+  if (!li) return;
+  const v = shVer();
+  const i = Number(li.dataset.i);
+  const s = v.scenes[i];
+  const max = shClip(s.clip)?.duration || Infinity;
+  const nudge = e.target.closest('[data-nudge]');
+  const seek = e.target.closest('[data-seek]');
+  if (nudge) {
+    const k = nudge.dataset.nudge;
+    const next = r3(s[k] + Number(nudge.dataset.d) * shStep());
+    // Keep at least 0.2 s of shot, inside the clip.
+    if (k === 'start') s.start = Math.max(0, Math.min(next, s.end - 0.2));
+    else s.end = Math.min(max, Math.max(next, s.start + 0.2));
+    renderShots();
+    shSeek(s, k);
+  } else if (seek) shSeek(s, seek.dataset.seek);
+  else if (e.target.closest('[data-move]')) {
+    const j = i + Number(e.target.closest('[data-move]').dataset.move);
+    if (j < 0 || j >= v.scenes.length) return;
+    [v.scenes[i], v.scenes[j]] = [v.scenes[j], v.scenes[i]];
+    renderShots();
+  } else if (e.target.closest('[data-del]') && v.scenes.length > 1) {
+    v.scenes.splice(i, 1);
+    renderShots();
+  }
+});
+$('#shList').addEventListener('change', (e) => {
+  const li = e.target.closest('li[data-i]');
+  if (!li) return;
+  const s = shVer().scenes[Number(li.dataset.i)];
+  if (e.target.matches('[data-speed]')) s.speed = Number(e.target.value);
+  if (e.target.matches('[data-mute]')) s.volume = e.target.checked ? 0 : 1;
+  renderShots();
+});
+$('#shAdd').addEventListener('click', () => {
+  const c = shClip($('#shAddClip').value);
+  if (!c) return;
+  shVer().scenes.push({ clip: c.id, start: 0, end: r3(Math.min(3, c.duration)), speed: 1, volume: 1, transition: 'cut', transitionDuration: 0, effect: 'none', note: 'added by hand' });
+  renderShots();
+  $('#shList').lastElementChild?.scrollIntoView({ block: 'nearest' });
+});
+$('#shText').addEventListener('input', (e) => {
+  const li = e.target.closest('li[data-i]');
+  if (!li) return;
+  const o = shVer().overlays[Number(li.dataset.i)];
+  if (e.target.matches('[data-otext]')) o.text = e.target.value;
+  if (e.target.matches('[data-otype]')) { o.type = e.target.value; o.position = undefined; }
+  if (e.target.matches('[data-ostart]')) o.start = Number(e.target.value) || 0;
+  if (e.target.matches('[data-oend]')) o.end = Number(e.target.value) || 0;
+});
+$('#shText').addEventListener('click', (e) => {
+  const li = e.target.closest('li[data-i]');
+  if (!li || !e.target.closest('[data-odel]')) return;
+  shVer().overlays.splice(Number(li.dataset.i), 1);
+  renderShots();
+});
+$('#shAddText').addEventListener('click', () => {
+  const v = shVer();
+  const at = v.overlays.length ? Math.max(...v.overlays.map((o) => o.end)) + 0.5 : 0;
+  v.overlays.push({ type: v.overlays.length ? 'text' : 'hook', text: 'Your text', subtext: '', start: r3(at), end: r3(at + 2.5) });
+  renderShots();
+  $('#shText').lastElementChild?.querySelector('input')?.select();
+});
+$('#shCuts').addEventListener('click', (e) => {
+  const li = e.target.closest('li[data-i]');
+  if (!li || !e.target.closest('[data-cdel]')) return;
+  shVer().cutaways.splice(Number(li.dataset.i), 1);
+  renderShots();
+});
+$('#shSave').addEventListener('click', async () => {
+  const bad = shVer().overlays.find((o) => !o.text.trim() || o.end - o.start < 0.3);
+  if (bad) { $('#shMsg').textContent = 'Every text needs words and at least 0.3 s on screen.'; return; }
+  $('#shSave').disabled = true;
+  try {
+    await api(`/api/projects/${state.jobId}/shots`, { method: 'PUT', body: { versions: shots.data.versions } });
+    await api('/api/edit', { method: 'POST', body: { jobId: state.jobId, manual: true } });
+    $('#shotsDlg').close();
+    subscribe();
+    loadProjects();
+    announce('Re-rendering your shots.');
+    toast('Re-rendering with your shots — no AI changes.', 'ok');
+  } catch (err) {
+    $('#shMsg').textContent = err.message;
+  } finally {
+    $('#shSave').disabled = false;
+  }
+});
+
 /** After a revision, mirror the settings Claude changed (polish off, no music…) in the controls. */
 function syncChangedSettings(r) {
   const s = r.settings || {};

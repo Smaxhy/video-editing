@@ -1885,11 +1885,41 @@ async function start(reusePlan) {
 $('#go').addEventListener('click', () => start(false));
 
 // ---- "Tell Claude what to fix" after a render --------------------------------------
+/** Copy text; the clipboard API needs HTTPS, so on the home-Wi-Fi address fall back to a hidden textarea. */
+async function copyText(text) {
+  try {
+    await navigator.clipboard.writeText(text);
+  } catch {
+    const ta = Object.assign(document.createElement('textarea'), { value: text });
+    ta.setAttribute('readonly', '');
+    ta.style.position = 'fixed';
+    ta.style.opacity = '0';
+    document.body.append(ta);
+    ta.select();
+    ta.setSelectionRange(0, text.length);
+    document.execCommand('copy');
+    ta.remove();
+  }
+}
+// One preview at a time for the popular-song suggestions.
+const songPreview = new Audio();
+songPreview.addEventListener('ended', () => document.querySelectorAll('[data-play-song].on').forEach((x) => { x.classList.remove('on'); x.textContent = '▶'; }));
 $('#soundTip').addEventListener('click', async (e) => {
+  const play = e.target.closest('[data-play-song]');
+  if (play) {
+    const was = play.classList.contains('on');
+    document.querySelectorAll('[data-play-song].on').forEach((x) => { x.classList.remove('on'); x.textContent = '▶'; });
+    songPreview.pause();
+    if (!was) {
+      songPreview.src = play.dataset.playSong;
+      songPreview.play().then(() => { play.classList.add('on'); play.textContent = '❚❚'; }).catch(() => toast('Could not play the preview.', 'error'));
+    }
+    return;
+  }
   const b = e.target.closest('[data-copy-sound]');
   if (!b) return;
-  try { await navigator.clipboard.writeText(b.dataset.copySound); toast('Copied — paste it into the sound search in TikTok or Instagram.', 'ok'); }
-  catch { toast(b.dataset.copySound); }
+  await copyText(b.dataset.copySound);
+  toast('Copied — paste it into the sound search in TikTok or Instagram.', 'ok');
 });
 
 /** "Put one of your sounds under this video": your music, newest first. */
@@ -1915,21 +1945,7 @@ function detailsHtml(r) {
 document.addEventListener('click', async (e) => {
   const b = e.target.closest('[data-copy-details]');
   if (!b) return;
-  const text = b.parentElement.querySelector('.dbg-text').textContent;
-  // The clipboard API needs HTTPS; on the home-Wi-Fi address fall back to a selected textarea.
-  try {
-    await navigator.clipboard.writeText(text);
-  } catch {
-    const ta = Object.assign(document.createElement('textarea'), { value: text });
-    ta.setAttribute('readonly', '');
-    ta.style.position = 'fixed';
-    ta.style.opacity = '0';
-    document.body.append(ta);
-    ta.select();
-    ta.setSelectionRange(0, text.length);
-    document.execCommand('copy');
-    ta.remove();
-  }
+  await copyText(b.parentElement.querySelector('.dbg-text').textContent);
   toast('Details copied — paste them in your message.', 'ok');
 });
 
@@ -2106,7 +2122,8 @@ async function showResult(r) {
   renderSoundPick();
   const musicNote = (r.warnings || []).find((w) => w.startsWith('🎵'));
   $('#warns').innerHTML = (musicNote ? `<div class="music-used">${esc(musicNote)}</div>` : r.music ? `<div class="music-used">🎵 Music: ${esc(r.music.name)}</div>` : '') +
-    (r.warnings || []).filter((w) => w !== musicNote).map((w) => `⚠ ${esc(w)}`).join('<br>') + detailsHtml(r);
+    // Notes say what ClipForge did; only real problems get the warning mark.
+    (r.warnings || []).filter((w) => w !== musicNote).map((w) => (/could not|couldn't|failed|unavailable|no music|not enough|came out|skipped/i.test(w) ? `<span class="warn-line">⚠ ${esc(w)}</span>` : `<span class="note-line">• ${esc(w)}</span>`)).join('') + detailsHtml(r);
   syncChangedSettings(r);
   const snd = r.sound;
   $('#soundTip').classList.toggle('hidden', !snd);
@@ -2116,7 +2133,13 @@ async function showResult(r) {
       <div class="hint-line">${[snd.style, snd.bpm ? `~${snd.bpm} BPM` : ''].filter(Boolean).map(esc).join(' · ')}</div>
       ${snd.search.length ? `<div class="chips">Search in the app: ${snd.search.map((q) => `<button type="button" class="chip" data-copy-sound="${esc(q)}" title="Copy">${esc(q)}</button>`).join('')}</div>` : ''}
       ${alts.length ? `<div class="chips">Other options: ${alts.map((o) => `<button type="button" class="chip" data-copy-sound="${esc(o.search)}" title="${esc(o.style || 'Copy')}">${esc(o.search)}</button>`).join('')}</div>` : ''}
-      ${snd.part || snd.why ? `<div class="hint-line">${esc([snd.part, snd.why].filter(Boolean).join(' — '))}</div>` : ''}`;
+      ${snd.part || snd.why ? `<div class="hint-line">${esc([snd.part, snd.why].filter(Boolean).join(' — '))}</div>` : ''}
+      ${snd.popular?.length ? `<div class="pop-songs"><strong>Popular songs that fit this video</strong> <span class="hint-line">from this week's charts — tap the name to copy it, then search it in TikTok or Instagram</span>
+        <ul>${snd.popular.map((p) => `<li>
+          ${p.preview ? `<button type="button" class="icon-btn play" data-play-song="${esc(p.preview)}" aria-label="Play a preview of ${esc(p.title)}">▶</button>` : '<span class="icon-btn play off" aria-hidden="true">♪</span>'}
+          <button type="button" class="song" data-copy-sound="${esc(`${p.title} ${p.artist}`)}" title="Copy the name"><strong>${esc(p.title)}</strong> — ${esc(p.artist)}${p.explicit ? ' <span class="hint-line">(explicit)</span>' : ''}
+            <span class="hint-line">${esc([p.part, p.why].filter(Boolean).join(' · '))}</span></button>
+        </li>`).join('')}</ul></div>` : ''}`;
   }
   const rv = r.review;
   $('#review').classList.toggle('hidden', !rv);

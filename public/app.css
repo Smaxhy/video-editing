@@ -554,3 +554,18 @@ details.options[open] > summary::before { content: "▾"; }
 details.options > summary h2 { margin: 0; display: inline; font-size: 12.5px; letter-spacing: .08em; text-transform: uppercase; color: var(--muted); font-weight: 700; }
 details.options > summary .opt-sum { color: var(--muted); font-size: 13px; flex: 1 1 200px; }
 details.options[open] > summary { margin-bottom: 14px; padding-bottom: 12px; border-bottom: 1px solid var(--line); }
+
+/* Popular songs that fit the video */
+.pop-songs { margin-top: 8px; padding-top: 10px; border-top: 1px solid var(--line); }
+.pop-songs ul { list-style: none; margin: 8px 0 0; padding: 0; display: grid; gap: 6px; }
+.pop-songs li { display: grid; grid-template-columns: 36px minmax(0, 1fr); gap: 8px; align-items: center; }
+.pop-songs .play { width: 36px; height: 36px; border-radius: 50%; }
+.pop-songs .play.on { background: var(--accent); color: #fff; border-color: var(--accent); }
+.pop-songs .play.off { display: grid; place-items: center; color: var(--muted); border: 1px solid var(--line); }
+.pop-songs .song { text-align: left; background: var(--panel-3); border: 1px solid var(--line); border-radius: 10px; padding: 7px 10px; cursor: pointer; color: var(--text); font-size: 13.5px; }
+.pop-songs .song:hover { border-color: var(--accent); }
+.pop-songs .song .hint-line { display: block; }
+
+.note-line, .warn-line { display: block; margin: 2px 0; }
+.note-line { color: var(--muted); }
+.warn-line { color: var(--warn); }

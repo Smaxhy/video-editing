@@ -3,6 +3,7 @@ import path from 'node:path';
 import { jsonrepair } from 'jsonrepair';
 import { run, tail, round, clamp, PipelineError } from './util.js';
 import { AUTO_PASSES, normalizeAuto } from './directives.js';
+import { matchPopular } from './charts.js';
 
 const CLAUDE_BIN = process.env.CLAUDE_BIN || 'claude';
 const CLAUDE_TIMEOUT_MS = Number(process.env.CLAUDE_TIMEOUT_MS || 10 * 60 * 1000);
@@ -92,7 +93,8 @@ const PLAN_SCHEMA = `{
     "part": "which part of the sound to use (e.g. start on the drop)",
     "why": "one line: why it fits the vibe",
     "prompt": "a vivid prompt for an AI music generator: genre, instruments, mood, tempo — e.g. warm lo-fi hip hop beat, soft rhodes chords, vinyl crackle, 85 bpm",
-    "options": [{ "search": "…", "style": "…" }]
+    "options": [{ "search": "…", "style": "…" }],
+    "popular": [{ "track": "c7", "why": "why it fits, max 12 words", "part": "which part to use" }]  // ONLY when a "Popular songs right now" list is given
   }
 }`;
 
@@ -216,7 +218,7 @@ NO background music is mixed into this video — the creator adds a trending sou
 - Pace it like a video made for a trending track: pick a tempo for the vibe ("sound.bpm", usually 90-150) and cut B-roll/montage on every 2nd or 4th beat of it (ClipForge snaps the cuts to that grid). Put the biggest visual moment where a drop would land (~1/3 in).
 - Fill "sound" with what to search for in the app's sound picker.
 ${SOUND_RULES}
-`;
+${popularSection(options)}`;
   }
   const composed = options.aiMusic && !options.music
     ? `
@@ -226,6 +228,17 @@ The user has no music in their library: ClipForge composes the background music 
 ## Sound idea for posting
 Also fill "sound": the kind of trending sound that would suit this video if the creator swaps or adds one in the app.${composed}
 ${SOUND_RULES}
+${popularSection(options)}`;
+}
+
+/** The current chart, for picking real popular songs that fit the edit. */
+function popularSection(options) {
+  const songs = options.popular;
+  if (!songs?.length) return '';
+  return `
+### Popular songs right now (this week's streaming chart)
+${songs.map((s) => `${s.id}: ${s.title} — ${s.artist}${s.explicit ? ' (explicit)' : ''}`).join('\n')}
+In "sound.popular" pick 3 to 5 of these that genuinely fit THIS video's vibe, energy and pacing — best fit first — each with a short "why" and the "part" to use (e.g. "the chorus", "the drop at the start"). Only pick songs you actually know the sound of; a wrong-mood hit is worse than none. If fewer than 3 fit, pick fewer; if none fit, use [].
 `;
 }
 
@@ -251,6 +264,13 @@ export function normalizeSound(raw) {
     options,
   };
   return out.search.length || out.style ? out : null;
+}
+
+/** Attach the chart songs the planner picked to the sound suggestion. */
+function withPopular(sound, raw, songs) {
+  const popular = matchPopular(raw?.popular, songs);
+  if (!popular.length) return sound;
+  return { ...(sound || { vibe: '', energy: null, search: [], style: '', part: '', why: '', prompt: '', bpm: null, options: [] }), popular };
 }
 
 /** A steady beat grid (seconds) for cutting to a sound that isn't in the library. */
@@ -638,7 +658,7 @@ export function normalizeResponse(raw, clips, options) {
   const settingsChanges = options.revision ? normalizeSettingChanges(raw.settings) : {};
 
   const auto = normalizeAuto(raw.auto, options.revision?.auto || null);
-  return { title: String(raw.title || 'ClipForge edit').slice(0, 120), checklist, versions, warnings, music, emphasis, settingsChanges, sound: normalizeSound(raw.sound), auto };
+  return { title: String(raw.title || 'ClipForge edit').slice(0, 120), checklist, versions, warnings, music, emphasis, settingsChanges, sound: withPopular(normalizeSound(raw.sound), raw.sound, options.popular), auto };
 }
 
 /** Output length of a normalized plan (sum of scene lengths minus transition overlaps). */

@@ -14,6 +14,7 @@ import { generateEditPlans, GOALS, LENGTHS, PLANNER_MODELS, REVISABLE, INTENSITI
 import { spicePlan } from './spice.js';
 import { loudnessCurve, refineSpeechCuts, snapToShotChanges, quantizePlan } from './precision.js';
 import { lintPlan } from './lint.js';
+import { createCharts } from './charts.js';
 import { resolveAuto, removeSlowMo, AUTO_LABELS, settingsFromText, asksForVoiceover } from './directives.js';
 import { beatEdit } from './beatedit.js';
 import { trackFromText } from './soundpick.js';
@@ -138,6 +139,7 @@ async function extractAudio(id) {
 await library.load();
 setGentle(library.settings().gentleCpu);
 const folders = createFolders({ file: path.join(DIRS.library, '.folders.json') });
+const charts = createCharts({ cacheFile: path.join(DIRS.workspace, 'charts.json'), log: () => {} });
 await folders.load();
 const storage = createStorage({
   dirs: DIRS,
@@ -608,6 +610,8 @@ async function runPipeline(job, { prompt, userPrompt = prompt, clipIds, settings
       intensity: settings.intensity,
       clipAudio: settings.clipAudio,
       noText: settings.overlays === 'off',
+      // This week's chart, so the sound suggestion names real popular songs that fit the vibe.
+      popular: (await charts.top().catch(() => null))?.songs || null,
     };
     // Revision: the user watched the last render and said what to fix — Claude edits that plan.
     if (revise) {

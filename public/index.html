@@ -538,6 +538,10 @@
               <div class="fixrow"><span class="hint-line grow" id="fixMsg">Claude keeps everything else the same and only changes what you ask — cuts, text, music, captions or the look.</span>
                 <button class="btn" type="submit" id="fixGo">Fix it</button></div>
             </form>
+            <div class="fixbox">
+              <div class="fixrow"><span class="hint-line grow">Want to adjust it yourself? Trim, reorder or remove shots and text by hand.</span>
+                <button class="btn ghost" type="button" id="openShots">Edit the shots</button></div>
+            </div>
             <div class="warns" id="warns"></div>
           </section>
 
@@ -625,6 +629,40 @@
     <div id="sgDisk" class="hint-line"></div>
     <ul class="sg-list" id="sgList"></ul>
     <small class="hint-line">ClipForge already deletes leftovers by itself (raw renders, half uploads, render history) and keeps its caches within a budget. Your videos and music are only deleted from the Library page.</small>
+  </div>
+</dialog>
+
+<!-- Shot editor -->
+<dialog id="shotsDlg" aria-labelledby="shTitle">
+  <div class="dlg-h">
+    <h2 id="shTitle">Edit the shots</h2>
+    <button class="icon-btn" type="button" data-close aria-label="Close"><svg><use href="#i-x"/></svg></button>
+  </div>
+  <div class="dlg-b">
+    <div class="sh-top">
+      <video id="shPreview" playsinline muted preload="metadata" aria-label="Frame preview"></video>
+      <div>
+        <div class="hint-line" id="shInfo">Tap an in or out time to see that exact frame. − and + move the cut.</div>
+        <div class="fixrow" style="margin-top:8px">
+          <select class="field" id="shVersion" aria-label="Version"></select>
+          <label class="tg" style="align-items:center"><input type="checkbox" id="shFine" /><span>Frame by frame</span></label>
+        </div>
+        <div class="hint-line" id="shTotal" style="margin-top:6px"></div>
+      </div>
+    </div>
+    <ol class="shots" id="shList" aria-label="Shots, in order"></ol>
+    <div class="fixrow">
+      <select class="field grow" id="shAddClip" aria-label="Clip to add"></select>
+      <button class="btn sm ghost" type="button" id="shAdd">+ Add a shot</button>
+    </div>
+    <h3 class="mv-h">Text on screen</h3>
+    <ul class="sh-texts" id="shText"></ul>
+    <button class="btn sm ghost" type="button" id="shAddText">+ Add text</button>
+    <div id="shCuts"></div>
+    <div class="dlg-f" style="padding:14px 0 0;border:0">
+      <span class="grow hint-line" id="shMsg" aria-live="polite">Re-rendering uses your shots exactly as set — no AI changes.</span>
+      <button class="btn" type="button" id="shSave">Save &amp; re-render</button>
+    </div>
   </div>
 </dialog>
 

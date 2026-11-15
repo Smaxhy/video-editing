@@ -208,3 +208,64 @@ export function quantizePlan(plan, { fps = FPS, clipDuration = () => Infinity } 
   const overlays = (plan.overlays || []).map((o) => ({ ...o, start: round(f(o.start), 4), end: round(f(o.end), 4) }));
   return { plan: { ...plan, scenes: scenes.length ? scenes : plan.scenes, overlays }, dropped: scenes.length ? dropped : 0 };
 }
+
+/**
+ * Where each B-roll cutaway sits on the output timeline. A cutaway is anchored to a moment of the
+ * talking clip ("over" + "at", SOURCE seconds), so it stays on the same words however the talking
+ * was tightened or re-timed. Its in point snaps to the start of the nearest word and its out point
+ * to the end of one (or to a cut), cutaways never overlap, and everything lands on the frame grid.
+ * laid = layoutTimeline(plan); words(clip) → [{ start, end }].
+ * Returns [{ clip, srcStart, srcEnd, tlStart, duration, note }].
+ */
+export function layCutaways(plan, laid, { words = () => [], clipDuration = () => Infinity, fps = FPS } = {}) {
+  const f = (t) => Math.round(t * fps) / fps;
+  const total = laid.total;
+  const out = [];
+  for (const c of plan.cutaways || []) {
+    const host = laid.scenes.filter((s) => s.clip === c.over);
+    // The scene playing that moment — or, when it was cut out, the next piece of that clip.
+    const sc = host.find((s) => c.at >= s.srcStart - 0.3 && c.at < s.srcEnd) || host.find((s) => s.srcStart >= c.at);
+    if (!sc) continue;
+    let tl = sc.tlStart + Math.max(0, c.at - sc.srcStart) / sc.speed;
+    // Output times of the speaker's word starts / ends (plus every cut), to land on.
+    const starts = [];
+    const ends = [];
+    for (const s of host) {
+      starts.push(s.tlStart);
+      ends.push(s.tlStart + s.duration);
+      for (const w of words(c.over) || []) {
+        if (w.start >= s.srcStart && w.start < s.srcEnd) starts.push(s.tlStart + (w.start - s.srcStart) / s.speed);
+        if (w.end > s.srcStart && w.end <= s.srcEnd) ends.push(s.tlStart + (w.end - s.srcStart) / s.speed);
+      }
+    }
+    const near = (list, t, tol) => list.reduce((best, x) => (Math.abs(x - t) <= tol && (best == null || Math.abs(x - t) < Math.abs(best - t)) ? x : best), null);
+    const inAt = near(starts, tl, 0.3);
+    if (inAt != null) tl = Math.max(0, inAt - 0.03); // a hair before the word, like a hand-placed cut
+    let end = Math.min(tl + (c.end - c.start), total - 0.4);
+    const outAt = near(ends, end, 0.35);
+    if (outAt != null) end = Math.min(outAt + 0.05, total - 0.4);
+    // Not more picture than the B-roll clip has.
+    end = Math.min(end, tl + ((clipDuration(c.clip) || Infinity) - c.start));
+    tl = f(tl);
+    const duration = f(end - tl);
+    if (duration < 0.8) continue;
+    out.push({ clip: c.clip, srcStart: c.start, srcEnd: round(c.start + duration, 4), tlStart: round(tl, 4), duration: round(duration, 4), note: c.note || '' });
+  }
+  out.sort((a, b) => a.tlStart - b.tlStart);
+  // No overlaps; a sliver of speaker between two cutaways reads as a mistake, so close gaps under 0.5 s.
+  const kept = [];
+  for (const c of out) {
+    const prev = kept[kept.length - 1];
+    if (prev) {
+      const gap = c.tlStart - (prev.tlStart + prev.duration);
+      const room = (clipDuration(prev.clip) || Infinity) - prev.srcEnd;
+      if (gap < 0 || (gap < 0.5 && room >= gap)) {
+        prev.duration = round(f(c.tlStart - prev.tlStart), 4);
+        prev.srcEnd = round(prev.srcStart + prev.duration, 4);
+        if (prev.duration < 0.8) kept.pop();
+      }
+    }
+    kept.push(c);
+  }
+  return kept;
+}

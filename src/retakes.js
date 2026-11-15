@@ -7,6 +7,9 @@
  * earlier attempt. The planner is told about them and, when both ended up in the edit, the earlier
  * one is cut out.
  */
+import { layoutTimeline } from './renderer.js';
+import { round } from './util.js';
+
 const norm = (w) => String(w || '').toLowerCase().replace(/[^\p{L}\p{N}']/gu, '');
 
 /** Split words into phrases at sentence punctuation or pauses over 0.6 s. */
@@ -72,6 +75,7 @@ export function findRetakes(words) {
 export function dropRetakes(plan, retakes) {
   const removed = [];
   let scenes = plan.scenes;
+  let overlays = plan.overlays || [];
   const clipIds = [...new Set(scenes.map((s) => s.clip))];
   for (const clip of clipIds) {
     for (const r of retakes(clip) || []) {
@@ -81,7 +85,9 @@ export function dropRetakes(plan, retakes) {
       const hasKeep = scenes.some((s) => covers(s, r.keep));
       if (!hasDrop || (!hasKeep && r.kind !== 'false start')) continue;
       const next = [];
-      for (const s of scenes) {
+      const lay = layoutTimeline({ ...plan, scenes });
+      const cuts = []; // [output time, seconds removed] — text after a cut moves up with the footage
+      for (const [i, s] of scenes.entries()) {
         if (!covers(s, r.drop)) {
           next.push(s);
           continue;
@@ -89,14 +95,21 @@ export function dropRetakes(plan, retakes) {
         // Keep what the scene has before and after the dropped attempt (if it is worth keeping).
         const before = { ...s, end: Math.max(s.start, d0 - 0.05) };
         const after = { ...s, start: Math.min(s.end, d1 + 0.05), transition: 'cut', transitionDuration: 0, peak: false };
+        const keptBefore = before.end - before.start >= 0.4 ? before.end - before.start : 0;
+        const keptAfter = after.end - after.start >= 0.4 ? after.end - after.start : 0;
+        cuts.push([lay.scenes[i].tlStart + keptBefore, s.end - s.start - keptBefore - keptAfter]);
         if (before.end - before.start >= 0.4) next.push(before);
         if (after.end - after.start >= 0.4) next.push(before.end - before.start >= 0.4 ? after : { ...after, transition: s.transition, transitionDuration: s.transitionDuration, ...(s.peak ? { peak: true } : {}) });
       }
       if (next.length) {
         scenes = next;
         removed.push(r.text);
+        for (const [at, len] of cuts.sort((a, b) => b[0] - a[0])) {
+          const move = (t) => (t >= at + len ? t - len : t > at ? at : t);
+          overlays = overlays.map((o) => ({ ...o, start: round(move(o.start), 3), end: round(move(o.end), 3) })).filter((o) => o.end - o.start >= 0.3);
+        }
       }
     }
   }
-  return { plan: { ...plan, scenes }, removed };
+  return { plan: { ...plan, scenes, overlays }, removed };
 }

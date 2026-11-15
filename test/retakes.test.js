@@ -32,7 +32,10 @@ test('retakes: the earlier attempt is cut out of the edit', () => {
   const r = findRetakes(w);
   const end = w[w.length - 1].end;
   // One scene covering everything → the first take and the false start are removed.
-  const one = dropRetakes({ scenes: [{ clip: 'a', start: 0, end: end + 0.2, speed: 1, transition: 'cut', transitionDuration: 0 }] }, () => r);
+  const one = dropRetakes({ scenes: [{ clip: 'a', start: 0, end: end + 0.2, speed: 1, transition: 'cut', transitionDuration: 0 }], overlays: [{ text: 'on the last line', start: end - 1, end: end }] }, () => r);
+  // Text that sat on the last line moved up with it.
+  const removedLen = end + 0.2 - one.plan.scenes.reduce((n, s) => n + s.end - s.start, 0);
+  assert.ok(Math.abs(one.plan.overlays[0].start - (end - 1 - removedLen)) < 0.02, `overlay at ${one.plan.overlays[0].start}`);
   assert.equal(one.removed.length, 2);
   assert.equal(one.plan.scenes.length, 2);
   assert.ok(one.plan.scenes[0].start >= r[0].drop[1]); // starts after the first take

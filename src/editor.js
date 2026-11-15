@@ -318,6 +318,7 @@ export function buildPrompt({ clips, userPrompt, options }) {
         a.silences ? `- silent ranges (no sound, SOURCE seconds): ${a.silences.length ? list(a.silences, ([x, y]) => `${fmt(x)}-${fmt(y)}`) : 'none'}` : null,
         a.shots ? `- shot changes (SOURCE seconds): ${a.shots.length ? list(a.shots, fmt) : 'none — one continuous shot'}` : null,
         a.faces ? `- on-camera face: ${faceSummary(a.faces, c.duration)}` : null,
+        c.retakes?.length ? `- retakes — the speaker started over; use ONLY the later attempt, never both (SOURCE seconds): ${c.retakes.slice(0, 12).map((r) => `${fmt(r.drop[0])}-${fmt(r.drop[1])} is redone at ${fmt(r.keep[0])}-${fmt(r.keep[1])}`).join('; ')}` : null,
         `- transcript (SOURCE seconds):`,
         lines,
       ]

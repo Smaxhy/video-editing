@@ -14,6 +14,7 @@ import { generateEditPlans, GOALS, LENGTHS, PLANNER_MODELS, REVISABLE, INTENSITI
 import { spicePlan } from './spice.js';
 import { loudnessCurve, refineSpeechCuts, snapToShotChanges, quantizePlan } from './precision.js';
 import { lintPlan } from './lint.js';
+import { findRetakes, dropRetakes } from './retakes.js';
 import { createCharts } from './charts.js';
 import { resolveAuto, removeSlowMo, AUTO_LABELS, settingsFromText, asksForVoiceover } from './directives.js';
 import { beatEdit } from './beatedit.js';
@@ -641,6 +642,7 @@ async function runPipeline(job, { prompt, userPrompt = prompt, clipIds, settings
         ...c,
         transcript: transcripts[c.id],
         analysis: analysis[c.id],
+        retakes: findRetakes(transcripts[c.id]?.words),
         visual: c.assetId && library.get(c.assetId)?.ai?.status === 'done' ? library.get(c.assetId).ai : null,
         sheet: sheets[c.id] || null,
       })),
@@ -718,6 +720,17 @@ async function runPipeline(job, { prompt, userPrompt = prompt, clipIds, settings
       const saved = JSON.parse(await fs.readFile(planFile, 'utf8').catch(() => 'null'));
       if (saved) await fs.writeFile(planFile, JSON.stringify({ ...saved, music: planned.music }, null, 2));
     }
+  }
+  // Retakes: when the speaker started a line over, only the last attempt stays.
+  if (settings.tighten !== 'off') {
+    const found = Object.fromEntries(clips.map((c) => [c.id, findRetakes(transcripts[c.id]?.words)]));
+    const gone = new Set();
+    planned.versions = planned.versions.map((v) => {
+      const r = dropRetakes(v.plan, (id) => found[id]);
+      r.removed.forEach((t) => gone.add(t));
+      return { ...v, plan: r.plan };
+    });
+    if (gone.size) notes.push(`Cut ${gone.size} earlier take${gone.size > 1 ? 's' : ''} where the line was started over (“${[...gone][0]}”${gone.size > 1 ? '…' : ''}) — the last attempt stays.`);
   }
   // Auto-tighten: cut pauses and "um"s inside talking scenes (B-roll and POV stay as planned).
   if (settings.tighten !== 'off') {
@@ -916,6 +929,10 @@ async function runPipeline(job, { prompt, userPrompt = prompt, clipIds, settings
   {
     const clipDuration = (id) => clips.find((c) => c.id === id)?.duration || 0;
     planned.versions = planned.versions.map((v) => ({ ...v, plan: quantizePlan(v.plan, { clipDuration }).plan }));
+  }
+  {
+    const n = Math.max(0, ...planned.versions.map((v) => v.plan.cutaways?.length || 0));
+    if (n) notes.push(`B-roll: ${n} cutaway${n > 1 ? 's' : ''} over the talking — the voice keeps going while the picture shows what is being said.`);
   }
   // AI voiceover: Kokoro reads the planner's narration lines; they become one mixed track + captions.
   if (settings.voiceover !== 'off') {

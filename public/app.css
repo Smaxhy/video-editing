@@ -274,8 +274,8 @@ details.adv .opt { border-top: 0; }
 .logo-prev { width: 44px; height: 44px; border-radius: 8px; border: 1px solid var(--line); object-fit: contain;
   background: repeating-conic-gradient(#20232c 0% 25%, #15171d 0% 50%) 50% / 12px 12px; }
 
-.go { position: sticky; bottom: 0; z-index: 15; display: flex; gap: 10px; align-items: center; flex-wrap: wrap; padding: 14px 0;
-  background: linear-gradient(transparent, var(--bg) 30%); }
+.go { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; padding-top: 14px; margin-top: 12px; border-top: 1px solid var(--line); }
+.go .btn.big { min-width: 170px; }
 .go .hint { color: var(--muted); font-size: 13px; }
 
 .steps { display: grid; gap: 10px; list-style: none; margin: 0; padding: 0; }
@@ -354,7 +354,17 @@ dialog::backdrop { background: rgba(4, 5, 8, .78); backdrop-filter: blur(3px); }
 
 /* ---------- responsive ---------- */
 @media (max-width: 1180px) {
-  .proj-grid { grid-template-columns: 1fr; }
+  /* One column: prompt → progress / result → clips → options. The two columns dissolve so the
+     cards can be ordered across them. */
+  .proj-grid { grid-template-columns: minmax(0, 1fr); gap: 16px; }
+  .proj-grid > .col { display: contents; }
+  #promptCard { order: 1; }
+  #progressCard, #resultCard, #checkCard { order: 2; }
+  #clipsCard { order: 3; }
+  #optionsCard { order: 4; }
+  #idleCard { display: none; }
+  #toolsCard { order: 6; }
+  #storageCard { order: 7; }
 }
 @media (max-width: 880px) {
   .shell { grid-template-columns: 1fr; }
@@ -374,8 +384,10 @@ dialog::backdrop { background: rgba(4, 5, 8, .78); backdrop-filter: blur(3px); }
 @media (max-width: 560px) {
   .opt { grid-template-columns: 1fr; gap: 6px; }
   .grid { grid-template-columns: repeat(auto-fill, minmax(160px, 1fr)); gap: 10px; }
-  .strip li { grid-template-columns: 22px 96px minmax(0, 1fr); }
-  .strip .acts { grid-column: 1 / -1; justify-content: flex-end; }
+  .strip li { grid-template-columns: 18px 64px minmax(0, 1fr) auto; gap: 8px; }
+  .strip .acts .icon-btn { width: 32px; height: 32px; }
+  .opt.q { grid-template-columns: 1fr; gap: 4px; }
+  .go .btn.big { flex: 1 1 100%; }
   .fields { grid-template-columns: 1fr 48px; }
   .fields #brand { grid-column: 1 / -1; }
   .title-input { font-size: 20px; }
@@ -524,3 +536,21 @@ dialog::backdrop { background: rgba(4, 5, 8, .78); backdrop-filter: blur(3px); }
 /* Copy details */
 .dbg { margin-top: 10px; }
 .dbg-text { white-space: pre-wrap; overflow-wrap: anywhere; font-size: 12px; max-height: 260px; overflow: auto; background: var(--panel-2); padding: 10px; border-radius: 8px; }
+
+/* Project page: prompt first */
+.proj-grid .card { min-width: 0; }
+.prompt-card { border-color: color-mix(in srgb, var(--accent) 45%, var(--line)); }
+.prompt-card textarea { min-height: 132px; font-size: 16px; }
+.quick { display: grid; gap: 8px; margin-top: 12px; }
+.opt.q { grid-template-columns: 70px 1fr; gap: 10px; border-top: 0; padding: 0; }
+.prompt-card .chips { flex-wrap: nowrap; overflow-x: auto; padding-bottom: 4px; scrollbar-width: thin; }
+.prompt-card .chips .chip { flex: none; white-space: nowrap; }
+.clips-card .autofind { padding: 9px 12px; align-items: center; }
+.clips-card .strip li { grid-template-columns: 22px 84px minmax(0, 1fr) auto; padding: 5px 6px; }
+details.options > summary { display: flex; align-items: baseline; gap: 10px; flex-wrap: wrap; cursor: pointer; list-style: none; }
+details.options > summary::-webkit-details-marker { display: none; }
+details.options > summary::before { content: "▸"; color: var(--muted); }
+details.options[open] > summary::before { content: "▾"; }
+details.options > summary h2 { margin: 0; display: inline; font-size: 12.5px; letter-spacing: .08em; text-transform: uppercase; color: var(--muted); font-weight: 700; }
+details.options > summary .opt-sum { color: var(--muted); font-size: 13px; flex: 1 1 200px; }
+details.options[open] > summary { margin-bottom: 14px; padding-bottom: 12px; border-bottom: 1px solid var(--line); }

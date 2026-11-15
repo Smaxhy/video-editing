@@ -243,14 +243,53 @@
       </div>
 
       <div class="proj-grid">
-        <!-- LEFT: build -->
+        <!-- LEFT: build — prompt first, clips, then the options most people never need -->
         <div class="col">
-          <section class="card" aria-labelledby="clipsH">
+          <section class="card prompt-card" id="promptCard" aria-labelledby="promptH">
+            <h2 id="promptH"><label for="prompt">Describe your video</label></h2>
+            <textarea id="prompt" placeholder="What is this video, and what should it do for you? Say it in your own words — ClipForge follows them.&#10;&#10;e.g. Removing a dead aspen for a client. Show the climb, the top coming down and the clean yard. Use my music, no text."></textarea>
+            <div class="chips" id="chips" role="group" aria-label="Prompt ideas — click to add">
+              <button class="chip" type="button">Use my music, cut to the beat</button>
+              <button class="chip" type="button">No text on screen</button>
+              <button class="chip" type="button">Add subtitles</button>
+              <button class="chip" type="button">Keep the clips in this order</button>
+              <button class="chip" type="button">Best moments only, fast pace</button>
+              <button class="chip" type="button">Calm and simple, clean cuts</button>
+              <button class="chip" type="button">Make it an ad: hook, problem, result, call to action</button>
+            </div>
+            <div class="quick">
+            <div class="opt q"><span class="lbl" id="l-formats">Formats</span>
+              <div class="seg" data-name="formats" role="group" aria-labelledby="l-formats">
+                <button type="button" data-v="9x16" aria-pressed="true" title="TikTok · Reels · Shorts · Stories"><i class="ar" style="width:9px;height:16px" aria-hidden="true"></i>9:16<span class="sr-only"> vertical</span></button>
+                <button type="button" data-v="4x5" title="Instagram &amp; Facebook feed ads"><i class="ar" style="width:11px;height:14px" aria-hidden="true"></i>4:5<span class="sr-only"> portrait</span></button>
+                <button type="button" data-v="1x1" title="Feeds · LinkedIn · X"><i class="ar" style="width:13px;height:13px" aria-hidden="true"></i>1:1<span class="sr-only"> square</span></button>
+                <button type="button" data-v="16x9" title="YouTube · web · pre-roll"><i class="ar" style="width:18px;height:10px" aria-hidden="true"></i>16:9<span class="sr-only"> widescreen</span></button>
+              </div>
+            </div>
+            <div class="opt q"><span class="lbl" id="l-lengths">Lengths</span>
+              <div class="seg" data-name="lengths" role="group" aria-labelledby="l-lengths">
+                <button type="button" data-v="15">15s</button>
+                <button type="button" data-v="30" aria-pressed="true">30s</button>
+                <button type="button" data-v="60">60s</button>
+                <button type="button" data-v="full">Full</button>
+              </div>
+            </div>
+            </div>
+            <div class="go" id="goBar">
+              <button class="btn big" id="go" type="button" disabled>Make video</button>
+              <button class="btn ghost hidden" id="rerender" type="button" title="Apply new formats, captions, framing, size or colors using the saved plan — no Claude usage">Re-render only</button>
+              <button class="btn ghost hidden" id="cancel" type="button">Cancel</button>
+              <button class="btn danger hidden" id="forceStop" type="button" title="Kill every render and Autopilot job right now">Force stop</button>
+              <span class="hint" id="goHint">Add a clip and describe the edit.</span>
+            </div>
+          </section>
+
+          <section class="card clips-card" id="clipsCard" aria-labelledby="clipsH">
             <h2 id="clipsH">Clips <span class="meta" id="clipMeta"></span></h2>
             <label class="autofind">
               <input type="checkbox" id="autoFind" role="switch" />
               <span><strong><svg width="16" height="16" aria-hidden="true"><use href="#i-spark"/></svg> Let Claude find the clips</strong>
-                <small>Claude searches your whole library (including everything imported from Drive) for footage that fits your description and adds it here. Clips you add yourself are always used too.</small></span>
+                <small>Picks footage from your whole library that fits your description. Clips you add yourself are always used.</small></span>
             </label>
             <p class="sr-only" id="orderHelp">Claude sees the clips in this order. Use the arrow buttons or drag to reorder.</p>
             <ol class="strip" id="clipStrip" aria-describedby="orderHelp"></ol>
@@ -264,44 +303,14 @@
             </div>
           </section>
 
-          <section class="card" aria-labelledby="promptH">
-            <h2 id="promptH"><label for="prompt">What should Claude do?</label></h2>
-            <textarea id="prompt" placeholder="Describe the edit exactly how you want it — Claude follows your words literally.&#10;&#10;e.g. Open on the line about saving 3 hours a week. Cut all pauses. Add a lower-third 'Sam Lee — Founder'. End with 'Try it free'."></textarea>
-            <div class="chips" id="chips" role="group" aria-label="Prompt ideas — click to add">
-              <button class="chip" type="button">Hook in the first second, cut every pause and filler word</button>
-              <button class="chip" type="button">Keep only the strongest moments, fast pacing</button>
-              <button class="chip" type="button">Add a lower-third introducing the speaker</button>
-              <button class="chip" type="button">Structure it as an ad: hook → problem → solution → call to action</button>
-              <button class="chip" type="button">Keep the clips in order and join them with crossfades</button>
-            </div>
-          </section>
-
-          <section class="card" aria-labelledby="outH">
-            <h2 id="outH">Output <span class="meta" id="outMeta" aria-live="polite"></span></h2>
+          <details class="card options" id="optionsCard">
+            <summary><h2 id="outH">More options</h2><span class="opt-sum">Captions · music · voiceover · framing · style · finishing</span><span class="meta" id="outMeta" aria-live="polite"></span></summary>
 
             <div class="opt"><span class="lbl" id="l-goal">Made for</span>
               <div class="seg" data-name="goal" data-single role="group" aria-labelledby="l-goal">
                 <button type="button" data-v="social" aria-pressed="true">Social media</button>
                 <button type="button" data-v="ad">Advertisement</button>
                 <button type="button" data-v="both">Both</button>
-              </div>
-            </div>
-
-            <div class="opt"><span class="lbl" id="l-formats">Formats</span>
-              <div class="seg" data-name="formats" role="group" aria-labelledby="l-formats">
-                <button type="button" data-v="9x16" aria-pressed="true" title="TikTok · Reels · Shorts · Stories"><i class="ar" style="width:9px;height:16px" aria-hidden="true"></i>9:16<span class="sr-only"> vertical</span></button>
-                <button type="button" data-v="4x5" title="Instagram &amp; Facebook feed ads"><i class="ar" style="width:11px;height:14px" aria-hidden="true"></i>4:5<span class="sr-only"> portrait</span></button>
-                <button type="button" data-v="1x1" title="Feeds · LinkedIn · X"><i class="ar" style="width:13px;height:13px" aria-hidden="true"></i>1:1<span class="sr-only"> square</span></button>
-                <button type="button" data-v="16x9" title="YouTube · web · pre-roll"><i class="ar" style="width:18px;height:10px" aria-hidden="true"></i>16:9<span class="sr-only"> widescreen</span></button>
-              </div>
-            </div>
-
-            <div class="opt"><span class="lbl" id="l-lengths">Lengths</span>
-              <div class="seg" data-name="lengths" role="group" aria-labelledby="l-lengths">
-                <button type="button" data-v="15">15s</button>
-                <button type="button" data-v="30" aria-pressed="true">30s</button>
-                <button type="button" data-v="60">60s</button>
-                <button type="button" data-v="full">Full</button>
               </div>
             </div>
 
@@ -482,15 +491,7 @@
                 </select>
               </div>
             </details>
-          </section>
-
-          <div class="go">
-            <button class="btn big" id="go" type="button" disabled>Forge video</button>
-            <button class="btn ghost hidden" id="rerender" type="button" title="Apply new formats, captions, framing, size or colors using the saved plan — no Claude usage">Re-render only</button>
-            <button class="btn ghost hidden" id="cancel" type="button">Cancel</button>
-            <button class="btn danger hidden" id="forceStop" type="button" title="Kill every render and Autopilot job right now">Force stop</button>
-            <span class="hint" id="goHint">Add a clip and describe the edit.</span>
-          </div>
+          </details>
         </div>
 
         <!-- RIGHT: results -->

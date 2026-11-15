@@ -1856,7 +1856,7 @@ function updateGo() {
   const hasFootage = state.clips.length > 0 || s.autoFind;
   const ready = hasFootage && $('#prompt').value.trim().length > 0 && n <= 8;
   $('#go').disabled = !ready || state.running;
-  $('#go').textContent = n > 1 ? `Forge ${n} videos` : 'Forge video';
+  $('#go').textContent = n > 1 ? `Make ${n} videos` : 'Make video';
   $('#rerender').classList.toggle('hidden', !state.shown || state.running);
   if (!state.clips.length) renderClipsEmpty();
   $('#rerender').disabled = n > 8;
@@ -2673,4 +2673,11 @@ for (const id of ['prompt', 'fixText', 'autoDir']) {
   el.addEventListener('input', fit);
   el.addEventListener('focus', fit);
   setTimeout(fit, 0);
+}
+
+// "More options" stays the way you left it (open or folded).
+{
+  const opts = $('#optionsCard');
+  opts.open = store.get('cf.optionsOpen', false) === true;
+  opts.addEventListener('toggle', () => store.set('cf.optionsOpen', opts.open));
 }
